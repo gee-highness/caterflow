@@ -14,7 +14,7 @@ import { useRouter, usePathname } from 'next/navigation';
 
 export const MobileTopbar = ({ onItemClick }: { onItemClick?: () => void }) => {
     const { toggleSidebar } = useSidebar();
-    const { isInstallable, installApp } = usePWAInstall();
+    const { isInstallable, promptInstall } = usePWAInstall();
 
     const { setLoading } = useLoading();
     const router = useRouter();
@@ -82,7 +82,7 @@ export const MobileTopbar = ({ onItemClick }: { onItemClick?: () => void }) => {
                     Caterflow
                 </Heading>
                 {isInstallable && (
-                    <Button onClick={installApp} size="sm" colorScheme="blue">
+                    <Button onClick={promptInstall} size="sm" colorScheme="blue">
                         <Icon as={FiDownload} mr={2} />
                         Install App
                     </Button>

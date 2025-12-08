@@ -1,4 +1,4 @@
-// app/layout.tsx
+// src/app/layout.tsx
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import { Providers } from "./providers";
@@ -6,9 +6,10 @@ import { Sidebar } from "@/components/Sidebar";
 import { MobileTopbar } from "@/components/MobileTopbar";
 import { SidebarProvider } from "@/context/SidebarContext";
 import { Box } from "@chakra-ui/react";
-import { Footer } from "@/components/Footer"; // Import the Footer component
+import { Footer } from "@/components/Footer";
 import { ServiceWorkerRegister } from "@/components/ServiceWorkerRegister";
-import { SpeedInsights } from "@vercel/speed-insights/next"
+import { SpeedInsights } from "@vercel/speed-insights/next";
+import { InstallButton } from "@/components/InstallButton"; // Import the InstallButton
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -33,6 +34,8 @@ export default function RootLayout({
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <link rel="icon" href="/favicon.ico" />
         <link rel="apple-touch-icon" href="/icons/icon-192x192.png" />
+        <meta name="apple-mobile-web-app-capable" content="yes" />
+        <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
       </head>
       <body className={inter.className}>
         <Providers>
@@ -53,6 +56,7 @@ export default function RootLayout({
               <Footer appName="Caterflow" />
             </Box>
             <ServiceWorkerRegister />
+            <InstallButton /> {/* Add the InstallButton here */}
           </SidebarProvider>
         </Providers>
       </body>

@@ -41,7 +41,10 @@ interface AppUserWithSite {
     name: string;
     email: string;
     role: 'admin' | 'siteManager' | 'stockController' | 'dispatchStaff' | 'auditor';
-    associatedSite?: Site;
+    associatedSite?: {
+        _id: string;
+        name: string;
+    };
     isActive: boolean;
 }
 
@@ -65,7 +68,6 @@ export default function UsersPage() {
     const headingColor = useColorModeValue('neutral.light.text-primary', 'neutral.dark.text-primary');
     const cardBg = useColorModeValue('neutral.light.bg-card', 'neutral.dark.bg-card');
     const borderColor = useColorModeValue('neutral.light.border-color', 'neutral.dark.border-color');
-    //const inputBg = useColorModeValue('neutral.light.bg-input', 'neutral.dark.bg-input');
     const brand500 = useColorModeValue('brand.500', 'brand.300');
     const secondaryTextColor = useColorModeValue('neutral.light.text-secondary', 'neutral.dark.text-secondary');
 
@@ -86,20 +88,13 @@ export default function UsersPage() {
                 sitesResponse.json()
             ]);
 
-            const usersWithSites = usersData.map((user: AppUser) => {
-                let associatedSite: Site | undefined;
-                if (user.associatedSite && typeof user.associatedSite === 'object' && '_ref' in user.associatedSite) {
-                    const siteRef = (user.associatedSite as Reference)._ref;
-                    associatedSite = sitesData.find((site: Site) => site._id === siteRef);
-                }
-                return {
-                    ...user,
-                    associatedSite
-                };
-            });
+            // Debug: Log what we're getting from the API
+            console.log('Users data from API:', usersData);
+            console.log('Sites data from API:', sitesData);
 
-            setUsers(usersWithSites);
-            setFilteredUsers(usersWithSites);
+            // The API already returns expanded site objects, so no need to map
+            setUsers(usersData);
+            setFilteredUsers(usersData);
             setSites(sitesData);
         } catch (error) {
             console.error('Error fetching data:', error);
@@ -150,7 +145,9 @@ export default function UsersPage() {
     const handleEditUser = (user: AppUserWithSite) => {
         setSelectedUser({
             ...user,
-            associatedSite: user.associatedSite ? { _ref: user.associatedSite._id } as Reference : undefined
+            associatedSite: user.associatedSite
+                ? { _ref: user.associatedSite._id } as Reference
+                : undefined
         } as any);
         onOpen();
     };
@@ -259,7 +256,7 @@ export default function UsersPage() {
             isSortable: true,
             cell: (row: AppUserWithSite) => (
                 <Text fontSize="sm" color={secondaryTextColor}>
-                    {row.associatedSite?._id || 'N/A'}
+                    {row.associatedSite?.name || 'N/A'}
                 </Text>
             ),
         },
@@ -319,7 +316,7 @@ export default function UsersPage() {
                         justify="space-between"
                         align={{ base: 'stretch', md: 'center' }}
                     >
-                        {/*<InputGroup maxW={{ base: 'full', md: '300px' }}>
+                        <InputGroup maxW={{ base: 'full', md: '300px' }}>
                             <InputLeftElement pointerEvents="none" color={secondaryTextColor}>
                                 <FiSearch />
                             </InputLeftElement>
@@ -333,7 +330,7 @@ export default function UsersPage() {
                                 _focus={{ borderColor: brand500, boxShadow: `0 0 0 1px ${brand500}` }}
                                 color={headingColor}
                             />
-                        </InputGroup>*/}
+                        </InputGroup>
 
                         <HStack spacing={4} flexWrap="wrap">
                             <Flex align="center">
