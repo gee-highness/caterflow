@@ -1,187 +1,240 @@
 // src/lib/stockCalculations.ts
-
 import { client } from '@/lib/sanity';
 import { groq } from 'next-sanity';
 import Decimal from 'decimal.js';
 
-// ADD THIS FUNCTION - it was missing
 export const calculateStock = async (stockItemId: string, binId: string): Promise<number> => {
   try {
+    console.log(`🧮 Calculating stock for item ${stockItemId} in bin ${binId}`);
+
     if (!stockItemId || !binId) {
+      console.log('⚠️ Missing itemId or binId');
       return 0;
     }
 
-    // Use the bulk function to calculate stock for this specific combination
     const results = await calculateBulkStock([stockItemId], [binId]);
     const key = `${stockItemId}-${binId}`;
-    return results[key] || 0;
+    const quantity = results[key] || 0;
+
+    console.log(`✅ Stock for ${key}: ${quantity}`);
+    return quantity;
   } catch (error) {
-    console.error('Error calculating stock:', error);
+    console.error('❌ Error calculating stock:', error);
     return 0;
   }
 };
 
 export const calculateBulkStock = async (stockItemIds: string[], binIds: string[]): Promise<{ [key: string]: number }> => {
+  console.log('🧮 Starting calculateBulkStock...');
+  console.log('📦 Stock Item IDs:', stockItemIds.length);
+  console.log('🗄️ Bin IDs:', binIds.length);
+
   if (stockItemIds.length === 0 || binIds.length === 0) {
+    console.log('⚠️ No items or bins provided');
     return {};
   }
 
-  const query = groq`{
-    "counts": *[_type == "InventoryCount" && bin._ref in $binIds] | order(countDate desc) {
+  try {
+    // CORRECTED QUERY based on your actual APIs
+    const query = groq`{
+      "counts": *[_type == "InventoryCount" && bin._ref in $binIds] | order(countDate desc) {
         _id,
         bin->{ _id },
         countDate,
         countedItems[] {
-            stockItem->{ _id },
-            countedQuantity
+          stockItem->{ _id },
+          countedQuantity
         }
-    },
-    "transactions": *[
-        (_type in ["GoodsReceipt", "DispatchLog", "StockAdjustment"] && (receivingBin._ref in $binIds || sourceBin._ref in $binIds || bin._ref in $binIds)) ||
-        (_type == "InternalTransfer" && status == "completed" && (fromBin._ref in $binIds || toBin._ref in $binIds))
-    ] | order(coalesce(receiptDate, dispatchDate, transferDate, adjustmentDate) asc) {
+      },
+      "goodsReceipts": *[_type == "GoodsReceipt" && receivingBin._ref in $binIds] | order(receiptDate asc) {
         _type,
         _id,
         receiptDate,
-        dispatchDate,
-        transferDate,
-        adjustmentDate,
         receivingBin->{ _id },
-        sourceBin->{ _id },
-        toBin->{ _id },
-        fromBin->{ _id },
-        bin->{ _id },
         receivedItems[] {
-            stockItem->{ _id },
-            receivedQuantity
-        },
+          stockItem->{ _id },
+          receivedQuantity
+        }
+      },
+      "dispatches": *[_type == "DispatchLog" && sourceBin._ref in $binIds] | order(dispatchDate asc) {
+        _type,
+        _id,
+        dispatchDate,
+        sourceBin->{ _id },
         dispatchedItems[] {
-            stockItem->{ _id },
-            dispatchedQuantity
-        },
+          stockItem->{ _id },
+          dispatchedQuantity
+        }
+      },
+      "transfers": *[_type == "InternalTransfer" && status == "completed" && (fromBin._ref in $binIds || toBin._ref in $binIds)] | order(transferDate asc) {
+        _type,
+        _id,
+        transferDate,
+        fromBin->{ _id },
+        toBin->{ _id },
         transferredItems[] {
-            stockItem->{ _id },
-            transferredQuantity,
-            toBin->{ _id },
-            fromBin->{ _id }
-        },
-        adjustedItems[] {
-            stockItem->{ _id },
-            adjustedQuantity
-        },
-        adjustmentType
-    }
-}`;
+          stockItem->{ _id },
+          transferredQuantity
+        }
+      }
+      // Removed StockAdjustment since it doesn't exist in your APIs
+    }`;
 
-  const data = await client.fetch(query, { binIds, stockItemIds });
+    console.log('📡 Fetching data from Sanity...');
+    const data = await client.fetch(query, { binIds, stockItemIds });
 
-  // Step 1: Find the latest count for each bin
-  const latestCounts: { [binId: string]: any } = {};
-  data.counts.forEach((count: any) => {
-    const binId = count.bin?._id;
-    if (!binId) return;
+    console.log('📊 Data counts from Sanity:');
+    console.log('- Inventory Counts:', data.counts?.length || 0);
+    console.log('- Goods Receipts:', data.goodsReceipts?.length || 0);
+    console.log('- Dispatches:', data.dispatches?.length || 0);
+    console.log('- Transfers:', data.transfers?.length || 0);
 
-    // Only keep the latest count per bin
-    if (!latestCounts[binId] || new Date(count.countDate) > new Date(latestCounts[binId].countDate)) {
-      latestCounts[binId] = count;
-    }
-  });
+    // Step 1: Initialize results
+    const results: { [key: string]: Decimal } = {};
 
-  // Step 2: Initialize results with latest counts
-  const results: { [key: string]: Decimal } = {};
-
-  // Initialize all possible combinations with 0
-  binIds.forEach(binId => {
-    stockItemIds.forEach(itemId => {
-      const key = `${itemId}-${binId}`;
-      results[key] = new Decimal(0);
-    });
-  });
-
-  // Set initial values from latest counts
-  Object.values(latestCounts).forEach((count: any) => {
-    const binId = count.bin?._id;
-    if (!binId) return;
-    count.countedItems?.forEach((item: any) => {
-      const itemId = item.stockItem?._id;
-      if (itemId && stockItemIds.includes(itemId)) {
+    // Initialize all possible combinations with 0
+    binIds.forEach(binId => {
+      stockItemIds.forEach(itemId => {
         const key = `${itemId}-${binId}`;
-        results[key] = new Decimal(item.countedQuantity || 0);
+        results[key] = new Decimal(0);
+      });
+    });
+
+    // Step 2: Apply inventory counts (most recent per bin)
+    console.log('📈 Applying inventory counts...');
+    const latestCountsByBin: { [binId: string]: any } = {};
+
+    data.counts?.forEach((count: any) => {
+      const binId = count.bin?._id;
+      if (!binId) return;
+
+      const countDate = new Date(count.countDate);
+      if (!latestCountsByBin[binId] || countDate > new Date(latestCountsByBin[binId].countDate)) {
+        latestCountsByBin[binId] = count;
       }
     });
-  });
 
-  // Step 3: Apply transactions in chronological order
-  data.transactions.forEach((tx: any) => {
-    const txDate = new Date(tx.receiptDate || tx.dispatchDate || tx.transferDate || tx.adjustmentDate);
+    Object.entries(latestCountsByBin).forEach(([binId, count]: [string, any]) => {
+      count.countedItems?.forEach((item: any) => {
+        const itemId = item.stockItem?._id;
+        if (itemId && stockItemIds.includes(itemId)) {
+          const key = `${itemId}-${binId}`;
+          results[key] = new Decimal(item.countedQuantity || 0);
+          console.log(`  📝 Set ${key} = ${item.countedQuantity} from inventory count`);
+        }
+      });
+    });
 
-    const processTransaction = (item: any, binId: string, quantityChange: number) => {
-      if (!binId || !item || !item.stockItem?._id) return;
-      const key = `${item.stockItem._id}-${binId}`;
+    // Step 3: Apply Goods Receipts (ADD stock)
+    console.log('📥 Applying goods receipts...');
+    data.goodsReceipts?.forEach((receipt: any, index: number) => {
+      const binId = receipt.receivingBin?._id;
+      if (!binId) return;
 
-      // Check if the key exists before attempting to use it
-      if (!results[key]) {
-        results[key] = new Decimal(0);
+      receipt.receivedItems?.forEach((item: any) => {
+        const itemId = item.stockItem?._id;
+        if (itemId && stockItemIds.includes(itemId)) {
+          const key = `${itemId}-${binId}`;
+          const quantity = item.receivedQuantity || 0;
+          results[key] = results[key].plus(new Decimal(quantity));
+          console.log(`  ${index + 1}. +${quantity} to ${key} (GoodsReceipt: ${receipt._id})`);
+        }
+      });
+    });
+
+    // Step 4: Apply Dispatches (SUBTRACT stock)
+    console.log('📤 Applying dispatches...');
+    data.dispatches?.forEach((dispatch: any, index: number) => {
+      const binId = dispatch.sourceBin?._id;
+      if (!binId) return;
+
+      dispatch.dispatchedItems?.forEach((item: any) => {
+        const itemId = item.stockItem?._id;
+        if (itemId && stockItemIds.includes(itemId)) {
+          const key = `${itemId}-${binId}`;
+          const quantity = item.dispatchedQuantity || 0;
+          results[key] = results[key].minus(new Decimal(quantity));
+          console.log(`  ${index + 1}. -${quantity} from ${key} (Dispatch: ${dispatch._id})`);
+        }
+      });
+    });
+
+    // Step 5: Apply Transfers (MOVE stock between bins)
+    console.log('🔄 Applying transfers...');
+    data.transfers?.forEach((transfer: any, index: number) => {
+      const fromBinId = transfer.fromBin?._id;
+      const toBinId = transfer.toBin?._id;
+
+      transfer.transferredItems?.forEach((item: any) => {
+        const itemId = item.stockItem?._id;
+        const quantity = item.transferredQuantity || 0;
+
+        // Remove from source bin
+        if (fromBinId && itemId && stockItemIds.includes(itemId)) {
+          const fromKey = `${itemId}-${fromBinId}`;
+          results[fromKey] = results[fromKey].minus(new Decimal(quantity));
+          console.log(`  ${index + 1}. -${quantity} from ${fromKey} (Transfer out: ${transfer._id})`);
+        }
+
+        // Add to destination bin
+        if (toBinId && itemId && stockItemIds.includes(itemId)) {
+          const toKey = `${itemId}-${toBinId}`;
+          results[toKey] = results[toKey].plus(new Decimal(quantity));
+          console.log(`  ${index + 1}. +${quantity} to ${toKey} (Transfer in: ${transfer._id})`);
+        }
+      });
+    });
+
+    // Step 6: Convert to positive numbers and return
+    const finalResults: { [key: string]: number } = {};
+    for (const key in results) {
+      finalResults[key] = Math.max(0, results[key].toNumber());
+      if (finalResults[key] > 0) {
+        console.log(`📊 Final stock for ${key}: ${finalResults[key]}`);
       }
-
-      results[key] = results[key].plus(new Decimal(quantityChange));
-    };
-
-    switch (tx._type) {
-      case 'GoodsReceipt':
-        // Goods received into a bin
-        tx.receivedItems?.forEach((item: any) => {
-          processTransaction(item, tx.receivingBin?._id, item.receivedQuantity || 0);
-        });
-        break;
-      case 'DispatchLog':
-        // Goods dispatched from a bin
-        tx.dispatchedItems?.forEach((item: any) => {
-          processTransaction(item, tx.sourceBin?._id, -(item.dispatchedQuantity || 0));
-        });
-        break;
-      case 'InternalTransfer':
-        // Transfers between bins
-        tx.transferredItems?.forEach((item: any) => {
-          // Remove from source bin
-          processTransaction(item, tx.fromBin?._id, -(item.transferredQuantity || 0));
-          // Add to destination bin
-          processTransaction(item, tx.toBin?._id, item.transferredQuantity || 0);
-        });
-        break;
-      case 'StockAdjustment':
-        // Stock adjustments (positive or negative)
-        tx.adjustedItems?.forEach((item: any) => {
-          const quantity = item.adjustedQuantity || 0;
-          processTransaction(item, tx.bin?._id, quantity);
-        });
-        break;
     }
-  });
 
-  // Step 4: Convert to numbers
-  const finalResults: { [key: string]: number } = {};
-  for (const key in results) {
-    finalResults[key] = Math.max(0, results[key].toNumber());
+    console.log('✅ calculateBulkStock complete');
+    console.log('📈 Results summary:', {
+      totalCombinations: Object.keys(finalResults).length,
+      nonZeroResults: Object.values(finalResults).filter(v => v > 0).length,
+      allResults: finalResults
+    });
+
+    return finalResults;
+
+  } catch (error) {
+    console.error('❌ Error in calculateBulkStock:', error);
+    if (error instanceof Error) {
+      console.error('Stack trace:', error.stack);
+    }
+    return {};
   }
-  return finalResults;
 };
 
-// Add this function to src/lib/stockCalculations.ts
 export const getBinStock = async (stockItemIds: string[], binId: string): Promise<{ [key: string]: number }> => {
+  console.log(`📊 Getting bin stock for ${stockItemIds.length} items in bin ${binId}`);
+
   if (!binId || stockItemIds.length === 0) {
     return {};
   }
 
   const results = await calculateBulkStock(stockItemIds, [binId]);
 
-  // Convert the key format from "itemId-binId" to just "itemId"
+  // Simplify results
   const simplifiedResults: { [key: string]: number } = {};
+  let foundItems = 0;
 
   stockItemIds.forEach(itemId => {
     const compositeKey = `${itemId}-${binId}`;
-    simplifiedResults[itemId] = results[compositeKey] || 0;
+    const quantity = results[compositeKey] || 0;
+    if (quantity > 0) {
+      foundItems++;
+      console.log(`  ✅ ${itemId}: ${quantity}`);
+    }
+    simplifiedResults[itemId] = quantity;
   });
 
+  console.log(`✅ Found stock for ${foundItems}/${stockItemIds.length} items`);
   return simplifiedResults;
 };
