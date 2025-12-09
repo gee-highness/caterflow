@@ -86,8 +86,10 @@ import dynamic from 'next/dynamic';
 
 
 interface CurrencyIconProps extends TextProps {
-	// You can add specific props here if needed in the future
+	// Add at least one member
+	_?: never;
 }
+
 const CurrencyIcon = (props: CurrencyIconProps) => {
 	// Returns the standard symbol for emalangeni: "E"
 	return <Text as="span" fontWeight="bold" {...props}>E</Text>;
@@ -1461,7 +1463,7 @@ interface DateRangeModalProps {
 	onDateRangeChange: (range: [Date | null, Date | null]) => void;
 }
 
-export const DateRangeModal = ({
+const DateRangeModal = ({
 	isOpen,
 	onClose,
 	dateRange,

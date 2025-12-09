@@ -159,7 +159,23 @@ export default function TransferModal({ isOpen, onClose, transfer, onSave }: Tra
                 console.log(`🔄 Refreshing stock levels for ${idsToFetch.length} items in bin ${binId}`);
                 const stockData = await getBinStock(idsToFetch, binId);
                 console.log('✅ Stock levels refreshed:', stockData);
-                setStockLevels(stockData);
+
+                // Convert the stock data to match the expected type
+                const simplifiedStockData: { [key: string]: number } = {};
+                Object.keys(stockData).forEach(key => {
+                    if (typeof stockData[key] === 'object' && stockData[key] !== null) {
+                        // If it's an object with a quantity property, extract just the quantity
+                        simplifiedStockData[key] = (stockData[key] as any).quantity || 0;
+                    } else if (typeof stockData[key] === 'number') {
+                        // If it's already a number, use it directly
+                        simplifiedStockData[key] = stockData[key] as number;
+                    } else {
+                        // Fallback to 0
+                        simplifiedStockData[key] = 0;
+                    }
+                });
+
+                setStockLevels(simplifiedStockData);
             } else {
                 console.log('ℹ️ No items to refresh stock for');
                 setStockLevels({});

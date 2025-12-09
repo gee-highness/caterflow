@@ -1,5 +1,5 @@
 // src/components/BinCountModal.tsx
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
     Modal,
     ModalOverlay,
@@ -228,7 +228,7 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
     }, [isOpen]);
 
     // Add this function inside the BinCountModal component
-    const loadAllStockItems = async () => {
+    const loadAllStockItems = useCallback(async () => {
         if (!selectedBin || binCount) return; // Only for new counts with selected bin
 
         setLoading(true);
@@ -301,7 +301,7 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
         } finally {
             setLoading(false);
         }
-    };
+    }, [selectedBin, binCount, toast]);
 
 
     // Update the useEffect that handles bin selection
@@ -314,7 +314,7 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
 
             return () => clearTimeout(timer);
         }
-    }, [selectedBin, binCount]);
+    }, [selectedBin, binCount, loadAllStockItems]);
 
     const fixBrokenBinCount = async (countId: string) => {
         if (isProcessing) return;

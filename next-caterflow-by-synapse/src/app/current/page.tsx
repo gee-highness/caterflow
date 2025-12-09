@@ -322,8 +322,12 @@ export default function CurrentStockPage() {
             const aValue = a[sortConfig.key as keyof CurrentStockItem];
             const bValue = b[sortConfig.key as keyof CurrentStockItem];
 
-            if (aValue < bValue) return sortConfig.direction === 'asc' ? -1 : 1;
-            if (aValue > bValue) return sortConfig.direction === 'asc' ? 1 : -1;
+            // Convert to strings for safe comparison
+            const aStr = String(aValue || '');
+            const bStr = String(bValue || '');
+
+            if (aStr < bStr) return sortConfig.direction === 'asc' ? -1 : 1;
+            if (aStr > bStr) return sortConfig.direction === 'asc' ? 1 : -1;
             return 0;
         });
 

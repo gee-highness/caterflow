@@ -670,150 +670,10 @@ export default function ComprehensiveReportsPage() {
         });
     }, [dateRangeMemo]);
 
-    // Enhanced fetchAllData function with VAT calculations
-    const fetchAllData = useCallback(async (forceRefresh = false) => {
-        setAnalyticsLoading(true);
-        try {
-            console.log('🔄 Starting comprehensive data fetch for analytics with VAT...', { forceRefresh });
 
-            // Clear existing data if forcing refresh
-            if (forceRefresh) {
-                setRawData({});
-                setAnalyticsData(null);
-            }
-
-            // Check if we already have data and don't force refresh
-            if (!forceRefresh && Object.keys(rawData).length > 0 && analyticsData) {
-                console.log('📊 Using cached data, skipping fetch');
-                setAnalyticsLoading(false);
-                return;
-            }
-
-            // FIXED: Use correct API endpoints that exist
-            const endpoints = [
-                '/api/purchase-orders',
-                '/api/goods-receipts',
-                '/api/dispatches',
-                '/api/transfers',
-                '/api/bin-counts',
-                '/api/analytics/stock-values',
-                '/api/low-stock',
-                '/api/suppliers',
-                '/api/users',
-                '/api/sites'
-            ];
-
-            const results = await Promise.allSettled(
-                endpoints.map(async (endpoint) => {
-                    console.log(`📡 Fetching from ${endpoint}...`);
-                    const response = await fetch(endpoint);
-                    if (!response.ok) {
-                        throw new Error(`Failed to fetch ${endpoint}: ${response.status}`);
-                    }
-                    return response.json();
-                })
-            );
-
-            // Process results with error handling
-            const [
-                purchaseOrders, goodsReceipts, dispatches, transfers,
-                binCounts, stockValues, lowStock, suppliers, users, sites
-            ] = results.map((result, index) => {
-                if (result.status === 'fulfilled') {
-                    const data = result.value;
-                    console.log(`✅ Successfully fetched from ${endpoints[index]}:`, data?.length || 'data received');
-                    return data;
-                } else {
-                    console.error(`❌ Failed to fetch from ${endpoints[index]}:`, result.reason);
-                    return [];
-                }
-            });
-
-            // Apply VAT calculations to data
-            const purchaseOrdersWithVAT = calculatePurchaseOrderVAT(purchaseOrders || []);
-            const goodsReceiptsWithVAT = calculateGoodsReceiptVAT(goodsReceipts || []);
-            const dispatchesWithVAT = calculateDispatchVAT(dispatches || []);
-            const inventoryWithVAT = calculateInventoryVAT(stockValues?.items || stockValues || []);
-
-            // Validate we have at least some data
-            const totalDataItems = [
-                purchaseOrders, goodsReceipts, dispatches, transfers,
-                binCounts, stockValues, lowStock, suppliers, users, sites
-            ].reduce((sum, data) => sum + (data?.length || 0), 0);
-
-            if (totalDataItems === 0) {
-                console.warn('⚠️ No data received from any API endpoint');
-                toast({
-                    title: 'No Data Available',
-                    description: 'No data was returned from the server. Please check your connection.',
-                    status: 'warning',
-                    duration: 5000,
-                    isClosable: true,
-                });
-                return;
-            }
-
-            // Store raw data for export (with VAT calculations)
-            const newRawData = {
-                purchaseOrders: purchaseOrdersWithVAT,
-                goodsReceipts: goodsReceiptsWithVAT,
-                dispatches: dispatchesWithVAT,
-                transfers: transfers || [],
-                binCounts: binCounts || [],
-                stockItems: inventoryWithVAT.items,
-                lowStock: lowStock || [],
-                suppliers: suppliers || [],
-                users: users || [],
-                sites: sites || []
-            };
-
-            setRawData(newRawData);
-
-            // Process analytics data with VAT
-            const analytics = await processAnalyticsData({
-                purchaseOrders: purchaseOrdersWithVAT,
-                goodsReceipts: goodsReceiptsWithVAT,
-                dispatches: dispatchesWithVAT,
-                transfers: transfers || [],
-                binCounts: binCounts || [],
-                stockValues: {
-                    items: inventoryWithVAT.items,
-                    summary: {
-                        totalInventoryValue: inventoryWithVAT.items.reduce((sum: number, item: any) =>
-                            sum + ((item.currentStock || 0) * (item.unitPrice || 0)), 0
-                        ),
-                        totalVAT: inventoryWithVAT.totalVAT
-                    }
-                },
-                lowStock: lowStock || [],
-                suppliers: suppliers || [],
-                users: users || [],
-                sites: sites || []
-            }, dateRangeMemo);
-
-            setAnalyticsData(analytics);
-            console.log('✅ Analytics data with VAT processed successfully');
-
-        } catch (error) {
-            console.error('❌ Error fetching analytics data:', error);
-            toast({
-                title: 'Error Loading Data',
-                description: 'Failed to load analytics data from server',
-                status: 'error',
-                duration: 5000,
-                isClosable: true,
-            });
-        } finally {
-            setAnalyticsLoading(false);
-        }
-    }, [toast, rawData, analyticsData, dateRangeMemo, calculatePurchaseOrderVAT, calculateGoodsReceiptVAT, calculateDispatchVAT, calculateInventoryVAT]);
-
-    const handleUpdateAnalytics = () => {
-        fetchAllData(true);
-    };
 
     // SIMPLIFIED opening stock calculation - using current stock as fallback
-    const calculateOpeningStockForDate = async (
+    const calculateOpeningStockForDate = useCallback(async (
         targetDate: Date,
         currentStockItems: any[],
         allGoodsReceipts: any[],
@@ -847,10 +707,12 @@ export default function ComprehensiveReportsPage() {
             console.warn('⚠️ Using fallback opening stock value:', fallbackValue);
             return fallbackValue;
         }
-    };
+    }, []); // No dependencies needed as it only uses parameters
+
 
     // UPDATED processAnalyticsData function with VAT calculations
-    const processAnalyticsData = async (data: any, dateRange: { start: Date; end: Date }): Promise<EnhancedAnalyticsData> => {
+    const processAnalyticsData = useCallback(async (data: any, dateRange: { start: Date; end: Date }): Promise<EnhancedAnalyticsData> => {
+
 
         const {
             purchaseOrders = [],
@@ -1338,7 +1200,153 @@ export default function ComprehensiveReportsPage() {
                 }
             }
         };
+    }, [filterDataByDateRange, calculateOpeningStockForDate]); // Add dependencies here
+
+
+    // Enhanced fetchAllData function with VAT calculations
+    const fetchAllData = useCallback(async (forceRefresh = false) => {
+        setAnalyticsLoading(true);
+        try {
+            console.log('🔄 Starting comprehensive data fetch for analytics with VAT...', { forceRefresh });
+
+            // Clear existing data if forcing refresh
+            if (forceRefresh) {
+                setRawData({});
+                setAnalyticsData(null);
+            }
+
+            // Check if we already have data and don't force refresh
+            if (!forceRefresh && Object.keys(rawData).length > 0 && analyticsData) {
+                console.log('📊 Using cached data, skipping fetch');
+                setAnalyticsLoading(false);
+                return;
+            }
+
+            // FIXED: Use correct API endpoints that exist
+            const endpoints = [
+                '/api/purchase-orders',
+                '/api/goods-receipts',
+                '/api/dispatches',
+                '/api/transfers',
+                '/api/bin-counts',
+                '/api/analytics/stock-values',
+                '/api/low-stock',
+                '/api/suppliers',
+                '/api/users',
+                '/api/sites'
+            ];
+
+            const results = await Promise.allSettled(
+                endpoints.map(async (endpoint) => {
+                    console.log(`📡 Fetching from ${endpoint}...`);
+                    const response = await fetch(endpoint);
+                    if (!response.ok) {
+                        throw new Error(`Failed to fetch ${endpoint}: ${response.status}`);
+                    }
+                    return response.json();
+                })
+            );
+
+            // Process results with error handling
+            const [
+                purchaseOrders, goodsReceipts, dispatches, transfers,
+                binCounts, stockValues, lowStock, suppliers, users, sites
+            ] = results.map((result, index) => {
+                if (result.status === 'fulfilled') {
+                    const data = result.value;
+                    console.log(`✅ Successfully fetched from ${endpoints[index]}:`, data?.length || 'data received');
+                    return data;
+                } else {
+                    console.error(`❌ Failed to fetch from ${endpoints[index]}:`, result.reason);
+                    return [];
+                }
+            });
+
+            // Apply VAT calculations to data
+            const purchaseOrdersWithVAT = calculatePurchaseOrderVAT(purchaseOrders || []);
+            const goodsReceiptsWithVAT = calculateGoodsReceiptVAT(goodsReceipts || []);
+            const dispatchesWithVAT = calculateDispatchVAT(dispatches || []);
+            const inventoryWithVAT = calculateInventoryVAT(stockValues?.items || stockValues || []);
+
+            // Validate we have at least some data
+            const totalDataItems = [
+                purchaseOrders, goodsReceipts, dispatches, transfers,
+                binCounts, stockValues, lowStock, suppliers, users, sites
+            ].reduce((sum, data) => sum + (data?.length || 0), 0);
+
+            if (totalDataItems === 0) {
+                console.warn('⚠️ No data received from any API endpoint');
+                toast({
+                    title: 'No Data Available',
+                    description: 'No data was returned from the server. Please check your connection.',
+                    status: 'warning',
+                    duration: 5000,
+                    isClosable: true,
+                });
+                return;
+            }
+
+            // Store raw data for export (with VAT calculations)
+            const newRawData = {
+                purchaseOrders: purchaseOrdersWithVAT,
+                goodsReceipts: goodsReceiptsWithVAT,
+                dispatches: dispatchesWithVAT,
+                transfers: transfers || [],
+                binCounts: binCounts || [],
+                stockItems: inventoryWithVAT.items,
+                lowStock: lowStock || [],
+                suppliers: suppliers || [],
+                users: users || [],
+                sites: sites || []
+            };
+
+            setRawData(newRawData);
+
+            // Process analytics data with VAT
+            const analytics = await processAnalyticsData({
+                purchaseOrders: purchaseOrdersWithVAT,
+                goodsReceipts: goodsReceiptsWithVAT,
+                dispatches: dispatchesWithVAT,
+                transfers: transfers || [],
+                binCounts: binCounts || [],
+                stockValues: {
+                    items: inventoryWithVAT.items,
+                    summary: {
+                        totalInventoryValue: inventoryWithVAT.items.reduce((sum: number, item: any) =>
+                            sum + ((item.currentStock || 0) * (item.unitPrice || 0)), 0
+                        ),
+                        totalVAT: inventoryWithVAT.totalVAT
+                    }
+                },
+                lowStock: lowStock || [],
+                suppliers: suppliers || [],
+                users: users || [],
+                sites: sites || []
+            }, dateRangeMemo);
+
+            setAnalyticsData(analytics);
+            console.log('✅ Analytics data with VAT processed successfully');
+
+        } catch (error) {
+            console.error('❌ Error fetching analytics data:', error);
+            toast({
+                title: 'Error Loading Data',
+                description: 'Failed to load analytics data from server',
+                status: 'error',
+                duration: 5000,
+                isClosable: true,
+            });
+        } finally {
+            setAnalyticsLoading(false);
+        }
+    }, [toast, rawData, analyticsData, dateRangeMemo, calculatePurchaseOrderVAT, calculateGoodsReceiptVAT, calculateDispatchVAT, calculateInventoryVAT, processAnalyticsData]);
+
+    const handleUpdateAnalytics = () => {
+        fetchAllData(true);
     };
+
+
+
 
     // Smart auto-fit columns function that calculates optimal widths
     const autoFitColumns = (worksheet: any) => {
@@ -1410,7 +1418,7 @@ export default function ComprehensiveReportsPage() {
     };
 
     // Helper function to create formatted Executive Summary with VAT
-    const createFormattedSummaryData = () => {
+    const createFormattedSummaryData = useCallback(() => {
         return [
             // HEADER SECTION WITH DATES (ONLY IN EXECUTIVE SUMMARY)
             ['CATERFLOW COMPREHENSIVE REPORT', ''],
@@ -1457,10 +1465,10 @@ export default function ComprehensiveReportsPage() {
             ['Gross Profit After VAT', analyticsData?.financial.grossProfitAfterVAT || 0],
             ['Profit Percentage', analyticsData?.financial.profitPercentage || 0]
         ];
-    };
+    }, [primaryDateRange, analyticsData]);
 
     // Helper function to create formatted Analytics Data with VAT
-    const createFormattedAnalyticsData = () => {
+    const createFormattedAnalyticsData = useCallback(() => {
         return [
             // HEADER
             ['ANALYTICS DATA DASHBOARD', ''],
@@ -1526,10 +1534,10 @@ export default function ComprehensiveReportsPage() {
             ['VAT Rate', `${VAT_CONFIG.ratePercentage}% (Eswatini)`],
             ['', '']
         ];
-    };
+    }, [primaryDateRange, analyticsData]);
 
     // Helper function to create formatted Sales Summary with VAT
-    const createFormattedSalesSummaryData = (dispatches: any[]) => {
+    const createFormattedSalesSummaryData = useCallback((dispatches: any[]) => {
         if (!dispatches || dispatches.length === 0) {
             return [
                 ['SALES SUMMARY REPORT', ''],
@@ -1670,7 +1678,7 @@ export default function ComprehensiveReportsPage() {
             ['Sales Efficiency', '', ...allDates.map(() => ''), '', '', '95%'],
             ['VAT Rate Applied', '', ...allDates.map(() => ''), '', '', `${VAT_CONFIG.ratePercentage}%`]
         ];
-    };
+    }, [filterDataByDateRange, analyticsData]);
 
     // FULL MULTI-SHEET EXCEL EXPORT FUNCTION WITH VAT
     const exportToExcel = useCallback(async () => {
@@ -1968,7 +1976,7 @@ export default function ComprehensiveReportsPage() {
         } finally {
             setExportLoading(false);
         }
-    }, [analyticsData, rawData, toast, fetchAllData, primaryDateRange, filterDataByDateRange]);
+    }, [analyticsData, rawData, toast, fetchAllData, primaryDateRange, filterDataByDateRange, createFormattedAnalyticsData, createFormattedSalesSummaryData, createFormattedSummaryData]);
 
     // ========== OLD REPORTS FUNCTIONS ==========
     // (Keeping all original old reports functionality with VAT columns added)

@@ -220,7 +220,7 @@ setInterval(cleanupSnapshotCache, 60000);
 const getStockSnapshot = async (stockItemId: string, binId: string): Promise<number> => {
   const cacheKey = `${stockItemId}-${binId}`;
 
-  // Check cache first with confidence check (OptimizedSnapshotCache handles TTL)
+  // Check cache first
   const cached = snapshotCache.get(cacheKey);
   if (cached) {
     // If confidence is low, refresh in background
@@ -244,30 +244,29 @@ const getStockSnapshot = async (stockItemId: string, binId: string): Promise<num
 
     if (snapshot) {
       const quantity = snapshot.quantity || 0;
-      // Determine cache confidence based on transaction count
       const confidence = snapshot.transactionCount > 10 ? 'high' :
         snapshot.transactionCount > 0 ? 'medium' : 'low';
 
-      // Use new snapshotCache.set signature
       snapshotCache.set(cacheKey, quantity, { confidence, transactionCount: snapshot.transactionCount });
       return quantity;
     }
 
     // No snapshot exists - calculate from transactions
     const calculatedStock = await calculateStockFromTransactions(stockItemId, binId, false);
-
-    // Set low confidence for newly calculated snapshots
     snapshotCache.set(cacheKey, calculatedStock, { confidence: 'low' });
-
     return calculatedStock;
+
   } catch (error) {
     console.error('Error getting stock snapshot:', error);
-    // Return cached value if available, even if stale (OptimizedSnapshotCache.get() handles staleness internally)
-    if (cached) {
+
+    // Try to get any cached value (even if we didn't find it earlier)
+    const fallbackCache = snapshotCache.get(cacheKey);
+    if (fallbackCache) {
       // Mark as low confidence due to error
-      snapshotCache.set(cacheKey, cached.quantity, { confidence: 'low' });
-      return cached.quantity;
+      snapshotCache.set(cacheKey, fallbackCache.quantity, { confidence: 'low' });
+      return fallbackCache.quantity;
     }
+
     return 0;
   }
 };
@@ -418,8 +417,11 @@ const calculateStockFromTransactions = async (
 
     if (verbose) {
       console.log(`✅ Calculated stock for ${data.itemDetails?.name || stockItemId} in ${binId}: ${stock} (${transactionCount} transactions, ${duration}ms)`);
-      if (lastInventoryCountDate) {
-        console.log(`   📅 Last inventory count: ${lastInventoryCountDate.toISOString().split('T')[0]} (${lastInventoryCountStock})`);
+
+      // Check if we have both a date and stock value for inventory count
+      const hasLastInventoryCount = lastInventoryCountDate !== null && lastInventoryCountStock !== null;
+      if (hasLastInventoryCount) {
+        console.log(`   📅 Last inventory count: ${lastInventoryCountDate!.toISOString().split('T')[0]} (${lastInventoryCountStock!})`);
       }
     }
 
