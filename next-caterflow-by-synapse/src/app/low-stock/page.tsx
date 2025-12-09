@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
     Box,
     Heading,
@@ -26,9 +26,28 @@ import {
     InputGroup,
     InputLeftElement,
     Input,
+    Progress,
+    Alert,
+    AlertIcon,
+    AlertTitle,
+    AlertDescription,
+    SimpleGrid,
+    Skeleton,
+    Tooltip,
+    Menu,
+    MenuButton,
+    MenuList,
+    MenuItem,
+    MenuDivider,
+    Tabs,
+    TabList,
+    Tab,
+    TabPanels,
+    TabPanel,
 } from '@chakra-ui/react';
 import { useSession } from 'next-auth/react'
-import { FiPlusCircle, FiArrowLeft, FiArrowRight, FiSearch, FiRefreshCw } from 'react-icons/fi';
+import { FiPlusCircle, FiArrowLeft, FiArrowRight, FiSearch, FiRefreshCw, FiFilter, FiDownload, FiAlertTriangle, FiInfo } from 'react-icons/fi';
+import { MdOutlineLowPriority } from 'react-icons/md';
 import DataTable, { Column } from '@/components/DataTable';
 import CreatePurchaseOrderModal from '@/app/actions/CreatePurchaseOrderModal';
 import { Site, Supplier, StockItem } from '@/lib/sanityTypes';
@@ -44,6 +63,8 @@ interface LowStockItem extends StockItem {
     stockStatus: 'in-stock' | 'low-stock' | 'out-of-stock';
     orderQuantity: number;
     selected: boolean;
+    priority: 'critical' | 'high' | 'medium' | 'low';
+    daysUntilOut: number | null;
 }
 
 interface OrderItem {
@@ -51,12 +72,6 @@ interface OrderItem {
     supplier: string;
     orderedQuantity: number;
     unitPrice: number;
-}
-
-// Define a compatible interface for the PurchaseOrderModal
-interface PurchaseOrderGroup {
-    supplierId: string;
-    items: StockItem[];
 }
 
 export default function LowStockPage() {
@@ -75,9 +90,17 @@ export default function LowStockPage() {
     const [selectedSiteId, setSelectedSiteId] = useState<string | null>(null);
     const [selectedItems, setSelectedItems] = useState<LowStockItem[]>([]);
     const [searchTerm, setSearchTerm] = useState('');
+    const [progress, setProgress] = useState({ stage: 'Starting...', percentage: 0 });
+    const [calculationMetrics, setCalculationMetrics] = useState<{
+        duration: number;
+        itemsProcessed: number;
+        fromCache: number;
+    } | null>(null);
     const { isOpen, onOpen, onClose } = useDisclosure();
     const toast = useToast();
     const sitesContainerRef = useRef<HTMLDivElement>(null);
+    const [filterPriority, setFilterPriority] = useState<string>('all');
+    const [activeTab, setActiveTab] = useState(0); // 0: All, 1: Critical, 2: Out of Stock
 
     // Theming props
     const bgPrimary = useColorModeValue('neutral.light.bg-primary', 'neutral.dark.bg-primary');
@@ -85,16 +108,25 @@ export default function LowStockPage() {
     const secondaryTextColor = useColorModeValue('neutral.light.text-secondary', 'neutral.dark.text-secondary');
     const borderColor = useColorModeValue('neutral.light.border-color', 'neutral.dark.border-color');
     const errorColor = useColorModeValue('red.500', 'red.300');
+    const successColor = useColorModeValue('green.500', 'green.300');
+    const warningColor = useColorModeValue('orange.500', 'orange.300');
     const bgCard = useColorModeValue('neutral.light.bg-card', 'neutral.dark.bg-card');
 
-    // Calculate stock for low stock items using the same logic as Current Stock page
+    // Calculate stock for low stock items with progress tracking
     const calculateStockForSite = useCallback(async (siteId: string | null) => {
         setIsLoading(true);
+        setIsRefreshing(true);
         setError(null);
+        setProgress({ stage: 'Starting calculation...', percentage: 0 });
+        setCalculationMetrics(null);
+
+        const startTime = Date.now();
+
         try {
             console.log('🔄 Starting low stock calculation for site:', siteId || 'All sites');
 
             // Fetch all stock items
+            setProgress({ stage: 'Fetching stock items...', percentage: 10 });
             console.log('📦 Fetching all stock items...');
             const stockItemsResponse = await fetch('/api/stock-items');
             if (!stockItemsResponse.ok) {
@@ -107,10 +139,12 @@ export default function LowStockPage() {
                 console.log('⚠️ No stock items found');
                 setLowStockItems([]);
                 setIsLoading(false);
+                setIsRefreshing(false);
                 return;
             }
 
             // Fetch bins for the selected site (or all bins if no site selected)
+            setProgress({ stage: 'Fetching bins...', percentage: 20 });
             const binsEndpoint = siteId ? `/api/bins?siteId=${siteId}` : '/api/bins';
             console.log('🗄️ Fetching bins from:', binsEndpoint);
             const binsResponse = await fetch(binsEndpoint);
@@ -125,6 +159,7 @@ export default function LowStockPage() {
                 console.log('⚠️ No bins found for site:', siteId);
                 setLowStockItems([]);
                 setIsLoading(false);
+                setIsRefreshing(false);
                 return;
             }
 
@@ -132,12 +167,18 @@ export default function LowStockPage() {
             const stockItemIds = stockItems.map(item => item._id);
             console.log('🔢 Calculating stock for', stockItemIds.length, 'items across', binIds.length, 'bins');
 
-            // Calculate current stock for all items in all bins in one go
+            // Calculate current stock for all items in all bins with progress tracking
+            setProgress({ stage: 'Calculating current stock...', percentage: 30 });
             console.log('🧮 Starting bulk stock calculation...');
-            const stockResults = await calculateBulkStock(stockItemIds, binIds);
+
+            const stockResults = await calculateBulkStock(stockItemIds, binIds, (progressUpdate) => {
+                setProgress(progressUpdate);
+            });
+
             console.log('✅ Bulk stock calculation complete. Results:', Object.keys(stockResults).length, 'item-bin pairs');
 
             // Process results and aggregate stock by item (sum across all bins)
+            setProgress({ stage: 'Processing results...', percentage: 80 });
             console.log('📊 Processing results and aggregating stock by item...');
             const itemsWithCalculatedStock: LowStockItem[] = [];
             const itemStockMap: { [itemId: string]: { totalStock: number, bins: any[] } } = {};
@@ -184,6 +225,15 @@ export default function LowStockPage() {
                         stockStatus = 'in-stock';
                     }
 
+                    // Calculate priority based on urgency
+                    const criticality = currentStock === 0 ? 'critical' :
+                        currentStock <= (item.minimumStockLevel * 0.3) ? 'high' :
+                            currentStock <= (item.minimumStockLevel * 0.7) ? 'medium' : 'low';
+
+                    // Estimate days until out of stock (simple calculation)
+                    const daysUntilOut = currentStock > 0 ?
+                        Math.floor(currentStock / (item.averageDailyUsage || 1)) : 0;
+
                     itemsWithCalculatedStock.push({
                         ...item,
                         currentStock,
@@ -192,12 +242,36 @@ export default function LowStockPage() {
                         binName: primaryBin?.name || "Unknown bin",
                         orderQuantity: item.reorderQuantity || 1,
                         selected: false,
+                        priority: criticality,
+                        daysUntilOut
                     });
                 }
             });
 
+            // Sort by priority (critical first)
+            itemsWithCalculatedStock.sort((a, b) => {
+                const priorityOrder = { critical: 0, high: 1, medium: 2, low: 3 };
+                return priorityOrder[a.priority] - priorityOrder[b.priority];
+            });
+
+            const duration = Date.now() - startTime;
+            setCalculationMetrics({
+                duration,
+                itemsProcessed: itemsWithCalculatedStock.length,
+                fromCache: 0 // Could be enhanced to track actual cache hits
+            });
+
             console.log('✅ Low stock calculation complete. Low stock items found:', itemsWithCalculatedStock.length);
             setLowStockItems(itemsWithCalculatedStock);
+
+            // Show success toast with metrics
+            toast({
+                title: 'Stock calculation complete',
+                description: `Found ${itemsWithCalculatedStock.length} low stock items in ${duration}ms`,
+                status: 'success',
+                duration: 3000,
+                isClosable: true,
+            });
 
         } catch (err: any) {
             console.error('❌ Error calculating low stock:', err);
@@ -210,6 +284,7 @@ export default function LowStockPage() {
                 isClosable: true,
             });
         } finally {
+            setProgress({ stage: 'Complete', percentage: 100 });
             setIsLoading(false);
             setIsRefreshing(false);
             console.log('🏁 Low stock calculation finished');
@@ -218,6 +293,7 @@ export default function LowStockPage() {
 
     const fetchSuppliers = async () => {
         try {
+            setProgress({ stage: 'Fetching suppliers...', percentage: 0 });
             const response = await fetch('/api/suppliers');
             if (!response.ok) {
                 throw new Error('Failed to fetch suppliers');
@@ -252,7 +328,7 @@ export default function LowStockPage() {
         }
     }, [isAuthReady, isAuthenticated, selectedSiteId, calculateStockForSite]);
 
-    // Filter items based on search term
+    // Filter items based on search term and active filters
     useEffect(() => {
         let filtered = lowStockItems.filter(item => {
             if (!searchTerm) return true;
@@ -266,8 +342,25 @@ export default function LowStockPage() {
             );
         });
 
+        // Apply priority filter
+        if (filterPriority !== 'all') {
+            filtered = filtered.filter(item => item.priority === filterPriority);
+        }
+
+        // Apply tab filter
+        switch (activeTab) {
+            case 1: // Critical
+                filtered = filtered.filter(item => item.priority === 'critical');
+                break;
+            case 2: // Out of Stock
+                filtered = filtered.filter(item => item.stockStatus === 'out-of-stock');
+                break;
+            default: // All
+                break;
+        }
+
         setFilteredItems(filtered);
-    }, [lowStockItems, searchTerm]);
+    }, [lowStockItems, searchTerm, filterPriority, activeTab]);
 
     const handleSiteClick = (siteId: string) => {
         console.log('📍 Site selected:', siteId);
@@ -390,16 +483,33 @@ export default function LowStockPage() {
         setSelectedItems(isSelected ? [...lowStockItems] : []);
     };
 
-    const getStockStatusColor = (currentStock: number, minimumStockLevel: number) => {
+    const getStockStatusColor = (priority: string, currentStock: number) => {
         if (currentStock === 0) return 'red';
-        if (currentStock <= minimumStockLevel) return 'orange';
+        if (priority === 'critical') return 'red';
+        if (priority === 'high') return 'orange';
+        if (priority === 'medium') return 'yellow';
         return 'green';
     };
 
-    const getStockStatusText = (currentStock: number, minimumStockLevel: number) => {
+    const getStockStatusText = (priority: string, currentStock: number) => {
         if (currentStock === 0) return 'Out of Stock';
-        if (currentStock <= minimumStockLevel) return 'Low Stock';
-        return 'In Stock';
+        if (priority === 'critical') return 'Critical';
+        if (priority === 'high') return 'High Priority';
+        if (priority === 'medium') return 'Medium Priority';
+        return 'Low Priority';
+    };
+
+    const getPriorityIcon = (priority: string) => {
+        switch (priority) {
+            case 'critical':
+                return <Badge colorScheme="red" variant="solid">Critical</Badge>;
+            case 'high':
+                return <Badge colorScheme="orange" variant="subtle">High</Badge>;
+            case 'medium':
+                return <Badge colorScheme="yellow" variant="outline">Medium</Badge>;
+            default:
+                return <Badge colorScheme="gray" variant="outline">Low</Badge>;
+        }
     };
 
     const columns: Column[] = [
@@ -433,18 +543,40 @@ export default function LowStockPage() {
             isSortable: true,
         },
         {
+            accessorKey: 'priority',
+            header: 'Priority',
+            isSortable: true,
+            cell: (row: LowStockItem) => (
+                <Flex align="center" gap={2}>
+                    {getPriorityIcon(row.priority)}
+                    {row.daysUntilOut !== null && row.daysUntilOut > 0 && (
+                        <Tooltip label={`Estimated ${row.daysUntilOut} days until out of stock`}>
+                            <Text fontSize="xs" color={secondaryTextColor}>
+                                ({row.daysUntilOut}d)
+                            </Text>
+                        </Tooltip>
+                    )}
+                </Flex>
+            ),
+        },
+        {
             accessorKey: 'currentStock',
             header: 'Current Stock',
             isSortable: true,
-            cell: (row) => (
-                <Flex align="center">
+            cell: (row: LowStockItem) => (
+                <Flex align="center" gap={2}>
                     <Badge
-                        colorScheme={getStockStatusColor(row.currentStock, row.minimumStockLevel)}
-                        mr={2}
+                        colorScheme={getStockStatusColor(row.priority, row.currentStock)}
+                        variant="subtle"
+                        px={2}
+                        py={1}
                     >
-                        {getStockStatusText(row.currentStock, row.minimumStockLevel)}
+                        {getStockStatusText(row.priority, row.currentStock)}
                     </Badge>
                     <Text fontWeight="bold">{row.currentStock}</Text>
+                    <Text fontSize="sm" color={secondaryTextColor}>
+                        / {row.minimumStockLevel} min
+                    </Text>
                 </Flex>
             ),
         },
@@ -491,10 +623,176 @@ export default function LowStockPage() {
         },
     ];
 
+    const exportLowStockPDF = () => {
+        const sortedItems = [...filteredItems].sort((a, b) =>
+            a.name.localeCompare(b.name)
+        );
+
+        const htmlContent = `
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Low Stock Report</title>
+    <style>
+        body { 
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; 
+            margin: 40px; 
+            color: #151515;
+            background: #F5F7FA;
+        }
+        .header-container {
+            display: flex;
+            align-items: center;
+            margin-bottom: 30px;
+            border-bottom: 2px solid #E2E8F0;
+            padding-bottom: 20px;
+            gap: 20px;
+        }
+        .logo {
+            height: 80px;
+            width: auto;
+            opacity: 0.8;
+        }
+        .header-content {
+            text-align: left;
+            flex-grow: 1;
+        }
+        .header-content h1 { 
+            margin: 0; 
+            color: #FF6B35;
+            font-size: 28px;
+            font-weight: 600;
+        }
+        .priority-critical { background-color: #FED7D7; color: #C53030; }
+        .priority-high { background-color: #FEEBC8; color: #C05621; }
+        .priority-medium { background-color: #FEFCBF; color: #B7791F; }
+        .priority-low { background-color: #E6FFFA; color: #234E52; }
+        .table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            background: #FFFFFF;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05), 0 1px 2px rgba(0,0,0,0.03);
+            border: 1px solid #E2E8F0;
+        }
+        .table th {
+            background-color: #F7FAFC;
+            border: 1px solid #E2E8F0;
+            padding: 12px 16px;
+            text-align: left;
+            font-weight: 600;
+            color: #2D3748;
+            font-size: 14px;
+        }
+        .table td {
+            border: 1px solid #E2E8F0;
+            padding: 12px 16px;
+            color: #4A5568;
+            font-size: 14px;
+        }
+        .table tr:nth-child(even) {
+            background-color: #F7FAFC;
+        }
+        .footer {
+            margin-top: 40px;
+            padding-top: 20px;
+            border-top: 1px solid #E2E8F0;
+            font-size: 12px;
+            color: #718096;
+            text-align: center;
+        }
+        .priority-badge {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        @media print {
+            body { margin: 25px; background: white; }
+            .no-print { display: none; }
+        }
+    </style>
+</head>
+<body>
+    <div class="header-container">
+        <div class="logo-container">
+            <img src="/pdf.png" alt="Caterflow" class="logo" />
+        </div>
+        <div class="header-content">
+            <h1>LOW STOCK REPORT</h1>
+            <p style="font-size: 14px; margin: 5px 0;">Generated on ${new Date().toLocaleDateString()}</p>
+            <p style="font-size: 14px; margin: 5px 0;">Total Low Stock Items: ${sortedItems.length}</p>
+        </div>
+    </div>
+
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Item Name</th>
+                <th>SKU</th>
+                <th>Priority</th>
+                <th>Current Stock</th>
+                <th>Minimum Level</th>
+                <th>Unit</th>
+                <th>Bin Location</th>
+                <th>Site</th>
+            </tr>
+        </thead>
+        <tbody>
+            ${sortedItems.map(item => {
+            const priorityClass = `priority-${item.priority}`;
+            const priorityText = item.priority.charAt(0).toUpperCase() + item.priority.slice(1);
+            return `
+                <tr>
+                    <td><strong>${item.name}</strong></td>
+                    <td>${item.sku || 'N/A'}</td>
+                    <td><span class="priority-badge ${priorityClass}">${priorityText}</span></td>
+                    <td>${item.currentStock}</td>
+                    <td>${item.minimumStockLevel}</td>
+                    <td>${item.unitOfMeasure}</td>
+                    <td>${item.binName}</td>
+                    <td>${item.siteName}</td>
+                </tr>
+                `;
+        }).join('')}
+        </tbody>
+    </table>
+
+    <div class="footer">
+        <p style="margin: 0 0 8px 0;">Generated on ${new Date().toLocaleDateString()} at ${new Date().toLocaleTimeString()}</p>
+        <p style="margin: 0 0 8px 0; color: #FF6B35; font-weight: 600;">⚠️ Immediate action required for critical items</p>
+        <div class="caterflow-brand">
+            <a href="https://synapse-digital.vercel.app/" target="_blank" style="color: #0067FF; text-decoration: none; cursor: pointer;">
+                Caterflow by Synapse
+            </a>
+        </div>
+    </div>
+
+    <div class="no-print" style="text-align: center; margin-top: 20px;">
+        <button onclick="window.print()" style="background: #FF6B35; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer;">
+            Print / Save as PDF
+        </button>
+    </div>
+</body>
+</html>`;
+
+        const exportWindow = window.open('', '_blank');
+        if (exportWindow) {
+            exportWindow.document.write(htmlContent);
+            exportWindow.document.close();
+            exportWindow.document.title = 'Low Stock Report';
+        }
+    };
+
     if (status === 'loading') {
         return (
             <Flex justifyContent="center" alignItems="center" minH="100vh" bg={bgPrimary}>
-                <Spinner size="xl" />
+                <VStack spacing={4}>
+                    <Spinner size="xl" color="brand.500" />
+                    <Text color={primaryTextColor}>Loading low stock data...</Text>
+                </VStack>
             </Flex>
         );
     }
@@ -502,11 +800,32 @@ export default function LowStockPage() {
     return (
         <Box p={{ base: 4, md: 8 }} bg={bgPrimary} minH="100vh">
             <VStack spacing={6} align="stretch">
+                {/* Header with Stats */}
                 <HStack justifyContent="space-between" flexWrap="wrap" gap={4}>
-                    <Heading as="h1" size={{ base: 'xl', md: '2xl' }} color={primaryTextColor}>
-                        Low Stock Items
-                    </Heading>
+                    <VStack align="flex-start" spacing={1}>
+                        <Heading as="h1" size={{ base: 'xl', md: '2xl' }} color={primaryTextColor}>
+                            Low Stock Items
+                        </Heading>
+                        {!isLoading && calculationMetrics && (
+                            <Text fontSize="sm" color={secondaryTextColor}>
+                                Calculated in {calculationMetrics.duration}ms • {calculationMetrics.itemsProcessed} items
+                            </Text>
+                        )}
+                    </VStack>
                     <HStack>
+                        <Menu>
+                            <MenuButton as={Button} leftIcon={<FiFilter />} variant="outline" size="sm">
+                                Filter
+                            </MenuButton>
+                            <MenuList>
+                                <MenuItem onClick={() => setFilterPriority('all')}>All Priorities</MenuItem>
+                                <MenuDivider />
+                                <MenuItem onClick={() => setFilterPriority('critical')}>Critical Only</MenuItem>
+                                <MenuItem onClick={() => setFilterPriority('high')}>High Priority</MenuItem>
+                                <MenuItem onClick={() => setFilterPriority('medium')}>Medium Priority</MenuItem>
+                                <MenuItem onClick={() => setFilterPriority('low')}>Low Priority</MenuItem>
+                            </MenuList>
+                        </Menu>
                         <Button
                             leftIcon={<FiRefreshCw />}
                             onClick={handleRefresh}
@@ -516,6 +835,16 @@ export default function LowStockPage() {
                             size="sm"
                         >
                             Refresh
+                        </Button>
+                        <Button
+                            leftIcon={<FiDownload />}
+                            onClick={exportLowStockPDF}
+                            variant="outline"
+                            colorScheme="brand"
+                            size="sm"
+                            isDisabled={filteredItems.length === 0}
+                        >
+                            Export PDF
                         </Button>
                         <Button
                             colorScheme="brand"
@@ -529,6 +858,28 @@ export default function LowStockPage() {
                     </HStack>
                 </HStack>
 
+                {/* Progress Bar during Calculation */}
+                {(isLoading || isRefreshing) && progress && (
+                    <Card bg={bgCard} borderColor={borderColor} borderWidth="1px">
+                        <CardBody>
+                            <VStack spacing={3} align="stretch">
+                                <Text fontWeight="medium" color={primaryTextColor}>
+                                    {progress.stage}
+                                </Text>
+                                <Progress
+                                    value={progress.percentage}
+                                    colorScheme="brand"
+                                    hasStripe
+                                    isAnimated={progress.percentage < 100}
+                                />
+                                <Text fontSize="sm" color={secondaryTextColor} textAlign="right">
+                                    {progress.percentage}%
+                                </Text>
+                            </VStack>
+                        </CardBody>
+                    </Card>
+                )}
+
                 {/* Search Input */}
                 <InputGroup>
                     <InputLeftElement pointerEvents="none">
@@ -540,8 +891,22 @@ export default function LowStockPage() {
                         onChange={(e) => setSearchTerm(e.target.value)}
                         borderColor={borderColor}
                         _placeholder={{ color: secondaryTextColor }}
+                        size="lg"
                     />
                 </InputGroup>
+
+                {/* Alert for Critical Items */}
+                {!isLoading && lowStockItems.some(item => item.priority === 'critical') && (
+                    <Alert status="error" borderRadius="md" variant="left-accent">
+                        <AlertIcon />
+                        <Box flex="1">
+                            <AlertTitle>Critical Items Need Attention</AlertTitle>
+                            <AlertDescription>
+                                {lowStockItems.filter(item => item.priority === 'critical').length} items are critically low or out of stock
+                            </AlertDescription>
+                        </Box>
+                    </Alert>
+                )}
 
                 {/* Sites Section */}
                 {(user?.role === 'admin' || user?.role === 'auditor') && (
@@ -568,7 +933,13 @@ export default function LowStockPage() {
                             )}
                         </Flex>
 
-                        {sites.length > 0 ? (
+                        {isLoading ? (
+                            <SimpleGrid columns={{ base: 2, md: 4, lg: 6 }} spacing={3}>
+                                {[...Array(6)].map((_, i) => (
+                                    <Skeleton key={i} height="40px" borderRadius="md" />
+                                ))}
+                            </SimpleGrid>
+                        ) : sites.length > 0 ? (
                             <Flex
                                 ref={sitesContainerRef}
                                 overflowX="auto"
@@ -610,42 +981,165 @@ export default function LowStockPage() {
                     </Card>
                 )}
 
-                {/* Low Stock Summary */}
+                {/* Filter Tabs */}
+                <Tabs index={activeTab} onChange={setActiveTab} variant="enclosed" colorScheme="brand">
+                    <TabList>
+                        <Tab>All Items ({lowStockItems.length})</Tab>
+                        <Tab>
+                            <HStack>
+                                <FiAlertTriangle />
+                                <Text>Critical</Text>
+                                <Badge colorScheme="red" borderRadius="full">
+                                    {lowStockItems.filter(item => item.priority === 'critical').length}
+                                </Badge>
+                            </HStack>
+                        </Tab>
+                        <Tab>
+                            Out of Stock ({lowStockItems.filter(item => item.stockStatus === 'out-of-stock').length})
+                        </Tab>
+                    </TabList>
+                    <TabPanels>
+                        <TabPanel p={0} pt={4}>
+                            {/* All items */}
+                        </TabPanel>
+                        <TabPanel p={0} pt={4}>
+                            {/* Critical items */}
+                        </TabPanel>
+                        <TabPanel p={0} pt={4}>
+                            {/* Out of stock items */}
+                        </TabPanel>
+                    </TabPanels>
+                </Tabs>
+
+                {/* Low Stock Summary Cards */}
                 {!isLoading && lowStockItems.length > 0 && (
-                    <Flex gap={4} wrap="wrap">
-                        <Badge colorScheme="orange" p={2} borderRadius="md" variant="subtle">
-                            Low Stock Items: {lowStockItems.filter(item => item.stockStatus === 'low-stock').length}
-                        </Badge>
-                        <Badge colorScheme="red" p={2} borderRadius="md" variant="subtle">
-                            Out of Stock: {lowStockItems.filter(item => item.stockStatus === 'out-of-stock').length}
-                        </Badge>
-                        <Badge colorScheme="blue" p={2} borderRadius="md" variant="subtle">
-                            Selected: {selectedItems.length}
-                        </Badge>
-                    </Flex>
+                    <SimpleGrid columns={{ base: 1, sm: 2, md: 4 }} spacing={4}>
+                        <Card bg={bgCard} borderColor={borderColor} borderWidth="1px">
+                            <CardBody>
+                                <VStack spacing={1}>
+                                    <Badge colorScheme="red" borderRadius="full" px={3} py={1}>
+                                        Critical
+                                    </Badge>
+                                    <Text fontSize="2xl" fontWeight="bold">
+                                        {lowStockItems.filter(item => item.priority === 'critical').length}
+                                    </Text>
+                                    <Text fontSize="sm" color={secondaryTextColor}>
+                                        Immediate action needed
+                                    </Text>
+                                </VStack>
+                            </CardBody>
+                        </Card>
+                        <Card bg={bgCard} borderColor={borderColor} borderWidth="1px">
+                            <CardBody>
+                                <VStack spacing={1}>
+                                    <Badge colorScheme="orange" borderRadius="full" px={3} py={1}>
+                                        High Priority
+                                    </Badge>
+                                    <Text fontSize="2xl" fontWeight="bold">
+                                        {lowStockItems.filter(item => item.priority === 'high').length}
+                                    </Text>
+                                    <Text fontSize="sm" color={secondaryTextColor}>
+                                        Reorder soon
+                                    </Text>
+                                </VStack>
+                            </CardBody>
+                        </Card>
+                        <Card bg={bgCard} borderColor={borderColor} borderWidth="1px">
+                            <CardBody>
+                                <VStack spacing={1}>
+                                    <Badge colorScheme="blue" borderRadius="full" px={3} py={1}>
+                                        Selected
+                                    </Badge>
+                                    <Text fontSize="2xl" fontWeight="bold">
+                                        {selectedItems.length}
+                                    </Text>
+                                    <Text fontSize="sm" color={secondaryTextColor}>
+                                        Ready for ordering
+                                    </Text>
+                                </VStack>
+                            </CardBody>
+                        </Card>
+                        <Card bg={bgCard} borderColor={borderColor} borderWidth="1px">
+                            <CardBody>
+                                <VStack spacing={1}>
+                                    <Badge colorScheme="gray" borderRadius="full" px={3} py={1}>
+                                        Total
+                                    </Badge>
+                                    <Text fontSize="2xl" fontWeight="bold">
+                                        {lowStockItems.length}
+                                    </Text>
+                                    <Text fontSize="sm" color={secondaryTextColor}>
+                                        Low stock items
+                                    </Text>
+                                </VStack>
+                            </CardBody>
+                        </Card>
+                    </SimpleGrid>
                 )}
 
                 {/* Data Table */}
                 {error ? (
-                    <Flex justifyContent="center" alignItems="center" minH="100px" direction="column">
-                        <Text fontSize="lg" color={errorColor}>
-                            {error}
-                        </Text>
-                        <Button onClick={() => calculateStockForSite(selectedSiteId)} mt={4}>
-                            Try Again
-                        </Button>
-                    </Flex>
-                ) : filteredItems.length === 0 && !isLoading ? (
-                    <Text fontSize="lg" color={secondaryTextColor} textAlign="center" py={8}>
-                        No low stock items found {selectedSiteId ? "for this site." : "for your account."}
-                    </Text>
+                    <Card bg={bgCard} borderColor={borderColor} borderWidth="1px">
+                        <CardBody>
+                            <VStack spacing={4}>
+                                <Alert status="error" borderRadius="md">
+                                    <AlertIcon />
+                                    <Box>
+                                        <AlertTitle>Error Loading Data</AlertTitle>
+                                        <AlertDescription>{error}</AlertDescription>
+                                    </Box>
+                                </Alert>
+                                <Button
+                                    onClick={() => calculateStockForSite(selectedSiteId)}
+                                    colorScheme="brand"
+                                    isLoading={isLoading}
+                                >
+                                    Try Again
+                                </Button>
+                            </VStack>
+                        </CardBody>
+                    </Card>
+                ) : isLoading && !isRefreshing ? (
+                    <VStack spacing={4} py={8}>
+                        <Spinner size="xl" color="brand.500" />
+                        <Text color={secondaryTextColor}>Loading low stock items...</Text>
+                    </VStack>
+                ) : filteredItems.length === 0 ? (
+                    <Card bg={bgCard} borderColor={borderColor} borderWidth="1px">
+                        <CardBody>
+                            <VStack spacing={4} py={8}>
+                                <FiAlertTriangle size={48} color={warningColor} />
+                                <Text fontSize="lg" color={secondaryTextColor} textAlign="center">
+                                    {searchTerm ?
+                                        `No items found matching "${searchTerm}"` :
+                                        selectedSiteId ?
+                                            "No low stock items found for this site. Great job!" :
+                                            "No low stock items found for your account."
+                                    }
+                                </Text>
+                                {searchTerm && (
+                                    <Button
+                                        onClick={() => setSearchTerm('')}
+                                        variant="ghost"
+                                        size="sm"
+                                    >
+                                        Clear Search
+                                    </Button>
+                                )}
+                            </VStack>
+                        </CardBody>
+                    </Card>
                 ) : (
-                    <DataTable
-                        columns={columns}
-                        data={filteredItems}
-                        loading={isLoading}
-                        onSelectionChange={setSelectedItems}
-                    />
+                    <Card bg={bgCard} borderColor={borderColor} borderWidth="1px">
+                        <CardBody p={0}>
+                            <DataTable
+                                columns={columns}
+                                data={filteredItems}
+                                loading={isLoading}
+                                onSelectionChange={setSelectedItems}
+                            />
+                        </CardBody>
+                    </Card>
                 )}
 
                 <CreatePurchaseOrderModal

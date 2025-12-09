@@ -82,7 +82,7 @@ const SidebarContent = ({ onItemClick }: { onItemClick?: () => void }) => {
             items: [
                 { label: 'Current Stock', href: '/current', icon: FiDatabase, roles: ['admin', 'siteManager', 'stockController', 'auditor', 'procurer'] },
                 { label: 'Stock Items', href: '/stock-items', icon: FiList, roles: ['admin', 'siteManager', 'stockController', 'procurer'] },
-                { label: 'Low Stock', href: '/low-stock', icon: FiAlertCircle, roles: ['admin', 'siteManager', 'stockController', 'auditor'] },
+                { label: 'Low Stock', href: '/low-stock', icon: FiAlertCircle, roles: ['admin', 'siteManager', 'stockController', 'auditor', 'procurer'] },
             ],
         },
         {

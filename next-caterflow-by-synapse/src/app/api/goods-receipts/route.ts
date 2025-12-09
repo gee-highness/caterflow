@@ -7,6 +7,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { getUserSiteInfo, buildTransactionSiteFilter } from '@/lib/siteFiltering';
+import { updateStockForTransaction } from '@/lib/stockCalculations';
 
 const getNextReceiptNumber = async (): Promise<string> => {
     try {
@@ -168,6 +169,10 @@ export async function POST(request: Request) {
         };
 
         const result = await writeClient.create(newDoc);
+
+        if (result.status === 'completed') {
+            await updateStockForTransaction('procurement', result._id);
+        }
 
         await logSanityInteraction(
             'create',

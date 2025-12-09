@@ -6,6 +6,7 @@ import { logSanityInteraction } from '@/lib/sanityLogger';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { v4 as uuidv4 } from 'uuid';
+import { revertPreviousStockChanges, updateStockForTransaction } from '@/lib/stockCalculations';
 
 // Helper to normalize incoming reference values to a plain string id
 const resolveRef = (val: any): string | null => {
@@ -230,7 +231,21 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ di
             if (cbRef) patch = patch.set({ completedBy: { _type: 'reference', _ref: cbRef } });
         }
 
+
+        const wasCompleted = existing?.evidenceStatus === 'complete';
+        const willBeCompleted = updateData.evidenceStatus === 'complete' || (!updateData.evidenceStatus && wasCompleted);
+
+        if (wasCompleted && (updateData.dispatchedItems || updateData.sourceBin)) {
+            console.log('↩️ Reverting previous stock changes for dispatch edit');
+            await revertPreviousStockChanges(dispatchId);
+        }
+
         const result = await patch.commit();
+
+        // Update stock snapshots if dispatch is completed
+        if (result.evidenceStatus === 'complete' || willBeCompleted) {
+            await updateStockForTransaction('dispatch', dispatchId);
+        }
 
         await logSanityInteraction(
             'update',

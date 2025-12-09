@@ -48,8 +48,9 @@ import {
     ModalFooter,
     ModalHeader,
     ModalOverlay,
+    Link,
 } from '@chakra-ui/react';
-import { FiPlus, FiSearch, FiEye, FiFilter, FiEdit, FiInfo, FiCheck } from 'react-icons/fi';
+import { FiPlus, FiSearch, FiEye, FiFilter, FiEdit, FiInfo, FiCheck, FiFileText } from 'react-icons/fi';
 import DataTable from '@/app/actions/DataTable';
 import { useSession } from 'next-auth/react';
 import CreatePurchaseOrderModal from '@/app/actions/CreatePurchaseOrderModal';
@@ -1255,12 +1256,27 @@ export default function ProcurementPage() {
     return (
         <Box p={{ base: 4, md: 8 }} bg={bgPrimary} minH="100vh">
             <VStack spacing={6} align="stretch">
-                <Heading as="h1" size={{ base: 'xl', md: '2xl' }} color={primaryTextColor}>
-                    Procurement Processing
-                </Heading>
-                <Text color={secondaryTextColor}>
-                    Process approved purchase orders and manage supplier relationships
-                </Text>
+                {/* Add header with requisition button */}
+                <Flex justify="space-between" align="flex-start" wrap="wrap" gap={4}>
+                    <Box>
+                        <Heading as="h1" size={{ base: 'xl', md: '2xl' }} color={primaryTextColor}>
+                            Procurement Processing
+                        </Heading>
+                        <Text color={secondaryTextColor}>
+                            Process approved purchase orders and manage supplier relationships
+                        </Text>
+                    </Box>
+
+                    <Button
+                        as={Link}
+                        href="/operations/procurement/requisition-summary"
+                        leftIcon={<Icon as={FiFileText} />}
+                        variant="outline"
+                        size="md"
+                    >
+                        Requisition Summary
+                    </Button>
+                </Flex>
 
                 <Card bg={bgCard} border="1px" borderColor={borderColor}>
                     <CardBody>

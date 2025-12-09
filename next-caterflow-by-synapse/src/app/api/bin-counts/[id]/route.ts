@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import { client, writeClient } from '@/lib/sanity';
 import { groq } from 'next-sanity';
 import { logSanityInteraction } from '@/lib/sanityLogger';
+import { revertPreviousStockChanges, updateStockForTransaction } from '@/lib/stockCalculations';
 
 export async function GET(
   request: Request,
@@ -69,10 +70,33 @@ export async function PUT(
     const { id } = await context.params;
     const updateData = await request.json();
 
+    // Add this at the beginning of the PUT function, after getting the updateData:
+    // Fetch existing doc to check if we need to revert stock changes
+    const existingCount = await client.fetch(
+      groq`*[_type == "InventoryCount" && _id == $id][0] { 
+    status
+}`,
+      { id: id }
+    );
+
+    const wasCompleted = existingCount?.status === 'completed';
+    const willBeCompleted = updateData.status === 'completed' || (!updateData.status && wasCompleted);
+
+    if (wasCompleted && (updateData.countedItems || updateData.bin)) {
+      console.log('↩️ Reverting previous stock changes for count edit');
+      await revertPreviousStockChanges(id);
+    }
+
     const result = await writeClient
       .patch(id)
       .set(updateData)
       .commit();
+
+
+    // ✅ KEEP ONLY ONE: Check actual result status
+    if (result.status === 'completed') {
+      await updateStockForTransaction('inventoryCount', result._id);
+    }
 
     await logSanityInteraction(
       'update',

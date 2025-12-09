@@ -52,3 +52,16 @@
   z-index: -2;
   animation: glitch 0.3s linear reverse infinite;
 }
+
+
+.react-datepicker-popper {
+  z-index: 9999 !important;
+}
+
+.react-datepicker {
+  z-index: 9999 !important;
+}
+
+.react-datepicker__triangle {
+  z-index: 9999 !important;
+}

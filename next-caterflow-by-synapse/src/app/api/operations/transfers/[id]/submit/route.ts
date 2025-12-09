@@ -4,6 +4,7 @@ import { writeClient } from '@/lib/sanity';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { logSanityInteraction } from '@/lib/sanityLogger';
+import { updateStockForTransaction } from '@/lib/stockCalculations';
 
 export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
     try {
@@ -25,6 +26,10 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
         });
 
         const result = await patch.commit();
+
+        if (result.status === 'completed') {
+            await updateStockForTransaction('transfer', result._id);
+        }
 
         await logSanityInteraction(
             'submit',

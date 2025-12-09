@@ -24,9 +24,24 @@ import {
     Tab,
     TabPanels,
     TabPanel,
+    Progress,
+    Alert,
+    AlertIcon,
+    AlertTitle,
+    AlertDescription,
+    SimpleGrid,
+    Skeleton,
+    Menu,
+    MenuButton,
+    MenuList,
+    MenuItem,
+    MenuDivider,
+    Tooltip,
+    Select,
 } from '@chakra-ui/react';
 import { useSession } from 'next-auth/react';
-import { FiArrowLeft, FiArrowRight, FiSearch, FiRefreshCw, FiFileText } from 'react-icons/fi';
+import { FiArrowLeft, FiArrowRight, FiSearch, FiRefreshCw, FiFileText, FiInfo, FiTrendingUp, FiTrendingDown } from 'react-icons/fi';
+import { MdOutlineSort } from 'react-icons/md';
 import DataTable, { Column } from './DataTable';
 import { Site, StockItem } from '@/lib/sanityTypes';
 import { calculateBulkStock } from '@/lib/stockCalculations';
@@ -39,6 +54,7 @@ interface CurrentStockItem extends StockItem {
     reorderQuantity: number;
     unitOfMeasure: "kg" | "g" | "l" | "ml" | "each" | "box" | "case" | "bag";
     stockStatus: 'in-stock' | 'low-stock' | 'out-of-stock';
+    lastUpdated?: string;
 }
 
 export default function CurrentStockPage() {
@@ -55,18 +71,45 @@ export default function CurrentStockPage() {
     const [error, setError] = useState<string | null>(null);
     const [selectedSiteId, setSelectedSiteId] = useState<string | null>(null);
     const [searchTerm, setSearchTerm] = useState('');
-    const [activeTab, setActiveTab] = useState(0); // 0: All, 1: In Stock, 2: Low Stock, 3: Out of Stock
+    const [activeTab, setActiveTab] = useState(0);
+    const [progress, setProgress] = useState({ stage: 'Starting...', percentage: 0 });
+    const [calculationMetrics, setCalculationMetrics] = useState<{
+        duration: number;
+        itemsProcessed: number;
+        fromCache: number;
+    } | null>(null);
+    const [sortConfig, setSortConfig] = useState<{ key: string; direction: 'asc' | 'desc' }>({
+        key: 'name',
+        direction: 'asc'
+    });
     const toast = useToast();
     const sitesContainerRef = useRef<HTMLDivElement>(null);
 
-    // src/app/current/page.tsx (updated functions with logging)
+    // Theming props
+    const bgPrimary = useColorModeValue('neutral.light.bg-primary', 'neutral.dark.bg-primary');
+    const bgCard = useColorModeValue('neutral.light.bg-card', 'neutral.dark.bg-card');
+    const primaryTextColor = useColorModeValue('neutral.light.text-primary', 'neutral.dark.text-primary');
+    const secondaryTextColor = useColorModeValue('neutral.light.text-secondary', 'neutral.dark.text-secondary');
+    const borderCard = useColorModeValue('neutral.light.border-color', 'neutral.dark.border-color');
+    const successColor = useColorModeValue('green.500', 'green.300');
+    const warningColor = useColorModeValue('orange.500', 'orange.300');
+    const errorColor = useColorModeValue('red.500', 'red.300');
+
+    // Calculate stock with progress tracking
     const calculateStockForSite = useCallback(async (siteId: string | null) => {
         setIsLoading(true);
+        setIsRefreshing(true);
         setError(null);
+        setProgress({ stage: 'Starting calculation...', percentage: 0 });
+        setCalculationMetrics(null);
+
+        const startTime = Date.now();
+
         try {
             console.log('🔄 Starting stock calculation for site:', siteId || 'All sites');
 
             // Fetch all stock items (no site filtering)
+            setProgress({ stage: 'Fetching stock items...', percentage: 10 });
             console.log('📦 Fetching all stock items...');
             const stockItemsResponse = await fetch('/api/stock-items');
             if (!stockItemsResponse.ok) {
@@ -79,10 +122,12 @@ export default function CurrentStockPage() {
                 console.log('⚠️ No stock items found');
                 setCurrentStockItems([]);
                 setIsLoading(false);
+                setIsRefreshing(false);
                 return;
             }
 
             // Fetch bins for the selected site (or all bins if no site selected)
+            setProgress({ stage: 'Fetching bins...', percentage: 20 });
             const binsEndpoint = siteId ? `/api/bins?siteId=${siteId}` : '/api/bins';
             console.log('🗄️ Fetching bins from:', binsEndpoint);
             const binsResponse = await fetch(binsEndpoint);
@@ -97,6 +142,7 @@ export default function CurrentStockPage() {
                 console.log('⚠️ No bins found for site:', siteId);
                 setCurrentStockItems([]);
                 setIsLoading(false);
+                setIsRefreshing(false);
                 return;
             }
 
@@ -104,12 +150,18 @@ export default function CurrentStockPage() {
             const stockItemIds = stockItems.map(item => item._id);
             console.log('🔢 Calculating stock for', stockItemIds.length, 'items across', binIds.length, 'bins');
 
-            // Calculate current stock for all items in all bins in one go
+            // Calculate current stock for all items in all bins with progress tracking
+            setProgress({ stage: 'Calculating current stock...', percentage: 30 });
             console.log('🧮 Starting bulk stock calculation...');
-            const stockResults = await calculateBulkStock(stockItemIds, binIds);
+
+            const stockResults = await calculateBulkStock(stockItemIds, binIds, (progressUpdate) => {
+                setProgress(progressUpdate);
+            });
+
             console.log('✅ Bulk stock calculation complete. Results:', Object.keys(stockResults).length, 'item-bin pairs');
 
             // Process results and create a separate entry for each item-bin combination with stock
+            setProgress({ stage: 'Processing results...', percentage: 80 });
             console.log('📊 Processing results and creating individual entries for each bin...');
             const itemsWithCalculatedStock: CurrentStockItem[] = [];
 
@@ -135,6 +187,9 @@ export default function CurrentStockPage() {
                         if (quantity <= item.minimumStockLevel) {
                             stockStatus = 'low-stock';
                         }
+                        if (quantity === 0) {
+                            stockStatus = 'out-of-stock';
+                        }
 
                         itemsWithCalculatedStock.push({
                             ...item,
@@ -142,13 +197,30 @@ export default function CurrentStockPage() {
                             stockStatus,
                             siteName: bin.site?.name || "Unknown site",
                             binName: bin.name,
+                            lastUpdated: new Date().toISOString(),
                         });
                     });
                 }
             });
 
+            const duration = Date.now() - startTime;
+            setCalculationMetrics({
+                duration,
+                itemsProcessed: itemsWithCalculatedStock.length,
+                fromCache: 0
+            });
+
             console.log('✅ Stock calculation complete. Total items to display:', itemsWithCalculatedStock.length);
             setCurrentStockItems(itemsWithCalculatedStock);
+
+            // Show success toast with metrics
+            toast({
+                title: 'Stock calculation complete',
+                description: `Calculated ${itemsWithCalculatedStock.length} stock items in ${duration}ms`,
+                status: 'success',
+                duration: 3000,
+                isClosable: true,
+            });
 
         } catch (err: any) {
             console.error('❌ Error calculating stock:', err);
@@ -161,6 +233,7 @@ export default function CurrentStockPage() {
                 isClosable: true,
             });
         } finally {
+            setProgress({ stage: 'Complete', percentage: 100 });
             setIsLoading(false);
             setIsRefreshing(false);
             console.log('🏁 Stock calculation finished');
@@ -203,7 +276,7 @@ export default function CurrentStockPage() {
             setSelectedSiteId(user.associatedSite._id);
         }
         // Set default site for admins/auditors only if no site is selected and sites are available
-        if ((user?.role === 'admin' || user?.role === 'auditor') && sites.length > 0 && !selectedSiteId) {
+        if ((user?.role === 'admin' || user?.role === 'auditor' || user?.role === 'procurer') && sites.length > 0 && !selectedSiteId) {
             setSelectedSiteId(sites[0]._id);
         }
     }, [isAuthReady, isAuthenticated, sites, user, selectedSiteId]);
@@ -244,9 +317,18 @@ export default function CurrentStockPage() {
                 break;
         }
 
-        setFilteredItems(filtered);
-    }, [currentStockItems, searchTerm, activeTab]);
+        // Apply sorting
+        filtered.sort((a, b) => {
+            const aValue = a[sortConfig.key as keyof CurrentStockItem];
+            const bValue = b[sortConfig.key as keyof CurrentStockItem];
 
+            if (aValue < bValue) return sortConfig.direction === 'asc' ? -1 : 1;
+            if (aValue > bValue) return sortConfig.direction === 'asc' ? 1 : -1;
+            return 0;
+        });
+
+        setFilteredItems(filtered);
+    }, [currentStockItems, searchTerm, activeTab, sortConfig]);
 
     const handleScroll = (direction: 'left' | 'right') => {
         if (sitesContainerRef.current) {
@@ -260,7 +342,6 @@ export default function CurrentStockPage() {
         }
     };
 
-
     const getStockStatusColor = (currentStock: number, minimumStockLevel: number) => {
         if (currentStock === 0) return 'red';
         if (currentStock <= minimumStockLevel) return 'orange';
@@ -273,30 +354,71 @@ export default function CurrentStockPage() {
         return 'In Stock';
     };
 
+    const handleSort = (key: string) => {
+        setSortConfig(prev => ({
+            key,
+            direction: prev.key === key && prev.direction === 'asc' ? 'desc' : 'asc'
+        }));
+    };
+
     const columns: Column[] = [
         {
             accessorKey: 'name',
-            header: 'Item Name',
+            header: (
+                <Flex align="center" cursor="pointer" onClick={() => handleSort('name')}>
+                    Item Name
+                    {sortConfig.key === 'name' && (
+                        <Text ml={2} fontSize="sm">
+                            {sortConfig.direction === 'asc' ? '↑' : '↓'}
+                        </Text>
+                    )}
+                </Flex>
+            ),
             isSortable: true,
         },
         {
             accessorKey: 'sku',
-            header: 'SKU',
+            header: (
+                <Flex align="center" cursor="pointer" onClick={() => handleSort('sku')}>
+                    SKU
+                    {sortConfig.key === 'sku' && (
+                        <Text ml={2} fontSize="sm">
+                            {sortConfig.direction === 'asc' ? '↑' : '↓'}
+                        </Text>
+                    )}
+                </Flex>
+            ),
             isSortable: true,
         },
         {
             accessorKey: 'currentStock',
-            header: 'Current Stock',
+            header: (
+                <Flex align="center" cursor="pointer" onClick={() => handleSort('currentStock')}>
+                    Current Stock
+                    {sortConfig.key === 'currentStock' && (
+                        <Text ml={2} fontSize="sm">
+                            {sortConfig.direction === 'asc' ? '↑' : '↓'}
+                        </Text>
+                    )}
+                </Flex>
+            ),
             isSortable: true,
-            cell: (row) => (
-                <Flex align="center">
+            cell: (row: CurrentStockItem) => (
+                <Flex align="center" gap={2}>
                     <Badge
                         colorScheme={getStockStatusColor(row.currentStock, row.minimumStockLevel)}
                         mr={2}
+                        px={2}
+                        py={1}
                     >
                         {getStockStatusText(row.currentStock, row.minimumStockLevel)}
                     </Badge>
-                    <Text fontWeight="bold">{row.currentStock}</Text>
+                    <Flex direction="column">
+                        <Text fontWeight="bold">{row.currentStock}</Text>
+                        <Text fontSize="xs" color={secondaryTextColor}>
+                            min: {row.minimumStockLevel}
+                        </Text>
+                    </Flex>
                 </Flex>
             ),
         },
@@ -321,15 +443,6 @@ export default function CurrentStockPage() {
             isSortable: true,
         },
     ];
-
-    // Theming props
-    const bgPrimary = useColorModeValue('neutral.light.bg-primary', 'neutral.dark.bg-primary');
-    const bgCard = useColorModeValue('neutral.light.bg-card', 'neutral.dark.bg-card');
-    const primaryTextColor = useColorModeValue('neutral.light.text-primary', 'neutral.dark.text-primary');
-    const secondaryTextColor = useColorModeValue('neutral.light.text-secondary', 'neutral.dark.text-secondary');
-    const borderCard = useColorModeValue('neutral.light.border-color', 'neutral.dark.border-color');
-
-    // In CurrentStockPage component, add these functions and button:
 
     const exportCurrentStockPDF = () => {
         const sortedItems = [...filteredItems].sort((a, b) =>
@@ -371,6 +484,9 @@ export default function CurrentStockPage() {
             font-size: 28px;
             font-weight: 600;
         }
+        .status-in-stock { background-color: #C6F6D5; color: #22543D; }
+        .status-low-stock { background-color: #FEEBC8; color: #744210; }
+        .status-out-of-stock { background-color: #FED7D7; color: #742A2A; }
         .table {
             width: 100%;
             border-collapse: collapse;
@@ -407,6 +523,12 @@ export default function CurrentStockPage() {
             color: #718096;
             text-align: center;
         }
+        .status-badge {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+        }
         @media print {
             body { margin: 25px; background: white; }
             .no-print { display: none; }
@@ -422,6 +544,7 @@ export default function CurrentStockPage() {
             <h1>CURRENT STOCK REPORT</h1>
             <p style="font-size: 14px; margin: 5px 0;">Generated on ${new Date().toLocaleDateString()}</p>
             <p style="font-size: 14px; margin: 5px 0;">Total Items: ${sortedItems.length}</p>
+            <p style="font-size: 14px; margin: 5px 0;">Site: ${selectedSiteId ? sites.find(s => s._id === selectedSiteId)?.name || 'All Sites' : 'All Sites'}</p>
         </div>
     </div>
 
@@ -431,28 +554,35 @@ export default function CurrentStockPage() {
                 <th>Item Name</th>
                 <th>SKU</th>
                 <th>Current Stock</th>
+                <th>Status</th>
                 <th>Unit of Measure</th>
                 <th>Bin Location</th>
                 <th>Site</th>
             </tr>
         </thead>
         <tbody>
-            ${sortedItems.map(item => `
+            ${sortedItems.map(item => {
+            const statusClass = `status-${item.stockStatus.replace('-', '-')}`;
+            const statusText = item.stockStatus === 'in-stock' ? 'In Stock' :
+                item.stockStatus === 'low-stock' ? 'Low Stock' : 'Out of Stock';
+            return `
                 <tr>
                     <td><strong>${item.name}</strong></td>
                     <td>${item.sku || 'N/A'}</td>
                     <td>${item.currentStock}</td>
+                    <td><span class="status-badge ${statusClass}">${statusText}</span></td>
                     <td>${item.unitOfMeasure}</td>
                     <td>${item.binName}</td>
                     <td>${item.siteName}</td>
                 </tr>
-            `).join('')}
+                `;
+        }).join('')}
         </tbody>
     </table>
 
     <div class="footer">
         <p style="margin: 0 0 8px 0;">Generated on ${new Date().toLocaleDateString()} at ${new Date().toLocaleTimeString()}</p>
-        <p style="margin: 0 0 8px 0;">This is a system-generated purchase order. Please provide your quotation for the requested items.</p>
+        <p style="margin: 0 0 8px 0;">This report provides an overview of current stock levels across all sites.</p>
         <div class="caterflow-brand">
             <a href="https://synapse-digital.vercel.app/" target="_blank" style="color: #0067FF; text-decoration: none; cursor: pointer;">
                 Caterflow by Synapse
@@ -476,45 +606,97 @@ export default function CurrentStockPage() {
         }
     };
 
-
-
     if (status === 'loading') {
         return (
-            <Flex justifyContent="center" alignItems="center" minH="100vh">
-                <Spinner size="xl" />
+            <Flex justifyContent="center" alignItems="center" minH="100vh" bg={bgPrimary}>
+                <VStack spacing={4}>
+                    <Spinner size="xl" color="brand.500" />
+                    <Text color={primaryTextColor}>Loading session...</Text>
+                </VStack>
             </Flex>
         );
     }
 
     return (
-        <Box p={{ base: 3, md: 4 }} bg={bgPrimary} minH="100vh">
+        <Box p={{ base: 4, md: 8 }} bg={bgPrimary} minH="100vh">
             <VStack spacing={6} align="stretch">
-                <Flex justify="space-between" align="center" flexWrap="wrap" gap={4}>
-                    <Heading as="h1" size={{ base: 'md', md: 'xl' }} color={primaryTextColor}>
-                        Current Stock
-                    </Heading>
-                    <Button
-                        leftIcon={<FiRefreshCw />}
-                        onClick={handleRefresh}
-                        isLoading={isRefreshing}
-                        variant="outline"
-                        colorScheme="brand"
-                        size="sm"
-                    >
-                        Refresh
-                    </Button>
-                    <Button
-                        leftIcon={<FiFileText />}
-                        onClick={exportCurrentStockPDF}
-                        variant="outline"
-                        colorScheme="brand"
-                        size="sm"
-                        isDisabled={isLoading || isRefreshing}
-                        isLoading={isLoading || isRefreshing}
-                    >
-                        Export PDF
-                    </Button>
+                {/* Header with Stats */}
+                <Flex justify="space-between" align={{ base: 'flex-start', md: 'center' }} flexWrap="wrap" gap={4} direction={{ base: 'column', md: 'row' }}>
+                    <VStack align="flex-start" spacing={1}>
+                        <Heading as="h1" size={{ base: 'xl', md: '2xl' }} color={primaryTextColor}>
+                            Current Stock
+                        </Heading>
+                        {!isLoading && calculationMetrics && (
+                            <Text fontSize="sm" color={secondaryTextColor}>
+                                Calculated in {calculationMetrics.duration}ms • {calculationMetrics.itemsProcessed} items
+                            </Text>
+                        )}
+                    </VStack>
+                    <HStack>
+                        <Menu>
+                            <MenuButton as={Button} leftIcon={<MdOutlineSort />} variant="outline" size="sm">
+                                Sort
+                            </MenuButton>
+                            <MenuList>
+                                <MenuItem onClick={() => handleSort('name')}>
+                                    Name {sortConfig.key === 'name' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                                </MenuItem>
+                                <MenuItem onClick={() => handleSort('currentStock')}>
+                                    Stock Level {sortConfig.key === 'currentStock' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                                </MenuItem>
+                                <MenuItem onClick={() => handleSort('minimumStockLevel')}>
+                                    Min Level {sortConfig.key === 'minimumStockLevel' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                                </MenuItem>
+                                <MenuDivider />
+                                <MenuItem onClick={() => setSortConfig({ key: 'name', direction: 'asc' })}>
+                                    Reset Sorting
+                                </MenuItem>
+                            </MenuList>
+                        </Menu>
+                        <Button
+                            leftIcon={<FiRefreshCw />}
+                            onClick={handleRefresh}
+                            isLoading={isRefreshing}
+                            variant="outline"
+                            colorScheme="brand"
+                            size="sm"
+                        >
+                            Refresh
+                        </Button>
+                        <Button
+                            leftIcon={<FiFileText />}
+                            onClick={exportCurrentStockPDF}
+                            variant="outline"
+                            colorScheme="brand"
+                            size="sm"
+                            isDisabled={isLoading || isRefreshing}
+                        >
+                            Export PDF
+                        </Button>
+                    </HStack>
                 </Flex>
+
+                {/* Progress Bar during Calculation */}
+                {(isLoading || isRefreshing) && progress && (
+                    <Card bg={bgCard} borderColor={borderCard} borderWidth="1px">
+                        <CardBody>
+                            <VStack spacing={3} align="stretch">
+                                <Text fontWeight="medium" color={primaryTextColor}>
+                                    {progress.stage}
+                                </Text>
+                                <Progress
+                                    value={progress.percentage}
+                                    colorScheme="brand"
+                                    hasStripe
+                                    isAnimated={progress.percentage < 100}
+                                />
+                                <Text fontSize="sm" color={secondaryTextColor} textAlign="right">
+                                    {progress.percentage}%
+                                </Text>
+                            </VStack>
+                        </CardBody>
+                    </Card>
+                )}
 
                 {/* Search Input */}
                 <InputGroup>
@@ -527,11 +709,25 @@ export default function CurrentStockPage() {
                         onChange={(e) => setSearchTerm(e.target.value)}
                         borderColor={borderCard}
                         _placeholder={{ color: secondaryTextColor }}
+                        size="lg"
                     />
                 </InputGroup>
 
+                {/* Alert for Low Stock Items */}
+                {!isLoading && currentStockItems.some(item => item.stockStatus === 'low-stock') && (
+                    <Alert status="warning" borderRadius="md" variant="left-accent">
+                        <AlertIcon />
+                        <Box flex="1">
+                            <AlertTitle>Low Stock Items Detected</AlertTitle>
+                            <AlertDescription>
+                                {currentStockItems.filter(item => item.stockStatus === 'low-stock').length} items are below minimum stock levels
+                            </AlertDescription>
+                        </Box>
+                    </Alert>
+                )}
+
                 {/* Sites Section */}
-                {(user?.role === 'admin' || user?.role === 'auditor') && (
+                {(user?.role === 'admin' || user?.role === 'auditor' || user?.role === 'procurer') && (
                     <>
                         <Flex justify="space-between" align="center" flexWrap="wrap" gap={4}>
                             <Heading as="h2" size="md" color={primaryTextColor}>Sites</Heading>
@@ -557,7 +753,13 @@ export default function CurrentStockPage() {
                             )}
                         </Flex>
 
-                        {sites.length > 0 ? (
+                        {isLoading ? (
+                            <SimpleGrid columns={{ base: 2, md: 4, lg: 6 }} spacing={3}>
+                                {[...Array(6)].map((_, i) => (
+                                    <Skeleton key={i} height="40px" borderRadius="md" />
+                                ))}
+                            </SimpleGrid>
+                        ) : sites.length > 0 ? (
                             <Flex
                                 ref={sitesContainerRef}
                                 overflowX="auto"
@@ -569,6 +771,16 @@ export default function CurrentStockPage() {
                                     scrollbarWidth: 'none',
                                 }}
                             >
+                                <Button
+                                    key="all"
+                                    onClick={() => setSelectedSiteId(null)}
+                                    mr={2}
+                                    variant={selectedSiteId === null ? 'solid' : 'outline'}
+                                    colorScheme="brand"
+                                    minW="100px"
+                                >
+                                    All Sites
+                                </Button>
                                 {sites.map(site => (
                                     <Button
                                         key={site._id}
@@ -577,7 +789,6 @@ export default function CurrentStockPage() {
                                         variant={selectedSiteId === site._id ? 'solid' : 'outline'}
                                         colorScheme="brand"
                                         minW="120px"
-                                        _first={{ ml: 0 }}
                                     >
                                         {site.name}
                                     </Button>
@@ -599,32 +810,109 @@ export default function CurrentStockPage() {
                     </Card>
                 )}
 
-                {/* Stock Summary */}
+                {/* Stock Summary Cards */}
                 {!isLoading && currentStockItems.length > 0 && (
-                    <Flex gap={4} wrap="wrap">
-                        <Badge colorScheme="green" p={2} borderRadius="md" variant="subtle">
-                            In Stock: {currentStockItems.filter(item => item.stockStatus === 'in-stock').length}
-                        </Badge>
-                        <Badge colorScheme="orange" p={2} borderRadius="md" variant="subtle">
-                            Low Stock: {currentStockItems.filter(item => item.stockStatus === 'low-stock').length}
-                        </Badge>
-                        <Badge colorScheme="red" p={2} borderRadius="md" variant="subtle">
-                            Out of Stock: {currentStockItems.filter(item => item.stockStatus === 'out-of-stock').length}
-                        </Badge>
-                    </Flex>
+                    <SimpleGrid columns={{ base: 1, sm: 2, md: 4 }} spacing={4}>
+                        <Card bg={bgCard} borderColor={borderCard} borderWidth="1px">
+                            <CardBody>
+                                <VStack spacing={1}>
+                                    <Badge colorScheme="green" borderRadius="full" px={3} py={1}>
+                                        <FiTrendingUp />
+                                    </Badge>
+                                    <Text fontSize="2xl" fontWeight="bold">
+                                        {currentStockItems.filter(item => item.stockStatus === 'in-stock').length}
+                                    </Text>
+                                    <Text fontSize="sm" color={secondaryTextColor}>
+                                        In Stock
+                                    </Text>
+                                </VStack>
+                            </CardBody>
+                        </Card>
+                        <Card bg={bgCard} borderColor={borderCard} borderWidth="1px">
+                            <CardBody>
+                                <VStack spacing={1}>
+                                    <Badge colorScheme="orange" borderRadius="full" px={3} py={1}>
+                                        <FiInfo />
+                                    </Badge>
+                                    <Text fontSize="2xl" fontWeight="bold">
+                                        {currentStockItems.filter(item => item.stockStatus === 'low-stock').length}
+                                    </Text>
+                                    <Text fontSize="sm" color={secondaryTextColor}>
+                                        Low Stock
+                                    </Text>
+                                </VStack>
+                            </CardBody>
+                        </Card>
+                        <Card bg={bgCard} borderColor={borderCard} borderWidth="1px">
+                            <CardBody>
+                                <VStack spacing={1}>
+                                    <Badge colorScheme="red" borderRadius="full" px={3} py={1}>
+                                        <FiTrendingDown />
+                                    </Badge>
+                                    <Text fontSize="2xl" fontWeight="bold">
+                                        {currentStockItems.filter(item => item.stockStatus === 'out-of-stock').length}
+                                    </Text>
+                                    <Text fontSize="sm" color={secondaryTextColor}>
+                                        Out of Stock
+                                    </Text>
+                                </VStack>
+                            </CardBody>
+                        </Card>
+                        <Card bg={bgCard} borderColor={borderCard} borderWidth="1px">
+                            <CardBody>
+                                <VStack spacing={1}>
+                                    <Badge colorScheme="blue" borderRadius="full" px={3} py={1}>
+                                        Total
+                                    </Badge>
+                                    <Text fontSize="2xl" fontWeight="bold">
+                                        {currentStockItems.length}
+                                    </Text>
+                                    <Text fontSize="sm" color={secondaryTextColor}>
+                                        Total Items
+                                    </Text>
+                                </VStack>
+                            </CardBody>
+                        </Card>
+                    </SimpleGrid>
                 )}
 
                 {/* Filter Tabs */}
                 <Tabs index={activeTab} onChange={setActiveTab} variant="enclosed" colorScheme="brand">
                     <TabList>
-                        <Tab>All</Tab>
-                        <Tab>In Stock</Tab>
-                        <Tab>Low Stock</Tab>
-                        <Tab>Out of Stock</Tab>
+                        <Tab>
+                            All ({currentStockItems.length})
+                        </Tab>
+                        <Tab>
+                            <HStack>
+                                <FiTrendingUp />
+                                <Text>In Stock</Text>
+                                <Badge colorScheme="green" borderRadius="full">
+                                    {currentStockItems.filter(item => item.stockStatus === 'in-stock').length}
+                                </Badge>
+                            </HStack>
+                        </Tab>
+                        <Tab>
+                            <HStack>
+                                <FiInfo />
+                                <Text>Low Stock</Text>
+                                <Badge colorScheme="orange" borderRadius="full">
+                                    {currentStockItems.filter(item => item.stockStatus === 'low-stock').length}
+                                </Badge>
+                            </HStack>
+                        </Tab>
+                        <Tab>
+                            <HStack>
+                                <FiTrendingDown />
+                                <Text>Out of Stock</Text>
+                                <Badge colorScheme="red" borderRadius="full">
+                                    {currentStockItems.filter(item => item.stockStatus === 'out-of-stock').length}
+                                </Badge>
+                            </HStack>
+                        </Tab>
                     </TabList>
                     <TabPanels>
                         <TabPanel p={0} pt={4}>
-                            {/* All items are shown by default */}
+                            {/* All items */}
                         </TabPanel>
                         <TabPanel p={0} pt={4}>
                             {/* In Stock items */}
@@ -640,24 +928,90 @@ export default function CurrentStockPage() {
 
                 {/* Data Table */}
                 {error ? (
-                    <Flex justifyContent="center" alignItems="center" minH="100px" direction="column">
-                        <Text fontSize="lg" color="red.500">
-                            {error}
-                        </Text>
-                        <Button onClick={() => calculateStockForSite(selectedSiteId)} mt={4}>
-                            Try Again
-                        </Button>
-                    </Flex>
-                ) : filteredItems.length === 0 && !isLoading ? (
-                    <Text fontSize="lg" color={secondaryTextColor} textAlign="center" py={8}>
-                        No stock items found {activeTab > 0 ? 'matching the selected filter' : `for ${selectedSiteId ? "this site." : "your account."}`}
-                    </Text>
+                    <Card bg={bgCard} borderColor={borderCard} borderWidth="1px">
+                        <CardBody>
+                            <VStack spacing={4}>
+                                <Alert status="error" borderRadius="md">
+                                    <AlertIcon />
+                                    <Box>
+                                        <AlertTitle>Error Loading Data</AlertTitle>
+                                        <AlertDescription>{error}</AlertDescription>
+                                    </Box>
+                                </Alert>
+                                <Button
+                                    onClick={() => calculateStockForSite(selectedSiteId)}
+                                    colorScheme="brand"
+                                    isLoading={isLoading}
+                                >
+                                    Try Again
+                                </Button>
+                            </VStack>
+                        </CardBody>
+                    </Card>
+                ) : isLoading && !isRefreshing ? (
+                    <VStack spacing={4} py={8}>
+                        <Spinner size="xl" color="brand.500" />
+                        <Text color={secondaryTextColor}>Loading stock data...</Text>
+                    </VStack>
+                ) : filteredItems.length === 0 ? (
+                    <Card bg={bgCard} borderColor={borderCard} borderWidth="1px">
+                        <CardBody>
+                            <VStack spacing={4} py={8}>
+                                <FiInfo size={48} color={secondaryTextColor} />
+                                <Text fontSize="lg" color={secondaryTextColor} textAlign="center">
+                                    {searchTerm ?
+                                        `No items found matching "${searchTerm}"` :
+                                        activeTab > 0 ?
+                                            'No items match the selected filter' :
+                                            selectedSiteId ?
+                                                "No stock items found for this site." :
+                                                "No stock items found for your account."
+                                    }
+                                </Text>
+                                {searchTerm && (
+                                    <Button
+                                        onClick={() => setSearchTerm('')}
+                                        variant="ghost"
+                                        size="sm"
+                                    >
+                                        Clear Search
+                                    </Button>
+                                )}
+                                {activeTab > 0 && (
+                                    <Button
+                                        onClick={() => setActiveTab(0)}
+                                        variant="ghost"
+                                        size="sm"
+                                    >
+                                        Show All Items
+                                    </Button>
+                                )}
+                            </VStack>
+                        </CardBody>
+                    </Card>
                 ) : (
-                    <DataTable
-                        columns={columns}
-                        data={filteredItems}
-                        loading={isLoading}
-                    />
+                    <Card bg={bgCard} borderColor={borderCard} borderWidth="1px">
+                        <CardBody p={0}>
+                            <DataTable
+                                columns={columns}
+                                data={filteredItems}
+                                loading={isLoading}
+                            />
+                        </CardBody>
+                    </Card>
+                )}
+
+                {/* Performance Metrics (Debug) */}
+                {!isLoading && calculationMetrics && process.env.NODE_ENV === 'development' && (
+                    <Card bg={bgCard} borderColor={borderCard} borderWidth="1px" size="sm">
+                        <CardBody>
+                            <Text fontSize="xs" color={secondaryTextColor}>
+                                Performance: {calculationMetrics.duration}ms •
+                                Items: {calculationMetrics.itemsProcessed} •
+                                Cache: {calculationMetrics.fromCache}
+                            </Text>
+                        </CardBody>
+                    </Card>
                 )}
             </VStack>
         </Box>

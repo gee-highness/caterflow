@@ -5,6 +5,8 @@ import { logSanityInteraction } from '@/lib/sanityLogger';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { getUserSiteInfo, buildTransactionSiteFilter } from '@/lib/siteFiltering';
+import { revertPreviousStockChanges, updateStockForTransaction } from '@/lib/stockCalculations';
+import { id } from 'date-fns/locale';
 
 // Helper function to generate the next unique transfer number
 const getNextTransferNumber = async (): Promise<string> => {
@@ -165,6 +167,10 @@ export async function POST(request: Request) {
 
         const result = await writeClient.create(transfer);
 
+        if (result.status === 'completed') {
+            await updateStockForTransaction('transfer', result._id);
+        }
+
         await logSanityInteraction(
             'create',
             `Created transfer: ${transferNumber}`,
@@ -294,7 +300,19 @@ export async function PATCH(request: Request) {
             }));
         }
 
+        // In PATCH function, add revert logic:
+        const wasCompleted = currentTransfer?.status === 'completed';
+        if (wasCompleted && (body.transferredItems || body.fromBin || body.toBin)) {
+            console.log('↩️ Reverting previous stock changes for transfer edit');
+            await revertPreviousStockChanges(currentTransfer.id);
+        }
+
         const result = await writeClient.patch(_id).set(patchedData).commit();
+
+        // ✅ ADD THIS: Update stock if transfer is completed
+        if (result.status === 'completed') {
+            await updateStockForTransaction('transfer', result._id);
+        }
 
         await logSanityInteraction(
             'update',

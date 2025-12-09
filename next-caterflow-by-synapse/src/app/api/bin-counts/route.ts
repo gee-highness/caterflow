@@ -4,6 +4,7 @@ import { client, writeClient } from '@/lib/sanity';
 import { groq } from 'next-sanity';
 import { logSanityInteraction } from '@/lib/sanityLogger';
 import { getUserSiteInfo, buildBinSiteFilter } from '@/lib/siteFiltering';
+import { updateStockForTransaction, revertPreviousStockChanges } from '@/lib/stockCalculations';
 
 export async function GET() {
     try {
@@ -202,7 +203,30 @@ export async function PUT(request: Request) {
             });
         }
 
+        // Add this at the beginning of the PUT function, after getting the updateData:
+        // Fetch existing doc to check if we need to revert stock changes
+        const existingCount = await client.fetch(
+            groq`*[_type == "InventoryCount" && _id == $id][0] { 
+        status
+    }`,
+            { id: _id }
+        );
+
+        // If count was completed and is being edited, revert previous stock changes
+        const wasCompleted = existingCount?.status === 'completed';
+        const willBeCompleted = updateData.status === 'completed' || (!updateData.status && wasCompleted);
+
+        if (wasCompleted && (updateData.countedItems || updateData.bin)) {
+            console.log('↩️ Reverting previous stock changes for count edit');
+            await revertPreviousStockChanges(_id);
+        }
+
         const result = await patch.commit();
+
+        // ✅ KEEP ONLY ONE: Check actual result status
+        if (result.status === 'completed') {
+            await updateStockForTransaction('inventoryCount', result._id);
+        }
 
         await logSanityInteraction(
             'update',
@@ -271,6 +295,11 @@ export async function POST(request: Request) {
         console.log('Creating bin count document:', doc);
 
         const result = await writeClient.create(doc);
+
+        // Update stock calculations
+        if (result.status === 'completed') {
+            await updateStockForTransaction('inventoryCount', result._id);
+        }
 
         await logSanityInteraction(
             'create',

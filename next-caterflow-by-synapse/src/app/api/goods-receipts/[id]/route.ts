@@ -5,6 +5,7 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { logSanityInteraction } from '@/lib/sanityLogger';
 import { NextResponse } from 'next/server';
+import { revertPreviousStockChanges, updateStockForTransaction } from '@/lib/stockCalculations';
 
 export async function GET(
     request: Request,
@@ -143,6 +144,21 @@ export async function PUT(
         // Remove _id from update data to avoid conflicts
         const { _id, ...dataToUpdate } = updateData;
 
+
+        // ✅ ADD: Get existing for revert
+        const existingReceipt = await client.fetch(
+            groq`*[_type == "GoodsReceipt" && _id == $id][0] { status }`,
+            { id }
+        );
+
+        // ✅ ADD: Revert if editing completed receipt
+        const wasCompleted = existingReceipt?.status === 'completed';
+        if (wasCompleted && dataToUpdate.receivedItems) {
+            await revertPreviousStockChanges(id);
+        }
+
+
+
         const result = await writeClient
             .patch(id)
             .set({
@@ -150,6 +166,10 @@ export async function PUT(
                 updatedAt: new Date().toISOString()
             })
             .commit();
+
+        if (result.status === 'completed') {
+            await updateStockForTransaction('procurement', result._id);
+        }
 
         await logSanityInteraction(
             'update',

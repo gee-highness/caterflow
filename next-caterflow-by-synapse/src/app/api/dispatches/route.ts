@@ -7,6 +7,7 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { v4 as uuidv4 } from 'uuid';
 import { getUserSiteInfo, buildTransactionSiteFilter } from '@/lib/siteFiltering';
+import { updateStockForTransaction } from '@/lib/stockCalculations';
 
 // normalize refs to string ids
 const resolveRef = (val: any): string | null => {
@@ -283,6 +284,9 @@ export async function POST(request: Request) {
             dispatchNumber: result.dispatchNumber
         });
 
+        // Update stock calculations
+        await updateStockForTransaction('dispatch', result._id);
+
         console.log('📝 Logging interaction...');
         await logSanityInteraction(
             'create',
@@ -429,6 +433,9 @@ export async function PATCH(request: Request) {
         }
 
         const result = await patch.commit();
+
+        // Update stock calculations after patch
+        await updateStockForTransaction('dispatch', result._id);
 
         await logSanityInteraction(
             'update',

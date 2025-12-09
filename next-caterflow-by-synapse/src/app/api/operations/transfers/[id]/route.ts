@@ -4,6 +4,7 @@ import { groq } from 'next-sanity';
 import { logSanityInteraction } from '@/lib/sanityLogger';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
+import { updateStockForTransaction } from '@/lib/stockCalculations';
 
 // Helper to get current user from session
 async function getCurrentUser(request: Request) {
@@ -139,6 +140,10 @@ export async function PATCH(
             .patch(id)
             .set(updateData)
             .commit();
+
+        if (result.status === 'completed') {
+            await updateStockForTransaction('transfer', result._id);
+        }
 
         await logSanityInteraction(
             'update',
