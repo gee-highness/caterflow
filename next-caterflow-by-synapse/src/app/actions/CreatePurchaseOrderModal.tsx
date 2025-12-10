@@ -401,6 +401,7 @@ export default function CreatePurchaseOrderModal({
                                     {sites.map(site => (
                                         <option key={site._id} value={site._id}>
                                             {site.name}
+
                                         </option>
                                     ))}
                                 </Select>

@@ -472,20 +472,23 @@ export default function Home() {
             }}
           >
             {sites.map(site => (
-              <Button
-                key={site._id}
-                onClick={() => handleSiteClick(site._id)}
-                mr={2}
-                size="sm"
-                variant={selectedSiteId === site._id ? 'solid' : 'outline'}
-                colorScheme={selectedSiteId === site._id ? 'brand' : 'gray'}
-                minW="120px"
-                fontSize={{ base: 'xs', sm: 'sm' }}
-                flexShrink={0}
-                borderRadius="lg"
-              >
-                {site.name}
-              </Button>
+              <Tooltip key={site._id} label={site.name}>
+                <Button
+                  key={site._id}
+                  onClick={() => handleSiteClick(site._id)}
+                  mr={2}
+                  size="sm"
+                  variant={selectedSiteId === site._id ? 'solid' : 'outline'}
+                  colorScheme={selectedSiteId === site._id ? 'brand' : 'gray'}
+                  minW="120px"
+                  fontSize={{ base: 'xs', sm: 'sm' }}
+                  flexShrink={0}
+                  borderRadius="lg"
+                >
+                  {site.name ? site.name.trim().split(/\s+/)[0] : 'Site'}
+
+                </Button>
+              </Tooltip>
             ))}
           </Flex>
         </VStack>

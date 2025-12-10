@@ -673,6 +673,8 @@ export default function ComprehensiveReportsPage() {
 
 
     // SIMPLIFIED opening stock calculation - using current stock as fallback
+    // UPDATED: calculateOpeningStockForDate function
+    // UPDATED: calculateOpeningStockForDate function
     const calculateOpeningStockForDate = useCallback(async (
         targetDate: Date,
         currentStockItems: any[],
@@ -683,31 +685,163 @@ export default function ComprehensiveReportsPage() {
         try {
             console.log('🔍 Calculating opening stock for date:', targetDate.toDateString());
 
-            // For now, use current stock value as opening stock
-            // This is a simplified approach - in production you'd want proper transaction reconstruction
-            const currentStockValue = currentStockItems.reduce((sum: number, item: any) => {
-                const currentStock = item.currentStock || 0;
-                const unitPrice = item.unitPrice || 0;
-                return sum + (currentStock * unitPrice);
-            }, 0);
+            // Check if the API endpoint exists first
+            const endpointCheck = await fetch('/api/stock-as-of-date', { method: 'HEAD' });
+            if (!endpointCheck.ok) {
+                console.warn('⚠️ /api/stock-as-of-date endpoint not available, using fallback calculation');
+            }
 
-            console.log('💰 Using current stock as opening stock:', currentStockValue);
-            return currentStockValue;
+            // Get all stock item IDs
+            const stockItemIds = currentStockItems.map(item => item._id);
+
+            // Get all bins
+            const binsResponse = await fetch('/api/bins');
+            const bins = await binsResponse.json();
+            const binIds = bins.map((bin: any) => bin._id);
+
+            if (binIds.length === 0) {
+                console.warn('⚠️ No bins found');
+                return 0;
+            }
+
+            console.log(`📊 Calculating opening stock for ${stockItemIds.length} items across ${binIds.length} bins`);
+
+            // Call the new API endpoint
+            const response = await fetch('/api/stock-as-of-date', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    stockItemIds,
+                    binIds,
+                    asOfDate: targetDate.toISOString()
+                })
+            });
+
+            if (response.ok) {
+                const result = await response.json();
+                console.log('💰 Opening stock calculated:', result.summary.totalValue);
+                return result.summary.totalValue;
+            } else {
+                console.warn('⚠️ Failed to calculate opening stock via API, using fallback');
+
+                // Fallback: calculate manually using transactions before target date
+                const goodsReceiptsBefore = allGoodsReceipts.filter(gr =>
+                    gr.receiptDate && new Date(gr.receiptDate) < targetDate
+                );
+
+                const dispatchesBefore = allDispatches.filter(d =>
+                    d.dispatchDate && new Date(d.dispatchDate) < targetDate
+                );
+
+                // Get latest bin count before target date
+                const binCountsBefore = allBinCounts.filter(bc =>
+                    bc.countDate && new Date(bc.countDate) < targetDate
+                ).sort((a, b) => new Date(b.countDate).getTime() - new Date(a.countDate).getTime());
+
+                // For each item, calculate stock based on last count + transactions
+                let totalOpeningStock = 0;
+
+                currentStockItems.forEach(item => {
+                    // Find latest count for this item before target date
+                    let lastCountedQuantity = 0;
+
+                    for (const bc of binCountsBefore) {
+                        const countedItem = bc.countedItems?.find((ci: any) =>
+                            ci.stockItem?._id === item._id
+                        );
+                        if (countedItem) {
+                            lastCountedQuantity = countedItem.countedQuantity || 0;
+                            break;
+                        }
+                    }
+
+                    // Add receipts before target date
+                    const receiptsQty = goodsReceiptsBefore.reduce((sum, gr) => {
+                        const receivedItem = gr.receivedItems?.find((ri: any) =>
+                            ri.stockItem?._id === item._id
+                        );
+                        return sum + (receivedItem?.receivedQuantity || 0);
+                    }, 0);
+
+                    // Subtract dispatches before target date
+                    const dispatchesQty = dispatchesBefore.reduce((sum, d) => {
+                        const dispatchedItem = d.dispatchedItems?.find((di: any) =>
+                            di.stockItem?._id === item._id
+                        );
+                        return sum + (dispatchedItem?.dispatchedQuantity || 0);
+                    }, 0);
+
+                    const itemStock = Math.max(0, lastCountedQuantity + receiptsQty - dispatchesQty);
+                    totalOpeningStock += itemStock * (item.unitPrice || 0);
+                });
+
+                console.log('💰 Fallback opening stock calculated:', totalOpeningStock);
+                return totalOpeningStock;
+            }
 
         } catch (error) {
             console.error('❌ Error calculating opening stock:', error);
-
-            // Final fallback
-            const fallbackValue = currentStockItems.reduce((sum: number, item: any) => {
-                const currentStock = item.currentStock || 0;
-                const unitPrice = item.unitPrice || 0;
-                return sum + (currentStock * unitPrice);
-            }, 0);
-
-            console.warn('⚠️ Using fallback opening stock value:', fallbackValue);
-            return fallbackValue;
+            return 0;
         }
-    }, []); // No dependencies needed as it only uses parameters
+    }, []);
+
+
+
+
+    // Function to calculate closing stock using same methodology
+    const calculateClosingStockForDate = useCallback(async (
+        targetDate: Date,
+        currentStockItems: any[]
+    ): Promise<number> => {
+        try {
+            console.log('🔍 Calculating closing stock for date:', targetDate.toDateString());
+
+            // Get all stock item IDs
+            const stockItemIds = currentStockItems.map(item => item._id);
+
+            // Get all bins
+            const binsResponse = await fetch('/api/bins');
+            const bins = await binsResponse.json();
+            const binIds = bins.map((bin: any) => bin._id);
+
+            if (binIds.length === 0) {
+                console.warn('⚠️ No bins found');
+                return 0;
+            }
+
+            console.log(`📊 Calculating closing stock for ${stockItemIds.length} items across ${binIds.length} bins`);
+
+            // Call the API endpoint for closing date
+            const response = await fetch('/api/stock-as-of-date', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    stockItemIds,
+                    binIds,
+                    asOfDate: targetDate.toISOString()
+                })
+            });
+
+            if (response.ok) {
+                const result = await response.json();
+                console.log('💰 Closing stock calculated:', result.summary.totalValue);
+                return result.summary.totalValue;
+            } else {
+                console.warn('⚠️ Failed to calculate closing stock via API');
+                // Return 0 or use alternative calculation
+                return 0;
+            }
+
+        } catch (error) {
+            console.error('❌ Error calculating closing stock:', error);
+            return 0;
+        }
+    }, []);
+
 
 
     // UPDATED processAnalyticsData function with VAT calculations
@@ -785,31 +919,87 @@ export default function ComprehensiveReportsPage() {
             dispatches,
             binCounts
         );
-        setCalculatingOpeningStock(false);
 
         // 5. VARIANCES from bin counts in the period
+        // FIXED: Calculate ONLY period variances
         const netVariancesValue = periodBinCounts.reduce((sum: number, count: any) =>
             sum + (count.countedItems?.reduce((itemSum: number, item: any) => {
+                // Only include variances from items that were actually counted in the period
                 const varianceValue = (item.variance || 0) * (item.stockItem?.unitPrice || 0);
                 return itemSum + varianceValue;
             }, 0) || 0), 0
         );
 
         // 6. CLOSING STOCK = Opening + Purchases - Consumption + Variances
-        const closingStockValue = openingStockValue + periodPurchasesValue - periodConsumption + netVariancesValue;
+        // const closingStockValue = openingStockValue + periodPurchasesValue - periodConsumption + netVariancesValue;
 
-        // FINANCIAL CALCULATIONS WITH VAT
+        // FIXED: Closing stock calculation with proper historical data
+        // For closing stock, use the same method but for end date
+        //const closingStockDate = dateRange.end; // Your end date
+        // You would need to call calculateOpeningStockForDate for the end date
+        // But since we're calculating period transactions, we can also do:
+
+        // OPTION 1: Calculate closing stock as: opening + purchases - consumption + period variances
+        //const closingStockValue = openingStockValue + periodPurchasesValue - periodConsumption + netVariancesValue;
+
+        // OPTION 2: Calculate closing stock using getStockAsOfDate for end of period
+        // This is more accurate but requires another API call
+
+
+        // Calculate closing stock using the new function
+
+        // FIXED: Closing stock calculation with proper historical data
+        // For closing stock, use the same method but for end date
+        const closingStockDate = dateRange.end; // Your end date
+        // You would need to call calculateOpeningStockForDate for the end date
+        // But since we're calculating period transactions, we can also do:
+
+        // OPTION 1: Calculate closing stock as: opening + purchases - consumption + period variances
+        // const closingStockValue = openingStockValue + periodPurchasesValue - periodConsumption + netVariancesValue;
+
+        // OPTION 2: Calculate closing stock using getStockAsOfDate for end of period
+        // This is more accurate but requires another API call
+
+
+
+
+
+
+
+        const closingStockValue = await calculateClosingStockForDate(
+            dateRange.end,
+            stockItemsArray
+        );
+
+        setCalculatingOpeningStock(false);
+
+        // FINANCIAL CALCULATIONS WITH VAT - FIXED
+        // COGS = Opening Stock + Purchases - Closing Stock
         const COGS = openingStockValue + periodPurchasesValue - closingStockValue;
+
+        // Consumption = Dispatch costs in period (this is the food/ingredients consumed)
+        // This should be similar to COGS but may include variances
+        const actualConsumption = periodConsumption;
+
+        // Gross Profit Before VAT = Sales - COGS
         const grossProfitBeforeVAT = periodSales - COGS;
+
+        // VAT impact: Add VAT on sales, subtract VAT on purchases
         const grossProfitAfterVAT = grossProfitBeforeVAT - netVATPayable;
+
+        // Profit = Gross Profit After VAT
         const profit = grossProfitAfterVAT;
         const profitPercentage = periodSales > 0 ? (profit / periodSales) * 100 : 0;
 
-        console.log('💰 Final financial calculations with VAT:', {
+        // Add consumption analysis for clarity
+        const consumptionVsCOGS = actualConsumption - COGS; // Positive = over-consumption
+
+        console.log('💰 CORRECTED Financial calculations with VAT:', {
             openingStockValue,
             periodPurchasesValue,
-            periodConsumption,
-            netVariancesValue,
+            actualConsumption,
+            COGS,
+            consumptionVsCOGS,
             closingStockValue,
             periodSales,
             vatOnPurchases,
@@ -1200,7 +1390,7 @@ export default function ComprehensiveReportsPage() {
                 }
             }
         };
-    }, [filterDataByDateRange, calculateOpeningStockForDate]); // Add dependencies here
+    }, [filterDataByDateRange, calculateOpeningStockForDate, calculateClosingStockForDate]);
 
 
     // Enhanced fetchAllData function with VAT calculations
@@ -2548,14 +2738,14 @@ export default function ComprehensiveReportsPage() {
                                                             </HStack>
                                                         </VStack>
 
-                                                        <RadioGroup onChange={(value) => setCompareMode(value === 'true')} value={compareMode ? 'true' : 'false'}>
+                                                        {/*<RadioGroup onChange={(value) => setCompareMode(value === 'true')} value={compareMode ? 'true' : 'false'}>
                                                             <Stack direction="row">
                                                                 <Radio value="false">Single Period</Radio>
                                                                 <Radio value="true">Compare Periods</Radio>
                                                             </Stack>
-                                                        </RadioGroup>
+                                                        </RadioGroup>*/}
 
-                                                        {compareMode && (
+                                                        {/*compareMode && (
                                                             <VStack align="start">
                                                                 <Text fontWeight="medium">Comparison Period</Text>
                                                                 <HStack>
@@ -2572,7 +2762,7 @@ export default function ComprehensiveReportsPage() {
                                                                     />
                                                                 </HStack>
                                                             </VStack>
-                                                        )}
+                                                        )*/}
                                                     </HStack>
 
                                                     <Button
@@ -2778,6 +2968,15 @@ export default function ComprehensiveReportsPage() {
                                                                 <StatLabel>Closing Stock</StatLabel>
                                                                 <StatNumber>SZL {analyticsData?.financial?.closingStockValue?.toLocaleString() || '0'}</StatNumber>
                                                                 <StatHelpText>Calculated value</StatHelpText>
+                                                            </Stat>
+                                                            <Stat>
+                                                                <StatLabel>Cost of Goods Sold (COGS)</StatLabel>
+                                                                <StatNumber>
+                                                                    SZL {((analyticsData?.financial?.openingStock || 0) +
+                                                                        (analyticsData?.financial?.periodPurchases || 0) -
+                                                                        (analyticsData?.financial?.closingStockValue || 0)).toLocaleString()}
+                                                                </StatNumber>
+                                                                <StatHelpText>Opening + Purchases - Closing</StatHelpText>
                                                             </Stat>
                                                             <Stat>
                                                                 <StatLabel>Period Sales</StatLabel>

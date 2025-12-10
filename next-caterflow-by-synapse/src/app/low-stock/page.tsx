@@ -952,17 +952,20 @@ export default function LowStockPage() {
                                 }}
                             >
                                 {sites.map(site => (
-                                    <Button
-                                        key={site._id}
-                                        onClick={() => handleSiteClick(site._id)}
-                                        mx={2}
-                                        variant={selectedSiteId === site._id ? 'solid' : 'outline'}
-                                        colorScheme="brand"
-                                        minW="120px"
-                                        _first={{ ml: 0 }}
-                                    >
-                                        {site.name}
-                                    </Button>
+                                    <Tooltip key={site._id} label={site.name}>
+                                        <Button
+                                            key={site._id}
+                                            onClick={() => handleSiteClick(site._id)}
+                                            mx={2}
+                                            variant={selectedSiteId === site._id ? 'solid' : 'outline'}
+                                            colorScheme="brand"
+                                            minW="120px"
+                                            _first={{ ml: 0 }}
+                                        >
+                                            {site.name ? site.name.trim().split(/\s+/)[0] : 'Site'}
+
+                                        </Button>
+                                    </Tooltip>
                                 ))}
                             </Flex>
                         ) : (

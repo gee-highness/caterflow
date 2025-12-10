@@ -786,16 +786,20 @@ export default function CurrentStockPage() {
                                     All Sites
                                 </Button>
                                 {sites.map(site => (
-                                    <Button
-                                        key={site._id}
-                                        onClick={() => handleSiteClick(site._id)}
-                                        mr={2}
-                                        variant={selectedSiteId === site._id ? 'solid' : 'outline'}
-                                        colorScheme="brand"
-                                        minW="120px"
-                                    >
-                                        {site.name}
-                                    </Button>
+                                    <Tooltip key={site._id} label={site.name}>
+                                        <Button
+                                            onClick={() => handleSiteClick(site._id)}
+                                            mr={2}
+                                            variant={selectedSiteId === site._id ? 'solid' : 'outline'}
+                                            colorScheme="brand"
+                                            width="fit-content"
+                                            maxW="150px"
+                                            isTruncated
+                                            textOverflow="ellipsis"
+                                        >
+                                            {site.name ? site.name.trim().split(/\s+/)[0] : 'Site'}
+                                        </Button>
+                                    </Tooltip>
                                 ))}
                             </Flex>
                         ) : (
