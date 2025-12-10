@@ -14,6 +14,8 @@ import {
 // Add at the top of the file, after imports:
 import { Mutex } from 'async-mutex';
 
+Decimal.set({ precision: 10, rounding: Decimal.ROUND_HALF_UP });
+
 // Replace the old mutex system with a new one that prevents timer conflicts
 class StockCalculationManager {
   private static instance: StockCalculationManager;
@@ -37,8 +39,11 @@ class StockCalculationManager {
         if (!this.calculationQueue.has(key)) {
           this.calculationQueue.set(key, []);
         }
-        // Push a function that, when called, attempts to acquire the lock again
-        this.calculationQueue.get(key)!.push(() => resolve(this.acquireCalculationLock(key)));
+        // Push a function that will resolve with the release function
+        this.calculationQueue.get(key)!.push(async () => {
+          const release = await this.acquireCalculationLock(key);
+          resolve(release);
+        });
       });
     }
 
@@ -158,6 +163,30 @@ class OptimizedSnapshotCache {
   }>();
   private readonly MAX_SIZE = 1000;
   private readonly TTL = 30000; // 30 seconds
+  private cleanupInterval: NodeJS.Timeout;
+
+  constructor() {
+    // Start periodic cleanup
+    this.cleanupInterval = setInterval(() => {
+      this.cleanupExpired();
+    }, 60000); // Clean up every minute
+  }
+
+  private cleanupExpired(): void {
+    const now = Date.now();
+    let cleaned = 0;
+
+    for (const [key, value] of this.cache.entries()) {
+      if (now - value.timestamp > this.TTL) {
+        this.cache.delete(key);
+        cleaned++;
+      }
+    }
+
+    if (cleaned > 0) {
+      console.log(`🧹 Cleaned ${cleaned} expired cache entries`);
+    }
+  }
 
   get(key: string): { quantity: number; timestamp: number; metadata?: any } | undefined {
     const cached = this.cache.get(key);
@@ -247,7 +276,7 @@ const getStockSnapshot = async (stockItemId: string, binId: string): Promise<num
       const confidence = snapshot.transactionCount > 10 ? 'high' :
         snapshot.transactionCount > 0 ? 'medium' : 'low';
 
-      snapshotCache.set(cacheKey, quantity, { confidence, transactionCount: snapshot.transactionCount });
+      await atomicCacheUpdate(cacheKey, quantity, { confidence, transactionCount: snapshot.transactionCount });
       return quantity;
     }
 
@@ -344,7 +373,7 @@ const calculateStockFromTransactions = async (
       asOfDate: asOfDateStr
     });
 
-    let stock = 0;
+    let stock = new Decimal(0);
     let transactionCount = 0;
 
     // Track the last inventory count date for this item-bin
@@ -359,8 +388,9 @@ const calculateStockFromTransactions = async (
       event.receivedItems?.forEach((item: any) => {
         if (item.itemId === stockItemId && item.binId === binId) {
           // Only apply if no inventory count after this transaction
+          // Only apply if no inventory count after this transaction
           if (!lastInventoryCountDate || eventDate < lastInventoryCountDate) {
-            stock += item.quantity || 0;
+            stock = stock.plus(item.quantity || 0);
             transactionCount++;
           }
         }
@@ -370,8 +400,9 @@ const calculateStockFromTransactions = async (
       event.dispatchedItems?.forEach((item: any) => {
         if (item.itemId === stockItemId && item.binId === binId) {
           // Only apply if no inventory count after this transaction
+          // Only apply if no inventory count after this transaction
           if (!lastInventoryCountDate || eventDate < lastInventoryCountDate) {
-            stock = Math.max(0, stock - (item.quantity || 0));
+            stock = Decimal.max(0, stock.minus(item.quantity || 0));
             transactionCount++;
           }
         }
@@ -383,8 +414,9 @@ const calculateStockFromTransactions = async (
           // Transfer OUT from this bin
           if (event.fromBinId === binId) {
             // Only apply if no inventory count after this transaction
+            // Only apply if no inventory count after this transaction
             if (!lastInventoryCountDate || eventDate < lastInventoryCountDate) {
-              stock = Math.max(0, stock - (item.quantity || 0));
+              stock = Decimal.max(0, stock.minus(item.quantity || 0));
               transactionCount++;
             }
           }
@@ -392,8 +424,9 @@ const calculateStockFromTransactions = async (
           // Transfer IN to this bin
           if (event.toBinId === binId) {
             // Only apply if no inventory count after this transaction
+            // Only apply if no inventory count after this transaction
             if (!lastInventoryCountDate || eventDate < lastInventoryCountDate) {
-              stock += item.quantity || 0;
+              stock = stock.plus(item.quantity || 0);
               transactionCount++;
             }
           }
@@ -401,13 +434,14 @@ const calculateStockFromTransactions = async (
       });
 
       // Process Inventory Counts
+      // Process Inventory Counts - CORRECTED
       event.countedItems?.forEach((item: any) => {
         if (item.itemId === stockItemId && item.binId === binId) {
-          // Inventory count SETS the stock at that point in time
-          // It overrides all previous transactions
-          stock = item.quantity || 0;
+          // Inventory count OVERRIDES all previous transactions
+          // It sets the absolute stock level at that point in time
+          stock = new Decimal(item.quantity || 0);
           lastInventoryCountDate = eventDate;
-          lastInventoryCountStock = stock;
+          lastInventoryCountStock = stock as any;
           transactionCount++;
         }
       });
@@ -425,7 +459,7 @@ const calculateStockFromTransactions = async (
       }
     }
 
-    return stock;
+    return stock.toNumber();
 
   } catch (error) {
     console.error('Error calculating stock from transactions:', error);
@@ -447,7 +481,7 @@ const updateStockSnapshot = async (
     // Optimistic update to cache for immediate UI feedback
     const cacheKey = `${stockItemId}-${binId}`;
     // Use new snapshotCache.set signature
-    snapshotCache.set(cacheKey, quantity, { confidence: 'high' });
+    await atomicCacheUpdate(cacheKey, quantity, { confidence: 'high' });
 
     // Invalidate bulk cache patterns for this item/bin
     invalidateStockCache(stockItemId);
@@ -508,6 +542,7 @@ const updateStockSnapshot = async (
   }
 };
 
+// Helper function to calculate stock for multiple items in one bin
 // Helper function to calculate stock for multiple items in one bin
 const calculateStockForBin = async (
   binId: string,
@@ -600,8 +635,8 @@ const calculateStockForBin = async (
 
     calculationManager.endTimer(timerKey); // End timer if we started it
 
-    // Initialize results
-    const results: { [key: string]: number } = {};
+    // Initialize results with Decimals
+    const results: { [key: string]: Decimal } = {};
     const itemMap = new Map<string, string>();
 
     data.itemDetails?.forEach((item: any) => {
@@ -609,12 +644,12 @@ const calculateStockForBin = async (
     });
 
     itemIds.forEach(itemId => {
-      results[`${itemId}-${binId}`] = 0;
+      results[`${itemId}-${binId}`] = new Decimal(0);
     });
 
     // Progress tracking
     let processedItems = 0;
-    const totalItems = itemIds.length * 4; // 4 transaction types to check
+    const totalItems = itemIds.length * 5; // 4 transaction types + inventory counts
 
     // Process all transactions efficiently
     const processTimerKey = `⚡ Processing transactions for bin ${binId}`;
@@ -635,7 +670,7 @@ const calculateStockForBin = async (
       receipt.receivedItems?.forEach((item: any) => {
         if (item.itemId && itemIds.includes(item.itemId)) {
           const key = `${item.itemId}-${binId}`;
-          results[key] += item.receivedQuantity || 0;
+          results[key] = results[key].plus(item.receivedQuantity || 0);
           updateProgress();
         }
       });
@@ -646,7 +681,13 @@ const calculateStockForBin = async (
       dispatch.dispatchedItems?.forEach((item: any) => {
         if (item.itemId && itemIds.includes(item.itemId)) {
           const key = `${item.itemId}-${binId}`;
-          results[key] = Math.max(0, results[key] - (item.dispatchedQuantity || 0));
+          const dispatchQty = new Decimal(item.dispatchedQuantity || 0);
+          // Prevent negative stock
+          if (results[key].greaterThanOrEqualTo(dispatchQty)) {
+            results[key] = results[key].minus(dispatchQty);
+          } else {
+            results[key] = new Decimal(0);
+          }
           updateProgress();
         }
       });
@@ -657,7 +698,13 @@ const calculateStockForBin = async (
       transfer.transferredItems?.forEach((item: any) => {
         if (item.itemId && itemIds.includes(item.itemId)) {
           const key = `${item.itemId}-${binId}`;
-          results[key] = Math.max(0, results[key] - (item.transferredQuantity || 0));
+          const transferQty = new Decimal(item.transferredQuantity || 0);
+          // Prevent negative stock
+          if (results[key].greaterThanOrEqualTo(transferQty)) {
+            results[key] = results[key].minus(transferQty);
+          } else {
+            results[key] = new Decimal(0);
+          }
           updateProgress();
         }
       });
@@ -668,7 +715,7 @@ const calculateStockForBin = async (
       transfer.transferredItems?.forEach((item: any) => {
         if (item.itemId && itemIds.includes(item.itemId)) {
           const key = `${item.itemId}-${binId}`;
-          results[key] += item.transferredQuantity || 0;
+          results[key] = results[key].plus(item.transferredQuantity || 0);
           updateProgress();
         }
       });
@@ -679,7 +726,7 @@ const calculateStockForBin = async (
     ) || [];
 
     // Track inventory counts per item
-    const inventoryCountMap: { [itemId: string]: { date: Date; quantity: number }[] } = {};
+    const inventoryCountMap: { [itemId: string]: { date: Date; quantity: Decimal }[] } = {};
 
     inventoryCountsByDate.forEach((count: any) => {
       count.countedItems?.forEach((item: any) => {
@@ -689,7 +736,7 @@ const calculateStockForBin = async (
           }
           inventoryCountMap[item.itemId].push({
             date: new Date(count.countDate),
-            quantity: item.countedQuantity || 0
+            quantity: new Decimal(item.countedQuantity || 0)
           });
           updateProgress();
         }
@@ -697,34 +744,116 @@ const calculateStockForBin = async (
     });
 
     // Process inventory counts - they override the running totals at their specific dates
+    // We need to process events in chronological order for each item
     Object.entries(inventoryCountMap).forEach(([itemId, counts]) => {
-      // We need to track the running stock to properly apply counts chronologically
-      let runningStock = 0;
-
-      // First, get the stock BEFORE any counts (from transactions)
       const key = `${itemId}-${binId}`;
-      const initialStock = results[key] || 0;
-      runningStock = initialStock;
 
-      // Apply each count in chronological order
-      counts.forEach((count, index) => {
-        // For the FIRST count, we need to know if transactions happened before or after it
-        if (index === 0) {
-          // Check if there were transactions BEFORE this count
-          // This is a simplified approach - in reality, you'd need to check transaction dates
-          // For now, we'll use the count quantity as it overrides everything before it
-          results[key] = count.quantity;
-        } else {
-          // For subsequent counts, they set the stock at that point in time
-          results[key] = count.quantity;
+      // Get all transactions for this item to process chronologically
+      const itemTransactions: Array<{
+        date: Date;
+        type: 'receipt' | 'dispatch' | 'transferOut' | 'transferIn' | 'count';
+        quantity: Decimal;
+      }> = [];
+
+      // Add goods receipts
+      data.goodsReceipts?.forEach((receipt: any) => {
+        receipt.receivedItems?.forEach((item: any) => {
+          if (item.itemId === itemId) {
+            itemTransactions.push({
+              date: new Date(receipt.receiptDate),
+              type: 'receipt',
+              quantity: new Decimal(item.receivedQuantity || 0)
+            });
+          }
+        });
+      });
+
+      // Add dispatches
+      data.dispatches?.forEach((dispatch: any) => {
+        dispatch.dispatchedItems?.forEach((item: any) => {
+          if (item.itemId === itemId) {
+            itemTransactions.push({
+              date: new Date(dispatch.dispatchDate),
+              type: 'dispatch',
+              quantity: new Decimal(item.dispatchedQuantity || 0)
+            });
+          }
+        });
+      });
+
+      // Add transfers out
+      data.transfersOut?.forEach((transfer: any) => {
+        transfer.transferredItems?.forEach((item: any) => {
+          if (item.itemId === itemId) {
+            itemTransactions.push({
+              date: new Date(transfer.transferDate),
+              type: 'transferOut',
+              quantity: new Decimal(item.transferredQuantity || 0)
+            });
+          }
+        });
+      });
+
+      // Add transfers in
+      data.transfersIn?.forEach((transfer: any) => {
+        transfer.transferredItems?.forEach((item: any) => {
+          if (item.itemId === itemId) {
+            itemTransactions.push({
+              date: new Date(transfer.transferDate),
+              type: 'transferIn',
+              quantity: new Decimal(item.transferredQuantity || 0)
+            });
+          }
+        });
+      });
+
+      // Add inventory counts
+      counts.forEach(count => {
+        itemTransactions.push({
+          date: count.date,
+          type: 'count',
+          quantity: count.quantity
+        });
+      });
+
+      // Sort all transactions chronologically
+      itemTransactions.sort((a, b) => a.date.getTime() - b.date.getTime());
+
+      // Process transactions in order
+      let currentStock = new Decimal(0);
+      itemTransactions.forEach(tx => {
+        switch (tx.type) {
+          case 'receipt':
+          case 'transferIn':
+            currentStock = currentStock.plus(tx.quantity);
+            break;
+          case 'dispatch':
+          case 'transferOut':
+            if (currentStock.greaterThanOrEqualTo(tx.quantity)) {
+              currentStock = currentStock.minus(tx.quantity);
+            } else {
+              currentStock = new Decimal(0);
+            }
+            break;
+          case 'count':
+            // Inventory count OVERRIDES everything
+            currentStock = tx.quantity;
+            break;
         }
       });
+
+      results[key] = currentStock;
     });
 
     calculationManager.endTimer(processTimerKey); // End timer if we started it
 
-    // Cache individual results for faster single-item lookups
-    Object.entries(results).forEach(([key, quantity]) => {
+    // Convert Decimal results to numbers and cache
+    const finalResults: { [key: string]: number } = {};
+    Object.entries(results).forEach(([key, decimalQuantity]) => {
+      const quantity = decimalQuantity.toNumber();
+      finalResults[key] = quantity;
+
+      // Cache individual results for faster single-item lookups
       const [itemId, binId] = key.split('-');
       setCachedStockItem(`single-${itemId}-${binId}`, key, quantity);
     });
@@ -732,7 +861,7 @@ const calculateStockForBin = async (
     const duration = Date.now() - startTime;
     console.log(`✅ Calculated ${itemIds.length} items for bin ${binId} in ${duration}ms`);
 
-    return results;
+    return finalResults;
   } catch (error) {
     console.error(`❌ Error calculating stock for bin ${binId}:`, error);
     // Return zeros but track the error
@@ -765,7 +894,18 @@ const calculateBulkStockOriginal = async (
 
 // ========== ENHANCED PUBLIC API FUNCTIONS ==========
 
+// Input validation helper
+const validateStockInput = (stockItemId: string, binId: string): void => {
+  if (!stockItemId || typeof stockItemId !== 'string') {
+    throw new Error('Invalid stockItemId: must be a non-empty string');
+  }
+  if (!binId || typeof binId !== 'string') {
+    throw new Error('Invalid binId: must be a non-empty string');
+  }
+};
+
 // 1. Single item calculation with detailed error reporting
+// Then in the calculateStock function, add validation at the beginning:
 export const calculateStock = async (
   stockItemId: string,
   binId: string
@@ -773,6 +913,8 @@ export const calculateStock = async (
   const startTime = Date.now();
 
   try {
+    validateStockInput(stockItemId, binId); // Add this line
+
     if (!stockItemId || !binId) {
       throw new Error('Missing itemId or binId');
     }
@@ -1189,30 +1331,34 @@ export const calculateBulkStockFromTransactions = async (
 
     // Add Transfers
     // NEW (fixed - prevents double counting for same bin):
+    // Add Transfers - WITH double-counting prevention
     data.transfers?.forEach((transfer: any) => {
       transfer.transferredItems?.forEach((item: any) => {
         const quantity = item.transferredQuantity || 0;
 
         if (item.itemId && stockItemIds.includes(item.itemId)) {
-          // For EACH bin, add ONE transaction
-          if (transfer.fromBinId && binIds.includes(transfer.fromBinId)) {
-            allTransactions.push({
-              type: 'transferOut',
-              date: transfer.transferDate,
-              binId: transfer.fromBinId,
-              itemId: item.itemId,
-              quantity: quantity
-            });
-          }
+          // Prevent processing same bin transfers (shouldn't happen but defensive)
+          if (transfer.fromBinId !== transfer.toBinId) {
+            // For EACH bin, add ONE transaction
+            if (transfer.fromBinId && binIds.includes(transfer.fromBinId)) {
+              allTransactions.push({
+                type: 'transferOut',
+                date: transfer.transferDate,
+                binId: transfer.fromBinId,
+                itemId: item.itemId,
+                quantity: quantity
+              });
+            }
 
-          if (transfer.toBinId && binIds.includes(transfer.toBinId)) {
-            allTransactions.push({
-              type: 'transferIn',
-              date: transfer.transferDate,
-              binId: transfer.toBinId,
-              itemId: item.itemId,
-              quantity: quantity
-            });
+            if (transfer.toBinId && binIds.includes(transfer.toBinId)) {
+              allTransactions.push({
+                type: 'transferIn',
+                date: transfer.transferDate,
+                binId: transfer.toBinId,
+                itemId: item.itemId,
+                quantity: quantity
+              });
+            }
           }
         }
       });
@@ -1403,6 +1549,7 @@ export async function updateStockForTransaction(
       const lockKey = `${item.stockItemId}-${item.binId}`;
       const mutex = getMutexForKey(lockKey);
 
+
       // Use mutex to prevent race conditions
       return mutex.runExclusive(async () => {
         try {
@@ -1422,14 +1569,20 @@ export async function updateStockForTransaction(
             currentStock = await calculateStockFromTransactions(item.stockItemId, item.binId, false);
           }
 
-          // Calculate new stock
+          // Calculate new stock with validation
           let newStock;
           if (transactionType === 'inventoryCount') {
             // Inventory counts set the absolute quantity
             newStock = Math.max(0, item.quantity);
           } else {
             // Other transactions adjust the quantity
-            newStock = Math.max(0, currentStock + item.quantity);
+            newStock = currentStock + item.quantity;
+
+            // Validate no negative stock (except for special cases)
+            if (newStock < 0) {
+              console.warn(`⚠️ Negative stock detected for ${item.stockItemId} in ${item.binId}: ${newStock}. Setting to 0.`);
+              newStock = 0;
+            }
           }
 
           console.log(`📦 Updating ${transactionType} stock:`, {
@@ -2228,4 +2381,12 @@ export const clearAllTimers = (): void => {
 // 17. Utility function to get active calculation status (debugging)
 export const getActiveCalculations = (): string[] => {
   return calculationManager.getLockKeys();
+};
+
+// Atomic cache update to prevent race conditions
+const atomicCacheUpdate = async (key: string, quantity: number, metadata?: any): Promise<void> => {
+  const mutex = getMutexForKey(`cache-${key}`);
+  return mutex.runExclusive(() => {
+    snapshotCache.set(key, quantity, metadata);
+  });
 };

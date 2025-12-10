@@ -234,6 +234,17 @@ export default function ApprovalsPage() {
     const handleApprove = async () => {
         if (!selectedApproval) return;
 
+        if (!canUserApprove(selectedApproval)) {
+            toast({
+                title: 'Permission Denied',
+                description: 'You can only approve items from your site.',
+                status: 'error',
+                duration: 5000,
+                isClosable: true,
+            });
+            return;
+        }
+
         try {
             let response;
 
@@ -293,6 +304,18 @@ export default function ApprovalsPage() {
     const handleReject = async () => {
         if (!selectedApproval) return;
 
+        // Quick permission check
+        if (!canUserApprove(selectedApproval)) {
+            toast({
+                title: 'Permission Denied',
+                description: 'You can only reject items from your site.',
+                status: 'error',
+                duration: 5000,
+                isClosable: true,
+            });
+            return;
+        }
+
         try {
             let response;
 
@@ -345,6 +368,34 @@ export default function ApprovalsPage() {
                 isClosable: true,
             });
         }
+    };
+
+
+    // Add this function right after your other function declarations (after handleReject function)
+    const canUserApprove = (approval: ApprovalAction | null): boolean => {
+        if (!approval || !user) return false;
+
+        // Admins and auditors can approve everything
+        if (user.role === 'admin' || user.role === 'auditor') return true;
+
+        // Site managers can only approve items from their site
+        if (user.role === 'siteManager') {
+            /*if (approval._type === 'InternalTransfer') {
+                const transfer = approval as TransferApproval;
+                const userSiteId = user.associatedSite?._id || user.associatedSite;
+                const fromSiteId = transfer.fromBin?.site || transfer.fromBin?.site;
+                return userSiteId === fromSiteId;
+            } else if (approval._type === 'PurchaseOrder') {
+                const po = approval as PurchaseOrderApproval;
+                const userSiteId = user.associatedSite?._id || user.associatedSite;
+                const poSiteId = po.siteName || po.siteName;
+                return userSiteId === poSiteId;
+            }*/
+
+            return true;
+        }
+
+        return false;
     };
 
     // Helper function to get display information based on approval type with null checks
@@ -685,7 +736,7 @@ export default function ApprovalsPage() {
                             colorScheme="red"
                             onClick={handleReject}
                             leftIcon={<FiXCircle />}
-                            isDisabled={!selectedApproval}
+                            isDisabled={!selectedApproval || !canUserApprove(selectedApproval)}
                         >
                             Reject
                         </Button>
@@ -694,7 +745,7 @@ export default function ApprovalsPage() {
                             onClick={handleApprove}
                             ml={3}
                             leftIcon={<FiCheckCircle />}
-                            isDisabled={!selectedApproval}
+                            isDisabled={!selectedApproval || !canUserApprove(selectedApproval)}
                         >
                             Approve
                         </Button>

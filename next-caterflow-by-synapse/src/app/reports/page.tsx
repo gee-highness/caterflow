@@ -313,22 +313,150 @@ interface ReportConfig {
     };
 }
 
+
+
 // VAT Configuration - Eswatini 15%
 const VAT_CONFIG = {
     rate: 0.15, // 15% VAT rate for Eswatini
     ratePercentage: 15,
     calculateVAT: (amount: number, isVATApplicable: boolean = true): { vatAmount: number; totalWithVAT: number } => {
+        // Ensure amount is a valid number
+        const cleanAmount = Number(amount) || 0;
+
         if (!isVATApplicable) {
-            return { vatAmount: 0, totalWithVAT: amount };
+            return { vatAmount: 0, totalWithVAT: cleanAmount };
         }
-        const vatAmount = amount * VAT_CONFIG.rate;
-        const totalWithVAT = amount + vatAmount;
+        // Round to avoid floating point errors
+        const vatAmount = Math.round(cleanAmount * VAT_CONFIG.rate * 100) / 100;
+        const totalWithVAT = Math.round((cleanAmount + vatAmount) * 100) / 100;
         return { vatAmount, totalWithVAT };
     },
     formatVAT: (amount: number): string => {
         return `SZL ${amount.toFixed(2)}`;
     }
 };
+
+// ADD THIS HELPER FUNCTION HERE
+const getEmptyAnalyticsData = (): EnhancedAnalyticsData => ({
+    summary: {
+        totalPurchaseOrders: 0,
+        totalGoodsReceipts: 0,
+        totalDispatches: 0,
+        totalTransfers: 0,
+        totalBinCounts: 0,
+        totalStockItems: 0,
+        totalSuppliers: 0,
+        totalUsers: 0,
+        totalSites: 0,
+        totalInventoryValue: 0,
+        totalPeopleFed: 0,
+        lowStockItems: 0,
+        criticalStockItems: 0,
+        totalVATCollected: 0,
+        totalVATPaid: 0,
+        netVATLiability: 0
+    },
+    purchaseOrders: {
+        byStatus: [],
+        bySite: [],
+        byMonth: [],
+        totalValue: 0,
+        vatAmount: 0,
+        totalWithVAT: 0,
+        avgOrderValue: 0,
+        topItems: [],
+        statusBreakdown: {}
+    },
+    goodsReceipts: {
+        byStatus: [],
+        bySite: [],
+        efficiency: 0,
+        conditionBreakdown: {},
+        totalValue: 0,
+        vatAmount: 0,
+        totalWithVAT: 0
+    },
+    dispatches: {
+        byType: [],
+        bySite: [],
+        totalPeopleFed: 0,
+        totalCost: 0,
+        vatAmount: 0,
+        totalWithVAT: 0,
+        costPerPerson: 0,
+        topItems: [],
+        totalSales: 0,
+        salesVAT: 0,
+        salesWithVAT: 0
+    },
+    transfers: {
+        byStatus: [],
+        bySite: [],
+        approvalRate: 0
+    },
+    inventory: {
+        byCategory: [],
+        totalValue: 0,
+        vatIncluded: 0,
+        lowStockBreakdown: {
+            critical: 0,
+            warning: 0,
+            healthy: 0
+        }
+    },
+    binCounts: {
+        byStatus: [],
+        accuracy: 0,
+        varianceAnalysis: {
+            positive: 0,
+            negative: 0,
+            zero: 0
+        }
+    },
+    financial: {
+        monthlySpending: [],
+        costPerPersonTrend: [],
+        inventoryTurnover: 0,
+        totalReceivedGoodsValue: 0,
+        totalSales: 0,
+        consumption: 0,
+        profit: 0,
+        profitPercentage: 0,
+        closingStockValue: 0,
+        periodPurchases: 0,
+        periodConsumption: 0,
+        periodSales: 0,
+        openingStock: 0,
+        netVariances: 0,
+        vatOnPurchases: 0,
+        vatOnSales: 0,
+        netVATPayable: 0,
+        grossProfitBeforeVAT: 0,
+        grossProfitAfterVAT: 0
+    },
+    suppliers: {
+        performance: [],
+        activeCount: 0,
+        vatRegisteredCount: 0
+    },
+    users: {
+        byRole: [],
+        activity: []
+    },
+    vat: {
+        summary: {
+            totalOutputVAT: 0,
+            totalInputVAT: 0,
+            netVATPayable: 0,
+            vatRate: VAT_CONFIG.ratePercentage
+        },
+        breakdown: {
+            purchases: { vatAmount: 0, totalWithVAT: 0 },
+            sales: { vatAmount: 0, totalWithVAT: 0 },
+            inventory: { vatAmount: 0, totalWithVAT: 0 }
+        }
+    }
+});
 
 // Chart color schemes
 const CHART_COLORS = {
@@ -685,6 +813,11 @@ export default function ComprehensiveReportsPage() {
         try {
             console.log('🔍 Calculating opening stock for date:', targetDate.toDateString());
 
+            // Validate inputs
+            if (!currentStockItems || currentStockItems.length === 0) {
+                console.warn('⚠️ No stock items provided for opening stock calculation');
+                return 0;
+            }
             // Check if the API endpoint exists first
             const endpointCheck = await fetch('/api/stock-as-of-date', { method: 'HEAD' });
             if (!endpointCheck.ok) {
@@ -842,556 +975,624 @@ export default function ComprehensiveReportsPage() {
         }
     }, []);
 
-
-
     // UPDATED processAnalyticsData function with VAT calculations
     const processAnalyticsData = useCallback(async (data: any, dateRange: { start: Date; end: Date }): Promise<EnhancedAnalyticsData> => {
 
-
-        const {
-            purchaseOrders = [],
-            goodsReceipts = [],
-            dispatches = [],
-            transfers = [],
-            binCounts = [],
-            stockValues = { items: [], summary: { totalInventoryValue: 0, totalVAT: 0 } },
-            lowStock = [],
-            suppliers = [],
-            users = [],
-            sites = []
-        } = data;
-
-        console.log('📊 Processing analytics data with VAT calculations...');
-
-        // Filter data by date range for period-based calculations
-        const periodPOs = filterDataByDateRange(purchaseOrders, 'orderDate');
-        const periodGoodsReceipts = filterDataByDateRange(goodsReceipts, 'receiptDate');
-        const periodDispatches = filterDataByDateRange(dispatches, 'dispatchDate');
-        const periodBinCounts = filterDataByDateRange(binCounts, 'countDate');
-
-        // VAT CALCULATIONS
-        // 1. VAT on Purchases (Input VAT)
-        const vatOnPurchases = periodGoodsReceipts.reduce((sum: number, gr: any) =>
-            sum + (gr.vatAmount || 0), 0
-        );
-
-        // 2. VAT on Sales (Output VAT)
-        const vatOnSales = periodDispatches.reduce((sum: number, d: any) =>
-            sum + (d.salesVAT || 0), 0
-        );
-
-        // 3. Net VAT Payable (Output VAT - Input VAT)
-        const netVATPayable = vatOnSales - vatOnPurchases;
-
-        // SIMPLIFIED FINANCIAL CALCULATIONS WITH VAT
-        // 1. PURCHASES = Goods Receipts value in the period
-        const periodPurchasesValue = periodGoodsReceipts.reduce((sum: number, gr: any) => {
-            const receiptValue = gr.receivedItems?.reduce((itemSum: number, item: any) => {
-                const unitPrice = item.unitPrice || item.stockItem?.unitPrice || 0;
-                const receivedQuantity = item.receivedQuantity || 0;
-                return itemSum + (receivedQuantity * unitPrice);
-            }, 0) || 0;
-            return sum + receiptValue;
-        }, 0);
-
-        // 2. CONSUMPTION = Dispatch costs in the period
-        const periodConsumption = periodDispatches.reduce((sum: number, d: any) => {
-            const dispatchCost = d.dispatchedItems?.reduce((itemSum: number, item: any) => {
-                return itemSum + (item.totalCost || 0);
-            }, 0) || d.totalCost || 0;
-            return sum + dispatchCost;
-        }, 0);
-
-        // 3. SALES = People fed × selling prices in the period
-        const periodSales = periodDispatches.reduce((sum: number, d: any) => {
-            const sellingPrice = d.dispatchType?.sellingPrice || d.sellingPrice || 0;
-            const peopleFed = d.peopleFed || 0;
-            return sum + (sellingPrice * peopleFed);
-        }, 0);
-
-        // 4. GET OPENING STOCK VALUE using simplified approach
-        const stockItemsArray = stockValues?.items || [];
-        setCalculatingOpeningStock(true);
-        const openingStockValue = await calculateOpeningStockForDate(
-            dateRange.start,
-            stockItemsArray,
-            goodsReceipts,
-            dispatches,
-            binCounts
-        );
-
-        // 5. VARIANCES from bin counts in the period
-        // FIXED: Calculate ONLY period variances
-        const netVariancesValue = periodBinCounts.reduce((sum: number, count: any) =>
-            sum + (count.countedItems?.reduce((itemSum: number, item: any) => {
-                // Only include variances from items that were actually counted in the period
-                const varianceValue = (item.variance || 0) * (item.stockItem?.unitPrice || 0);
-                return itemSum + varianceValue;
-            }, 0) || 0), 0
-        );
-
-        // 6. CLOSING STOCK = Opening + Purchases - Consumption + Variances
-        // const closingStockValue = openingStockValue + periodPurchasesValue - periodConsumption + netVariancesValue;
-
-        // FIXED: Closing stock calculation with proper historical data
-        // For closing stock, use the same method but for end date
-        //const closingStockDate = dateRange.end; // Your end date
-        // You would need to call calculateOpeningStockForDate for the end date
-        // But since we're calculating period transactions, we can also do:
-
-        // OPTION 1: Calculate closing stock as: opening + purchases - consumption + period variances
-        //const closingStockValue = openingStockValue + periodPurchasesValue - periodConsumption + netVariancesValue;
-
-        // OPTION 2: Calculate closing stock using getStockAsOfDate for end of period
-        // This is more accurate but requires another API call
-
-
-        // Calculate closing stock using the new function
-
-        // FIXED: Closing stock calculation with proper historical data
-        // For closing stock, use the same method but for end date
-        const closingStockDate = dateRange.end; // Your end date
-        // You would need to call calculateOpeningStockForDate for the end date
-        // But since we're calculating period transactions, we can also do:
-
-        // OPTION 1: Calculate closing stock as: opening + purchases - consumption + period variances
-        // const closingStockValue = openingStockValue + periodPurchasesValue - periodConsumption + netVariancesValue;
-
-        // OPTION 2: Calculate closing stock using getStockAsOfDate for end of period
-        // This is more accurate but requires another API call
-
-
-
-
-
-
-
-        const closingStockValue = await calculateClosingStockForDate(
-            dateRange.end,
-            stockItemsArray
-        );
-
-        setCalculatingOpeningStock(false);
-
-        // FINANCIAL CALCULATIONS WITH VAT - FIXED
-        // COGS = Opening Stock + Purchases - Closing Stock
-        const COGS = openingStockValue + periodPurchasesValue - closingStockValue;
-
-        // Consumption = Dispatch costs in period (this is the food/ingredients consumed)
-        // This should be similar to COGS but may include variances
-        const actualConsumption = periodConsumption;
-
-        // Gross Profit Before VAT = Sales - COGS
-        const grossProfitBeforeVAT = periodSales - COGS;
-
-        // VAT impact: Add VAT on sales, subtract VAT on purchases
-        const grossProfitAfterVAT = grossProfitBeforeVAT - netVATPayable;
-
-        // Profit = Gross Profit After VAT
-        const profit = grossProfitAfterVAT;
-        const profitPercentage = periodSales > 0 ? (profit / periodSales) * 100 : 0;
-
-        // Add consumption analysis for clarity
-        const consumptionVsCOGS = actualConsumption - COGS; // Positive = over-consumption
-
-        console.log('💰 CORRECTED Financial calculations with VAT:', {
-            openingStockValue,
-            periodPurchasesValue,
-            actualConsumption,
-            COGS,
-            consumptionVsCOGS,
-            closingStockValue,
-            periodSales,
-            vatOnPurchases,
-            vatOnSales,
-            netVATPayable,
-            grossProfitBeforeVAT,
-            grossProfitAfterVAT,
-            profit,
-            profitPercentage
-        });
-
-        // Helper functions
-        const getStatusBreakdown = (items: any[]) => {
-            const statusCounts: { [key: string]: number } = {};
-            items.forEach(item => {
-                const status = item.status || 'unknown';
-                statusCounts[status] = (statusCounts[status] || 0) + 1;
-            });
-            return Object.entries(statusCounts).map(([name, value]) => ({ name, value }));
-        };
-
-        const getSiteBreakdown = (items: any[]) => {
-            const siteCounts: { [key: string]: number } = {};
-            items.forEach(item => {
-                const siteName = item.site?.name ||
-                    item.purchaseOrder?.site?.name ||
-                    item.sourceBin?.site?.name ||
-                    item.receivingBin?.site?.name ||
-                    item.fromBin?.site?.name ||
-                    item.bin?.site?.name ||
-                    'Unknown Site';
-                siteCounts[siteName] = (siteCounts[siteName] || 0) + 1;
-            });
-            return Object.entries(siteCounts).map(([name, value]) => ({ name, value }));
-        };
-
-        const getMonthlyBreakdown = (items: any[], dateField: string) => {
-            const monthlyCounts: { [key: string]: number } = {};
-            items.forEach(item => {
-                try {
-                    const date = new Date(item[dateField]);
-                    if (!isNaN(date.getTime())) {
-                        const monthYear = format(date, 'MMM yyyy');
-                        monthlyCounts[monthYear] = (monthlyCounts[monthYear] || 0) + 1;
-                    }
-                } catch (error) {
-                    // Skip invalid dates
-                }
-            });
-            return Object.entries(monthlyCounts).map(([name, value]) => ({ name, value }));
-        };
-
-        // Process purchase orders with VAT data
-        const poStatusBreakdown = getStatusBreakdown(periodPOs);
-        const poSiteBreakdown = getSiteBreakdown(periodPOs);
-        const poMonthlyBreakdown = getMonthlyBreakdown(periodPOs, 'orderDate');
-        const poTotalValue = periodPOs.reduce((sum: number, po: any) => sum + (po.totalAmount || 0), 0);
-        const poVATAmount = periodPOs.reduce((sum: number, po: any) => sum + (po.vatAmount || 0), 0);
-        const poTotalWithVAT = periodPOs.reduce((sum: number, po: any) => sum + (po.totalWithVAT || po.totalAmount || 0), 0);
-
-        // Top items by quantity ordered with VAT
-        const topItems = periodPOs.flatMap((po: any) =>
-            po.orderedItems?.map((item: any) => ({
-                name: item.stockItem?.name || 'Unknown Item',
-                quantity: item.orderedQuantity || 0,
-                value: (item.orderedQuantity || 0) * (item.unitPrice || 0),
-                vatAmount: item.vatAmount || 0
-            })) || []
-        ).reduce((acc: any[], item: any) => {
-            const existing = acc.find(i => i.name === item.name);
-            if (existing) {
-                existing.quantity += item.quantity;
-                existing.value += item.value;
-                existing.vatAmount += item.vatAmount;
-            } else {
-                acc.push({ ...item });
+        try {
+            // Validate data
+            if (!data) {
+                console.error('❌ No data provided to processAnalyticsData');
+                return getEmptyAnalyticsData(); // Create this helper function
             }
-            return acc;
-        }, []).sort((a: any, b: any) => b.quantity - a.quantity).slice(0, 10);
+            const {
+                purchaseOrders = [],
+                goodsReceipts = [],
+                dispatches = [],
+                transfers = [],
+                binCounts = [],
+                stockValues = { items: [], summary: { totalInventoryValue: 0, totalVAT: 0 } },
+                lowStock = [],
+                suppliers = [],
+                users = [],
+                sites = []
+            } = data;
 
-        // Process dispatches with VAT data
-        const dispatchByType = periodDispatches.reduce((acc: any[], dispatch: any) => {
-            const type = dispatch.dispatchType?.name || 'Unknown Type';
-            const existing = acc.find(item => item.name === type);
-            if (existing) {
-                existing.value++;
-            } else {
-                acc.push({ name: type, value: 1 });
-            }
-            return acc;
-        }, []);
+            console.log('📊 Processing analytics data with VAT calculations...');
 
-        const dispatchTopItems = periodDispatches.flatMap((dispatch: any) =>
-            dispatch.dispatchedItems?.map((item: any) => ({
-                name: item.stockItem?.name || 'Unknown Item',
-                quantity: item.dispatchedQuantity || 0,
-                cost: item.totalCost || 0,
-                vatAmount: item.vatAmount || 0
-            })) || []
-        ).reduce((acc: any[], item: any) => {
-            const existing = acc.find(i => i.name === item.name);
-            if (existing) {
-                existing.quantity += item.quantity;
-                existing.cost += item.cost;
-                existing.vatAmount += item.vatAmount;
-            } else {
-                acc.push({ ...item });
-            }
-            return acc;
-        }, []).sort((a: any, b: any) => b.quantity - a.quantity).slice(0, 10);
+            // Filter data by date range for period-based calculations
+            const periodPOs = filterDataByDateRange(purchaseOrders, 'orderDate');
+            const periodGoodsReceipts = filterDataByDateRange(goodsReceipts, 'receiptDate');
+            const periodDispatches = filterDataByDateRange(dispatches, 'dispatchDate');
+            const periodBinCounts = filterDataByDateRange(binCounts, 'countDate');
 
-        // Process inventory with VAT data
-        const inventoryByCategory = stockItemsArray.reduce((acc: any[], item: any) => {
-            const category = item.category?.title || 'Uncategorized';
-            const existing = acc.find(cat => cat.name === category);
-            if (existing) {
-                existing.value++;
-            } else {
-                acc.push({ name: category, value: 1 });
-            }
-            return acc;
-        }, []);
+            /*/ VAT CALCULATIONS
+            // 1. VAT on Purchases (Input VAT)
+            const vatOnPurchases = periodGoodsReceipts.reduce((sum: number, gr: any) =>
+                sum + (gr.vatAmount || 0), 0
+            );
 
-        // Calculate low stock breakdown accurately
-        const criticalStockItems = lowStock.filter((item: any) => (item.currentStock || 0) === 0).length;
-        const warningStockItems = lowStock.filter((item: any) =>
-            (item.currentStock || 0) > 0 && (item.currentStock || 0) <= (item.minimumStockLevel || 0)
-        ).length;
-        const healthyStockItems = stockItemsArray.length - lowStock.length;
+            // 2. VAT on Sales (Output VAT)
+            const vatOnSales = periodDispatches.reduce((sum: number, d: any) =>
+                sum + (d.salesVAT || 0), 0
+            );
 
-        // Process bin counts with accurate data
-        const binCountAccuracy = periodBinCounts.length > 0 ?
-            periodBinCounts.reduce((sum: number, count: any) => {
-                const accurateItems = count.countedItems?.filter((item: any) => item.variance === 0).length || 0;
-                const totalItems = count.countedItems?.length || 0;
-                return sum + (totalItems > 0 ? accurateItems / totalItems : 0);
-            }, 0) / periodBinCounts.length : 0;
+            // 3. Net VAT Payable (Output VAT - Input VAT)
+            const netVATPayable = vatOnSales - vatOnPurchases;
+            */
 
-        const varianceAnalysis = periodBinCounts.flatMap((count: any) =>
-            count.countedItems?.map((item: any) => item.variance) || []
-        ).reduce((acc: any, variance: number) => {
-            if (variance > 0) acc.positive++;
-            else if (variance < 0) acc.negative++;
-            else acc.zero++;
-            return acc;
-        }, { positive: 0, negative: 0, zero: 0 });
+            // SIMPLIFIED FINANCIAL CALCULATIONS WITH VAT
+            // 1. PURCHASES = Goods Receipts value in the period
+            const periodPurchasesValue = periodGoodsReceipts.reduce((sum: number, gr: any) => {
+                const receiptValue = gr.receivedItems?.reduce((itemSum: number, item: any) => {
+                    const unitPrice = item.unitPrice || item.stockItem?.unitPrice || 0;
+                    const receivedQuantity = item.receivedQuantity || 0;
+                    return itemSum + (receivedQuantity * unitPrice);
+                }, 0) || 0;
+                return sum + receiptValue;
+            }, 0);
 
-        // Process suppliers with VAT data
-        const supplierPerformance = periodPOs.flatMap((po: any) =>
-            po.orderedItems?.map((item: any) => ({
-                name: item.supplier?.name || 'Unknown Supplier',
-                orders: 1,
-                value: (item.orderedQuantity || 0) * (item.unitPrice || 0),
-                vatAmount: item.vatAmount || 0
-            })) || []
-        ).reduce((acc: any[], supplier: any) => {
-            const existing = acc.find(s => s.name === supplier.name);
-            if (existing) {
-                existing.orders += supplier.orders;
-                existing.value += supplier.value;
-                existing.vatAmount += supplier.vatAmount;
-            } else {
-                acc.push(supplier);
-            }
-            return acc;
-        }, []).sort((a: any, b: any) => b.value - a.value).slice(0, 10);
+            // 2. CONSUMPTION = Dispatch costs in the period
+            const periodConsumption = periodDispatches.reduce((sum: number, d: any) => {
+                const dispatchCost = d.dispatchedItems?.reduce((itemSum: number, item: any) => {
+                    // Use totalCost excluding VAT for COGS calculation
+                    const itemCostExclVAT = item.totalCost || 0;
+                    return itemSum + itemCostExclVAT;
+                }, 0) || 0;
+                return sum + dispatchCost;
+            }, 0);
 
-        // Process goods receipts with VAT data
-        const goodsReceiptsTotalValue = periodGoodsReceipts.reduce((sum: number, gr: any) => {
-            const receiptValue = gr.receivedItems?.reduce((itemSum: number, item: any) => {
-                return itemSum + ((item.receivedQuantity || 0) * (item.unitPrice || 0));
-            }, 0) || 0;
-            return sum + receiptValue;
-        }, 0);
+            // 3. SALES = People fed × selling prices in the period
+            const periodSales = periodDispatches.reduce((sum: number, d: any) => {
+                const sellingPrice = d.dispatchType?.sellingPrice || d.sellingPrice || 0;
+                const peopleFed = d.peopleFed || 0;
+                return sum + (sellingPrice * peopleFed);
+            }, 0);
 
-        const goodsReceiptsVATAmount = periodGoodsReceipts.reduce((sum: number, gr: any) =>
-            sum + (gr.vatAmount || 0), 0
-        );
+            // 4. GET OPENING STOCK VALUE using simplified approach
+            const stockItemsArray = stockValues?.items || [];
+            setCalculatingOpeningStock(true);
+            const openingStockValue = await calculateOpeningStockForDate(
+                dateRange.start,
+                stockItemsArray,
+                goodsReceipts,
+                dispatches,
+                binCounts
+            );
 
-        const goodsReceiptsTotalWithVAT = periodGoodsReceipts.reduce((sum: number, gr: any) =>
-            sum + (gr.totalWithVAT || 0), 0
-        );
+            // 5. VARIANCES from bin counts in the period
+            // FIXED: Calculate ONLY period variances
+            const netVariancesValue = periodBinCounts.reduce((sum: number, count: any) =>
+                sum + (count.countedItems?.reduce((itemSum: number, item: any) => {
+                    // Only include variances from items that were actually counted in the period
+                    const varianceValue = (item.variance || 0) * (item.stockItem?.unitPrice || 0);
+                    return itemSum + varianceValue;
+                }, 0) || 0), 0
+            );
 
-        // Process dispatches with VAT data
-        const dispatchesTotalCost = periodDispatches.reduce((sum: number, d: any) =>
-            sum + (d.totalCost || 0), 0
-        );
+            // 6. CLOSING STOCK = Opening + Purchases - Consumption + Variances
+            // const closingStockValue = openingStockValue + periodPurchasesValue - periodConsumption + netVariancesValue;
 
-        const dispatchesVATAmount = periodDispatches.reduce((sum: number, d: any) =>
-            sum + (d.vatAmount || 0), 0
-        );
+            // FIXED: Closing stock calculation with proper historical data
+            // For closing stock, use the same method but for end date
+            //const closingStockDate = dateRange.end; // Your end date
+            // You would need to call calculateOpeningStockForDate for the end date
+            // But since we're calculating period transactions, we can also do:
 
-        const dispatchesTotalWithVAT = periodDispatches.reduce((sum: number, d: any) =>
-            sum + (d.totalWithVAT || 0), 0
-        );
+            // OPTION 1: Calculate closing stock as: opening + purchases - consumption + period variances
+            //const closingStockValue = openingStockValue + periodPurchasesValue - periodConsumption + netVariancesValue;
 
-        const dispatchesTotalSales = periodDispatches.reduce((sum: number, d: any) =>
-            sum + (d.totalSales || 0), 0
-        );
+            // OPTION 2: Calculate closing stock using getStockAsOfDate for end of period
+            // This is more accurate but requires another API call
 
-        const dispatchesSalesVAT = periodDispatches.reduce((sum: number, d: any) =>
-            sum + (d.salesVAT || 0), 0
-        );
 
-        const dispatchesSalesWithVAT = periodDispatches.reduce((sum: number, d: any) =>
-            sum + (d.salesWithVAT || d.totalSales || 0), 0
-        );
+            // Calculate closing stock using the new function
 
-        return {
-            summary: {
-                totalPurchaseOrders: periodPOs.length,
-                totalGoodsReceipts: periodGoodsReceipts.length,
-                totalDispatches: periodDispatches.length,
-                totalTransfers: transfers.length,
-                totalBinCounts: periodBinCounts.length,
-                totalStockItems: stockItemsArray.length,
-                totalSuppliers: suppliers.length,
-                totalUsers: users.length,
-                totalSites: sites.length,
-                totalInventoryValue: openingStockValue,
-                totalPeopleFed: periodDispatches.reduce((sum: number, d: any) => sum + (d.peopleFed || 0), 0),
-                lowStockItems: lowStock.length,
-                criticalStockItems,
-                totalVATCollected: vatOnSales,
-                totalVATPaid: vatOnPurchases,
-                netVATLiability: netVATPayable
-            },
-            purchaseOrders: {
-                byStatus: poStatusBreakdown,
-                bySite: poSiteBreakdown,
-                byMonth: poMonthlyBreakdown,
-                totalValue: poTotalValue,
-                vatAmount: poVATAmount,
-                totalWithVAT: poTotalWithVAT,
-                avgOrderValue: periodPOs.length ? poTotalValue / periodPOs.length : 0,
-                topItems,
-                statusBreakdown: poStatusBreakdown.reduce((acc, item) => {
-                    acc[item.name] = item.value;
-                    return acc;
-                }, {} as { [key: string]: number })
-            },
-            goodsReceipts: {
-                byStatus: getStatusBreakdown(periodGoodsReceipts),
-                bySite: getSiteBreakdown(periodGoodsReceipts),
-                efficiency: periodGoodsReceipts.filter((gr: any) => gr.status === 'completed').length / Math.max(periodGoodsReceipts.length, 1),
-                conditionBreakdown: periodGoodsReceipts.flatMap((gr: any) =>
-                    gr.receivedItems?.map((item: any) => item.condition) || []
-                ).reduce((acc: { [key: string]: number }, condition: string) => {
-                    acc[condition] = (acc[condition] || 0) + 1;
-                    return acc;
-                }, {}),
-                totalValue: goodsReceiptsTotalValue,
-                vatAmount: goodsReceiptsVATAmount,
-                totalWithVAT: goodsReceiptsTotalWithVAT
-            },
-            dispatches: {
-                byType: dispatchByType,
-                bySite: getSiteBreakdown(periodDispatches),
-                totalPeopleFed: periodDispatches.reduce((sum: number, d: any) => sum + (d.peopleFed || 0), 0),
-                totalCost: dispatchesTotalCost,
-                vatAmount: dispatchesVATAmount,
-                totalWithVAT: dispatchesTotalWithVAT,
-                costPerPerson: periodDispatches.reduce((sum: number, d: any) => sum + (d.peopleFed || 0), 0) > 0 ?
-                    dispatchesTotalCost / periodDispatches.reduce((sum: number, d: any) => sum + (d.peopleFed || 0), 0) : 0,
-                topItems: dispatchTopItems,
-                totalSales: dispatchesTotalSales,
-                salesVAT: dispatchesSalesVAT,
-                salesWithVAT: dispatchesSalesWithVAT
-            },
-            transfers: {
-                byStatus: getStatusBreakdown(transfers),
-                bySite: getSiteBreakdown(transfers),
-                approvalRate: transfers.filter((t: any) =>
-                    ['approved', 'completed'].includes(t.status)
-                ).length / Math.max(transfers.length, 1)
-            },
-            inventory: {
-                byCategory: inventoryByCategory,
-                totalValue: openingStockValue,
-                vatIncluded: stockValues.summary.totalVAT || 0,
-                lowStockBreakdown: {
-                    critical: criticalStockItems,
-                    warning: warningStockItems,
-                    healthy: healthyStockItems
-                }
-            },
-            binCounts: {
-                byStatus: getStatusBreakdown(periodBinCounts),
-                accuracy: binCountAccuracy,
-                varianceAnalysis
-            },
-            financial: {
-                monthlySpending: periodPOs.reduce((acc: any[], po: any) => {
-                    try {
-                        const date = new Date(po.orderDate);
-                        if (!isNaN(date.getTime())) {
-                            const month = format(date, 'MMM yyyy');
-                            const existing = acc.find(item => item.month === month);
-                            if (existing) {
-                                existing.spending += po.totalAmount || 0;
-                                existing.vat += po.vatAmount || 0;
-                                existing.totalWithVAT += po.totalWithVAT || po.totalAmount || 0;
-                            } else {
-                                acc.push({
-                                    month,
-                                    spending: po.totalAmount || 0,
-                                    vat: po.vatAmount || 0,
-                                    totalWithVAT: po.totalWithVAT || po.totalAmount || 0
-                                });
-                            }
-                        }
-                    } catch (error) {
-                        // Skip invalid dates
-                    }
-                    return acc;
-                }, []).sort((a: any, b: any) => new Date(a.month).getTime() - new Date(b.month).getTime()),
-                costPerPersonTrend: periodDispatches.map((dispatch: any) => {
-                    try {
-                        const date = new Date(dispatch.dispatchDate);
-                        if (!isNaN(date.getTime())) {
-                            return {
-                                date: format(date, 'MMM dd'),
-                                cost: dispatch.costPerPerson || 0
-                            };
-                        }
-                    } catch (error) {
-                        // Skip invalid dates
-                    }
-                    return { date: 'Unknown', cost: 0 };
-                }).filter((item: any) => item.date !== 'Unknown').slice(-30),
-                inventoryTurnover: 0.5, // This would need more complex calculation
-                totalReceivedGoodsValue: periodPurchasesValue,
-                totalSales: periodSales,
-                consumption: periodConsumption,
-                profit,
-                profitPercentage,
-                closingStockValue,
-                periodPurchases: periodPurchasesValue,
-                periodConsumption,
-                periodSales,
+            // FIXED: Closing stock calculation with proper historical data
+            // For closing stock, use the same method but for end date
+            const closingStockDate = dateRange.end; // Your end date
+            // You would need to call calculateOpeningStockForDate for the end date
+            // But since we're calculating period transactions, we can also do:
+
+            // OPTION 1: Calculate closing stock as: opening + purchases - consumption + period variances
+            // const closingStockValue = openingStockValue + periodPurchasesValue - periodConsumption + netVariancesValue;
+
+            // OPTION 2: Calculate closing stock using getStockAsOfDate for end of period
+            // This is more accurate but requires another API call
+
+
+
+
+
+
+
+            /*const closingStockValue = await calculateClosingStockForDate(
+                dateRange.end,
+                stockItemsArray
+            );*/
+
+
+            // 6. CALCULATE CLOSING STOCK using the correct formula
+            // 6. CLOSING STOCK = Opening + Purchases - Consumption + Variances (ALL in VALUE terms)
+            const closingStockValue = openingStockValue + periodPurchasesValue - periodConsumption + netVariancesValue;
+
+            console.log('📦 Closing stock calculation:', {
                 openingStock: openingStockValue,
-                netVariances: netVariancesValue,
-                // VAT-specific financials
+                purchases: periodPurchasesValue,
+                consumption: periodConsumption,
+                variances: netVariancesValue,
+                closingStock: closingStockValue
+            });
+
+            setCalculatingOpeningStock(false);
+
+
+
+            setCalculatingOpeningStock(false);
+
+            // FINANCIAL CALCULATIONS WITH VAT - CORRECTED
+            // COGS should equal the actual consumption (dispatched items cost)
+            // The stock formula (Opening + Purchases - Closing) should equal consumption
+            const COGS = periodConsumption; // This is the actual cost of goods consumed
+
+            // Validate that the stock formula matches consumption
+            const COGSFromStockFormula = openingStockValue + periodPurchasesValue - closingStockValue;
+            const stockFormulaMatch = Math.abs(COGS - COGSFromStockFormula) < 0.01; // Check if they match within 1 cent
+
+            if (!stockFormulaMatch) {
+                console.warn('⚠️ Stock formula mismatch:', {
+                    COGSFromConsumption: COGS,
+                    COGSFromStockFormula: COGSFromStockFormula,
+                    difference: COGSFromStockFormula - COGS
+                });
+            }
+
+            // CORRECT FINANCIAL CALCULATIONS WITH VAT
+            // Step 1: Calculate VAT properly
+            // VAT on Sales (Output VAT) - this is what you collect from customers
+            const vatOnSales = periodDispatches.reduce((sum: number, d: any) => {
+                const sellingPrice = d.dispatchType?.sellingPrice || d.sellingPrice || 0;
+                const peopleFed = d.peopleFed || 0;
+                const salesExclVAT = sellingPrice * peopleFed;
+                // IMPORTANT: Check if sellingPrice includes or excludes VAT
+                // Assuming sellingPrice EXCLUDES VAT (most common for B2B)
+                const vatAmount = salesExclVAT * VAT_CONFIG.rate;
+                return sum + vatAmount;
+            }, 0);
+
+            // VAT on Purchases (Input VAT) - this is what you pay to suppliers
+            const vatOnPurchases = periodGoodsReceipts.reduce((sum: number, gr: any) =>
+                sum + (gr.vatAmount || 0), 0
+            );
+
+            // Net VAT Payable = Output VAT - Input VAT
+            const netVATPayable = vatOnSales - vatOnPurchases;
+
+            // Step 2: Calculate Sales (EXCLUDING VAT)
+            const periodSalesExclVAT = periodDispatches.reduce((sum: number, d: any) => {
+                const sellingPrice = d.dispatchType?.sellingPrice || d.sellingPrice || 0;
+                const peopleFed = d.peopleFed || 0;
+                return sum + (sellingPrice * peopleFed);
+            }, 0);
+
+            // Step 3: Calculate Gross Profit (BEFORE VAT)
+            const grossProfitBeforeVAT = periodSalesExclVAT - periodConsumption;
+
+            // Step 4: Calculate Net Profit (AFTER VAT)
+            // VAT is a tax liability, not an expense against gross profit
+            // But for your reporting needs, we can show both
+            const profitBeforeTax = grossProfitBeforeVAT;
+            const netProfit = profitBeforeTax - netVATPayable;
+
+            const profitPercentage = periodSalesExclVAT > 0 ? (netProfit / periodSalesExclVAT) * 100 : 0;
+
+            // For backward compatibility
+            const profit = netProfit;
+            const grossProfitAfterVAT = netProfit; // This is misleading but matches your previous variable
+
+            // Add consumption analysis for clarity
+            const consumptionVsCOGS = actualConsumption - COGS; // Positive = over-consumption
+
+            console.log('💰 CORRECTED Financial calculations with VAT:', {
+                openingStockValue,
+                periodPurchasesValue,
+                actualConsumption,
+                COGS,
+                consumptionVsCOGS,
+                closingStockValue,
+                periodSales,
                 vatOnPurchases,
                 vatOnSales,
                 netVATPayable,
                 grossProfitBeforeVAT,
-                grossProfitAfterVAT
-            },
-            suppliers: {
-                performance: supplierPerformance,
-                activeCount: suppliers.filter((s: any) => s.isActive).length,
-                vatRegisteredCount: suppliers.filter((s: any) => s.vatNumber).length
-            },
-            users: {
-                byRole: users.reduce((acc: any[], user: any) => {
-                    const role = user.role || 'unknown';
-                    const existing = acc.find(item => item.name === role);
-                    if (existing) {
-                        existing.value++;
-                    } else {
-                        acc.push({ name: role, value: 1 });
+                grossProfitAfterVAT,
+                profit,
+                profitPercentage
+            });
+
+            // Helper functions
+            const getStatusBreakdown = (items: any[]) => {
+                const statusCounts: { [key: string]: number } = {};
+                items.forEach(item => {
+                    const status = item.status || 'unknown';
+                    statusCounts[status] = (statusCounts[status] || 0) + 1;
+                });
+                return Object.entries(statusCounts).map(([name, value]) => ({ name, value }));
+            };
+
+            const getSiteBreakdown = (items: any[]) => {
+                const siteCounts: { [key: string]: number } = {};
+                items.forEach(item => {
+                    const siteName = item.site?.name ||
+                        item.purchaseOrder?.site?.name ||
+                        item.sourceBin?.site?.name ||
+                        item.receivingBin?.site?.name ||
+                        item.fromBin?.site?.name ||
+                        item.bin?.site?.name ||
+                        'Unknown Site';
+                    siteCounts[siteName] = (siteCounts[siteName] || 0) + 1;
+                });
+                return Object.entries(siteCounts).map(([name, value]) => ({ name, value }));
+            };
+
+            const getMonthlyBreakdown = (items: any[], dateField: string) => {
+                const monthlyCounts: { [key: string]: number } = {};
+                items.forEach(item => {
+                    try {
+                        const date = new Date(item[dateField]);
+                        if (!isNaN(date.getTime())) {
+                            const monthYear = format(date, 'MMM yyyy');
+                            monthlyCounts[monthYear] = (monthlyCounts[monthYear] || 0) + 1;
+                        }
+                    } catch (error) {
+                        // Skip invalid dates
                     }
-                    return acc;
-                }, []),
-                activity: [] // This would need user activity tracking
-            },
-            vat: {
+                });
+                return Object.entries(monthlyCounts).map(([name, value]) => ({ name, value }));
+            };
+
+            // Process purchase orders with VAT data
+            const poStatusBreakdown = getStatusBreakdown(periodPOs);
+            const poSiteBreakdown = getSiteBreakdown(periodPOs);
+            const poMonthlyBreakdown = getMonthlyBreakdown(periodPOs, 'orderDate');
+            const poTotalValue = periodPOs.reduce((sum: number, po: any) => sum + (po.totalAmount || 0), 0);
+            const poVATAmount = periodPOs.reduce((sum: number, po: any) => sum + (po.vatAmount || 0), 0);
+            const poTotalWithVAT = periodPOs.reduce((sum: number, po: any) => sum + (po.totalWithVAT || po.totalAmount || 0), 0);
+
+            // Top items by quantity ordered with VAT
+            const topItems = periodPOs.flatMap((po: any) =>
+                po.orderedItems?.map((item: any) => ({
+                    name: item.stockItem?.name || 'Unknown Item',
+                    quantity: item.orderedQuantity || 0,
+                    value: (item.orderedQuantity || 0) * (item.unitPrice || 0),
+                    vatAmount: item.vatAmount || 0
+                })) || []
+            ).reduce((acc: any[], item: any) => {
+                const existing = acc.find(i => i.name === item.name);
+                if (existing) {
+                    existing.quantity += item.quantity;
+                    existing.value += item.value;
+                    existing.vatAmount += item.vatAmount;
+                } else {
+                    acc.push({ ...item });
+                }
+                return acc;
+            }, []).sort((a: any, b: any) => b.quantity - a.quantity).slice(0, 10);
+
+            // Process dispatches with VAT data
+            const dispatchByType = periodDispatches.reduce((acc: any[], dispatch: any) => {
+                const type = dispatch.dispatchType?.name || 'Unknown Type';
+                const existing = acc.find(item => item.name === type);
+                if (existing) {
+                    existing.value++;
+                } else {
+                    acc.push({ name: type, value: 1 });
+                }
+                return acc;
+            }, []);
+
+            const dispatchTopItems = periodDispatches.flatMap((dispatch: any) =>
+                dispatch.dispatchedItems?.map((item: any) => ({
+                    name: item.stockItem?.name || 'Unknown Item',
+                    quantity: item.dispatchedQuantity || 0,
+                    cost: item.totalCost || 0,
+                    vatAmount: item.vatAmount || 0
+                })) || []
+            ).reduce((acc: any[], item: any) => {
+                const existing = acc.find(i => i.name === item.name);
+                if (existing) {
+                    existing.quantity += item.quantity;
+                    existing.cost += item.cost;
+                    existing.vatAmount += item.vatAmount;
+                } else {
+                    acc.push({ ...item });
+                }
+                return acc;
+            }, []).sort((a: any, b: any) => b.quantity - a.quantity).slice(0, 10);
+
+            // Process inventory with VAT data
+            const inventoryByCategory = stockItemsArray.reduce((acc: any[], item: any) => {
+                const category = item.category?.title || 'Uncategorized';
+                const existing = acc.find(cat => cat.name === category);
+                if (existing) {
+                    existing.value++;
+                } else {
+                    acc.push({ name: category, value: 1 });
+                }
+                return acc;
+            }, []);
+
+            // Calculate low stock breakdown accurately
+            const criticalStockItems = lowStock.filter((item: any) => (item.currentStock || 0) === 0).length;
+            const warningStockItems = lowStock.filter((item: any) =>
+                (item.currentStock || 0) > 0 && (item.currentStock || 0) <= (item.minimumStockLevel || 0)
+            ).length;
+            const healthyStockItems = stockItemsArray.length - lowStock.length;
+
+            // Process bin counts with accurate data
+            const binCountAccuracy = periodBinCounts.length > 0 ?
+                periodBinCounts.reduce((sum: number, count: any) => {
+                    const accurateItems = count.countedItems?.filter((item: any) => item.variance === 0).length || 0;
+                    const totalItems = count.countedItems?.length || 0;
+                    return sum + (totalItems > 0 ? accurateItems / totalItems : 0);
+                }, 0) / periodBinCounts.length : 0;
+
+            const varianceAnalysis = periodBinCounts.flatMap((count: any) =>
+                count.countedItems?.map((item: any) => item.variance) || []
+            ).reduce((acc: any, variance: number) => {
+                if (variance > 0) acc.positive++;
+                else if (variance < 0) acc.negative++;
+                else acc.zero++;
+                return acc;
+            }, { positive: 0, negative: 0, zero: 0 });
+
+            // Process suppliers with VAT data
+            const supplierPerformance = periodPOs.flatMap((po: any) =>
+                po.orderedItems?.map((item: any) => ({
+                    name: item.supplier?.name || 'Unknown Supplier',
+                    orders: 1,
+                    value: (item.orderedQuantity || 0) * (item.unitPrice || 0),
+                    vatAmount: item.vatAmount || 0
+                })) || []
+            ).reduce((acc: any[], supplier: any) => {
+                const existing = acc.find(s => s.name === supplier.name);
+                if (existing) {
+                    existing.orders += supplier.orders;
+                    existing.value += supplier.value;
+                    existing.vatAmount += supplier.vatAmount;
+                } else {
+                    acc.push(supplier);
+                }
+                return acc;
+            }, []).sort((a: any, b: any) => b.value - a.value).slice(0, 10);
+
+            // Process goods receipts with VAT data
+            const goodsReceiptsTotalValue = periodGoodsReceipts.reduce((sum: number, gr: any) => {
+                const receiptValue = gr.receivedItems?.reduce((itemSum: number, item: any) => {
+                    return itemSum + ((item.receivedQuantity || 0) * (item.unitPrice || 0));
+                }, 0) || 0;
+                return sum + receiptValue;
+            }, 0);
+
+            const goodsReceiptsVATAmount = periodGoodsReceipts.reduce((sum: number, gr: any) =>
+                sum + (gr.vatAmount || 0), 0
+            );
+
+            const goodsReceiptsTotalWithVAT = periodGoodsReceipts.reduce((sum: number, gr: any) =>
+                sum + (gr.totalWithVAT || 0), 0
+            );
+
+            // Process dispatches with VAT data
+            const dispatchesTotalCost = periodDispatches.reduce((sum: number, d: any) =>
+                sum + (d.totalCost || 0), 0
+            );
+
+            const dispatchesVATAmount = periodDispatches.reduce((sum: number, d: any) =>
+                sum + (d.vatAmount || 0), 0
+            );
+
+            const dispatchesTotalWithVAT = periodDispatches.reduce((sum: number, d: any) =>
+                sum + (d.totalWithVAT || 0), 0
+            );
+
+            const dispatchesTotalSales = periodDispatches.reduce((sum: number, d: any) =>
+                sum + (d.totalSales || 0), 0
+            );
+
+            const dispatchesSalesVAT = periodDispatches.reduce((sum: number, d: any) =>
+                sum + (d.salesVAT || 0), 0
+            );
+
+            const dispatchesSalesWithVAT = periodDispatches.reduce((sum: number, d: any) =>
+                sum + (d.salesWithVAT || d.totalSales || 0), 0
+            );
+
+            return {
                 summary: {
-                    totalOutputVAT: vatOnSales,
-                    totalInputVAT: vatOnPurchases,
-                    netVATPayable,
-                    vatRate: VAT_CONFIG.ratePercentage
+                    totalPurchaseOrders: periodPOs.length,
+                    totalGoodsReceipts: periodGoodsReceipts.length,
+                    totalDispatches: periodDispatches.length,
+                    totalTransfers: transfers.length,
+                    totalBinCounts: periodBinCounts.length,
+                    totalStockItems: stockItemsArray.length,
+                    totalSuppliers: suppliers.length,
+                    totalUsers: users.length,
+                    totalSites: sites.length,
+                    totalInventoryValue: openingStockValue,
+                    totalPeopleFed: periodDispatches.reduce((sum: number, d: any) => sum + (d.peopleFed || 0), 0),
+                    lowStockItems: lowStock.length,
+                    criticalStockItems,
+                    totalVATCollected: vatOnSales,
+                    totalVATPaid: vatOnPurchases,
+                    netVATLiability: netVATPayable
                 },
-                breakdown: {
-                    purchases: {
-                        vatAmount: vatOnPurchases,
-                        totalWithVAT: periodPurchasesValue + vatOnPurchases
+                purchaseOrders: {
+                    byStatus: poStatusBreakdown,
+                    bySite: poSiteBreakdown,
+                    byMonth: poMonthlyBreakdown,
+                    totalValue: poTotalValue,
+                    vatAmount: poVATAmount,
+                    totalWithVAT: poTotalWithVAT,
+                    avgOrderValue: periodPOs.length ? poTotalValue / periodPOs.length : 0,
+                    topItems,
+                    statusBreakdown: poStatusBreakdown.reduce((acc, item) => {
+                        acc[item.name] = item.value;
+                        return acc;
+                    }, {} as { [key: string]: number })
+                },
+                goodsReceipts: {
+                    byStatus: getStatusBreakdown(periodGoodsReceipts),
+                    bySite: getSiteBreakdown(periodGoodsReceipts),
+                    efficiency: periodGoodsReceipts.filter((gr: any) => gr.status === 'completed').length / Math.max(periodGoodsReceipts.length, 1),
+                    conditionBreakdown: periodGoodsReceipts.flatMap((gr: any) =>
+                        gr.receivedItems?.map((item: any) => item.condition) || []
+                    ).reduce((acc: { [key: string]: number }, condition: string) => {
+                        acc[condition] = (acc[condition] || 0) + 1;
+                        return acc;
+                    }, {}),
+                    totalValue: goodsReceiptsTotalValue,
+                    vatAmount: goodsReceiptsVATAmount,
+                    totalWithVAT: goodsReceiptsTotalWithVAT
+                },
+                dispatches: {
+                    byType: dispatchByType,
+                    bySite: getSiteBreakdown(periodDispatches),
+                    totalPeopleFed: periodDispatches.reduce((sum: number, d: any) => sum + (d.peopleFed || 0), 0),
+                    totalCost: dispatchesTotalCost,
+                    vatAmount: dispatchesVATAmount,
+                    totalWithVAT: dispatchesTotalWithVAT,
+                    costPerPerson: periodDispatches.reduce((sum: number, d: any) => sum + (d.peopleFed || 0), 0) > 0 ?
+                        dispatchesTotalCost / periodDispatches.reduce((sum: number, d: any) => sum + (d.peopleFed || 0), 0) : 0,
+                    topItems: dispatchTopItems,
+                    totalSales: dispatchesTotalSales,
+                    salesVAT: dispatchesSalesVAT,
+                    salesWithVAT: dispatchesSalesWithVAT
+                },
+                transfers: {
+                    byStatus: getStatusBreakdown(transfers),
+                    bySite: getSiteBreakdown(transfers),
+                    approvalRate: transfers.filter((t: any) =>
+                        ['approved', 'completed'].includes(t.status)
+                    ).length / Math.max(transfers.length, 1)
+                },
+                inventory: {
+                    byCategory: inventoryByCategory,
+                    totalValue: openingStockValue,
+                    vatIncluded: stockValues.summary.totalVAT || 0,
+                    lowStockBreakdown: {
+                        critical: criticalStockItems,
+                        warning: warningStockItems,
+                        healthy: healthyStockItems
+                    }
+                },
+                binCounts: {
+                    byStatus: getStatusBreakdown(periodBinCounts),
+                    accuracy: binCountAccuracy,
+                    varianceAnalysis
+                },
+                financial: {
+                    monthlySpending: periodPOs.reduce((acc: any[], po: any) => {
+                        try {
+                            const date = new Date(po.orderDate);
+                            if (!isNaN(date.getTime())) {
+                                const month = format(date, 'MMM yyyy');
+                                const existing = acc.find(item => item.month === month);
+                                if (existing) {
+                                    existing.spending += po.totalAmount || 0;
+                                    existing.vat += po.vatAmount || 0;
+                                    existing.totalWithVAT += po.totalWithVAT || po.totalAmount || 0;
+                                } else {
+                                    acc.push({
+                                        month,
+                                        spending: po.totalAmount || 0,
+                                        vat: po.vatAmount || 0,
+                                        totalWithVAT: po.totalWithVAT || po.totalAmount || 0
+                                    });
+                                }
+                            }
+                        } catch (error) {
+                            // Skip invalid dates
+                        }
+                        return acc;
+                    }, []).sort((a: any, b: any) => new Date(a.month).getTime() - new Date(b.month).getTime()),
+                    costPerPersonTrend: periodDispatches.map((dispatch: any) => {
+                        try {
+                            const date = new Date(dispatch.dispatchDate);
+                            if (!isNaN(date.getTime())) {
+                                return {
+                                    date: format(date, 'MMM dd'),
+                                    cost: dispatch.costPerPerson || 0
+                                };
+                            }
+                        } catch (error) {
+                            // Skip invalid dates
+                        }
+                        return { date: 'Unknown', cost: 0 };
+                    }).filter((item: any) => item.date !== 'Unknown').slice(-30),
+                    inventoryTurnover: 0.5, // This would need more complex calculation
+                    totalReceivedGoodsValue: periodPurchasesValue,
+                    totalSales: periodSales,
+                    consumption: periodConsumption,
+                    profit,
+                    profitPercentage,
+                    closingStockValue,
+                    periodPurchases: periodPurchasesValue,
+                    periodConsumption,
+                    periodSales,
+                    openingStock: openingStockValue,
+                    netVariances: netVariancesValue,
+                    // VAT-specific financials
+                    vatOnPurchases,
+                    vatOnSales,
+                    netVATPayable,
+                    grossProfitBeforeVAT,
+                    grossProfitAfterVAT
+                },
+                suppliers: {
+                    performance: supplierPerformance,
+                    activeCount: suppliers.filter((s: any) => s.isActive).length,
+                    vatRegisteredCount: suppliers.filter((s: any) => s.vatNumber).length
+                },
+                users: {
+                    byRole: users.reduce((acc: any[], user: any) => {
+                        const role = user.role || 'unknown';
+                        const existing = acc.find(item => item.name === role);
+                        if (existing) {
+                            existing.value++;
+                        } else {
+                            acc.push({ name: role, value: 1 });
+                        }
+                        return acc;
+                    }, []),
+                    activity: [] // This would need user activity tracking
+                },
+                vat: {
+                    summary: {
+                        totalOutputVAT: vatOnSales,
+                        totalInputVAT: vatOnPurchases,
+                        netVATPayable,
+                        vatRate: VAT_CONFIG.ratePercentage
                     },
-                    sales: {
-                        vatAmount: vatOnSales,
-                        totalWithVAT: periodSales + vatOnSales
-                    },
-                    inventory: {
-                        vatAmount: stockValues.summary.totalVAT || 0,
-                        totalWithVAT: openingStockValue + (stockValues.summary.totalVAT || 0)
+                    breakdown: {
+                        purchases: {
+                            vatAmount: vatOnPurchases,
+                            totalWithVAT: periodPurchasesValue + vatOnPurchases
+                        },
+                        sales: {
+                            vatAmount: vatOnSales,
+                            totalWithVAT: periodSales + vatOnSales
+                        },
+                        inventory: {
+                            vatAmount: stockValues.summary.totalVAT || 0,
+                            totalWithVAT: openingStockValue + (stockValues.summary.totalVAT || 0)
+                        }
                     }
                 }
-            }
-        };
-    }, [filterDataByDateRange, calculateOpeningStockForDate, calculateClosingStockForDate]);
-
+            };
+        } catch (error) {
+            console.error('❌ Error processing analytics data:', error);
+            return getEmptyAnalyticsData();
+        }
+    }, [filterDataByDateRange, calculateOpeningStockForDate]);
 
     // Enhanced fetchAllData function with VAT calculations
     const fetchAllData = useCallback(async (forceRefresh = false) => {
@@ -1925,9 +2126,9 @@ export default function ComprehensiveReportsPage() {
                 'Status': po.status || 'N/A',
                 'Ordered By': po.orderedBy?.name || 'N/A',
                 'Site': po.site?.name || 'N/A',
-                'Total Amount (excl. VAT)': po.totalAmount || 0,
-                'VAT Amount': po.vatAmount || 0,
-                'Total Amount (incl. VAT)': po.totalWithVAT || 0,
+                'Total Amount (excl. VAT)': (po.totalAmount || 0).toFixed(2),
+                'VAT Amount': (po.vatAmount || 0).toFixed(2),
+                'Total Amount (incl. VAT)': (po.totalWithVAT || po.totalAmount || 0).toFixed(2),
                 'Evidence Status': po.evidenceStatus || 'N/A',
                 'Item Count': po.orderedItems?.length || 0
             }));
@@ -2521,6 +2722,11 @@ export default function ComprehensiveReportsPage() {
         }
     }, [currentReport, fetchReportData, status]);
 
+    // Add this above the useEffect to memoize fetchAllData
+    const memoizedFetchAllData = useCallback(() => {
+        fetchAllData();
+    }, [fetchAllData]);
+
     // Auto-load data on mount and when date range changes
     useEffect(() => {
         if (status === 'authenticated' && activeTab === 0) {
@@ -2531,7 +2737,7 @@ export default function ComprehensiveReportsPage() {
 
             return () => clearTimeout(timer);
         }
-    }, [status, fetchAllData, activeTab]);
+    }, [status, activeTab, fetchAllData]);
 
     if (status === 'loading') {
         return (

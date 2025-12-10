@@ -2,6 +2,7 @@
 import { NextResponse } from 'next/server';
 import { writeClient } from '@/lib/sanity';
 import { groq } from 'next-sanity';
+import { updateStockForTransaction } from '@/lib/stockCalculations';
 
 export async function POST(request: Request) {
     try {
@@ -120,6 +121,9 @@ export async function POST(request: Request) {
 
         // Execute the transaction
         const result = await transaction.commit();
+
+        await updateStockForTransaction('procurement', receiptId);
+
 
         // Update evidence status after transaction
         await updateEvidenceStatus(receiptId, attachmentIds);
