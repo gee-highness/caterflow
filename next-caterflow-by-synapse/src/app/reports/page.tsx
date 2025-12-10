@@ -313,8 +313,6 @@ interface ReportConfig {
     };
 }
 
-
-
 // VAT Configuration - Eswatini 15%
 const VAT_CONFIG = {
     rate: 0.15, // 15% VAT rate for Eswatini
@@ -798,11 +796,7 @@ export default function ComprehensiveReportsPage() {
         });
     }, [dateRangeMemo]);
 
-
-
     // SIMPLIFIED opening stock calculation - using current stock as fallback
-    // UPDATED: calculateOpeningStockForDate function
-    // UPDATED: calculateOpeningStockForDate function
     const calculateOpeningStockForDate = useCallback(async (
         targetDate: Date,
         currentStockItems: any[],
@@ -920,69 +914,13 @@ export default function ComprehensiveReportsPage() {
         }
     }, []);
 
-
-
-
-    // Function to calculate closing stock using same methodology
-    const calculateClosingStockForDate = useCallback(async (
-        targetDate: Date,
-        currentStockItems: any[]
-    ): Promise<number> => {
-        try {
-            console.log('🔍 Calculating closing stock for date:', targetDate.toDateString());
-
-            // Get all stock item IDs
-            const stockItemIds = currentStockItems.map(item => item._id);
-
-            // Get all bins
-            const binsResponse = await fetch('/api/bins');
-            const bins = await binsResponse.json();
-            const binIds = bins.map((bin: any) => bin._id);
-
-            if (binIds.length === 0) {
-                console.warn('⚠️ No bins found');
-                return 0;
-            }
-
-            console.log(`📊 Calculating closing stock for ${stockItemIds.length} items across ${binIds.length} bins`);
-
-            // Call the API endpoint for closing date
-            const response = await fetch('/api/stock-as-of-date', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    stockItemIds,
-                    binIds,
-                    asOfDate: targetDate.toISOString()
-                })
-            });
-
-            if (response.ok) {
-                const result = await response.json();
-                console.log('💰 Closing stock calculated:', result.summary.totalValue);
-                return result.summary.totalValue;
-            } else {
-                console.warn('⚠️ Failed to calculate closing stock via API');
-                // Return 0 or use alternative calculation
-                return 0;
-            }
-
-        } catch (error) {
-            console.error('❌ Error calculating closing stock:', error);
-            return 0;
-        }
-    }, []);
-
-    // UPDATED processAnalyticsData function with VAT calculations
+    // UPDATED processAnalyticsData function with VAT calculations - CORRECTED VERSION
     const processAnalyticsData = useCallback(async (data: any, dateRange: { start: Date; end: Date }): Promise<EnhancedAnalyticsData> => {
-
         try {
             // Validate data
             if (!data) {
                 console.error('❌ No data provided to processAnalyticsData');
-                return getEmptyAnalyticsData(); // Create this helper function
+                return getEmptyAnalyticsData();
             }
             const {
                 purchaseOrders = [],
@@ -1005,24 +943,9 @@ export default function ComprehensiveReportsPage() {
             const periodDispatches = filterDataByDateRange(dispatches, 'dispatchDate');
             const periodBinCounts = filterDataByDateRange(binCounts, 'countDate');
 
-            /*/ VAT CALCULATIONS
-            // 1. VAT on Purchases (Input VAT)
-            const vatOnPurchases = periodGoodsReceipts.reduce((sum: number, gr: any) =>
-                sum + (gr.vatAmount || 0), 0
-            );
-
-            // 2. VAT on Sales (Output VAT)
-            const vatOnSales = periodDispatches.reduce((sum: number, d: any) =>
-                sum + (d.salesVAT || 0), 0
-            );
-
-            // 3. Net VAT Payable (Output VAT - Input VAT)
-            const netVATPayable = vatOnSales - vatOnPurchases;
-            */
-
-            // SIMPLIFIED FINANCIAL CALCULATIONS WITH VAT
-            // 1. PURCHASES = Goods Receipts value in the period
-            const periodPurchasesValue = periodGoodsReceipts.reduce((sum: number, gr: any) => {
+            // SIMPLIFIED FINANCIAL CALCULATIONS WITH VAT - CORRECTED VERSION
+            // 1. PURCHASES = Goods Receipts value in the period (excluding VAT)
+            const periodPurchasesExclVAT = periodGoodsReceipts.reduce((sum: number, gr: any) => {
                 const receiptValue = gr.receivedItems?.reduce((itemSum: number, item: any) => {
                     const unitPrice = item.unitPrice || item.stockItem?.unitPrice || 0;
                     const receivedQuantity = item.receivedQuantity || 0;
@@ -1031,8 +954,16 @@ export default function ComprehensiveReportsPage() {
                 return sum + receiptValue;
             }, 0);
 
-            // 2. CONSUMPTION = Dispatch costs in the period
-            const periodConsumption = periodDispatches.reduce((sum: number, d: any) => {
+            // 2. VAT ON PURCHASES (Input VAT)
+            const vatOnPurchases = periodGoodsReceipts.reduce((sum: number, gr: any) =>
+                sum + (gr.vatAmount || 0), 0
+            );
+
+            // 3. PURCHASES INCLUDING VAT
+            const periodPurchasesInclVAT = periodPurchasesExclVAT + vatOnPurchases;
+
+            // 4. CONSUMPTION = Dispatch costs in the period (excluding VAT)
+            const periodConsumptionExclVAT = periodDispatches.reduce((sum: number, d: any) => {
                 const dispatchCost = d.dispatchedItems?.reduce((itemSum: number, item: any) => {
                     // Use totalCost excluding VAT for COGS calculation
                     const itemCostExclVAT = item.totalCost || 0;
@@ -1041,14 +972,26 @@ export default function ComprehensiveReportsPage() {
                 return sum + dispatchCost;
             }, 0);
 
-            // 3. SALES = People fed × selling prices in the period
-            const periodSales = periodDispatches.reduce((sum: number, d: any) => {
-                const sellingPrice = d.dispatchType?.sellingPrice || d.sellingPrice || 0;
+            // 5. VAT ON DISPATCH COSTS (this is input VAT on items being consumed)
+            const vatOnDispatchCosts = periodDispatches.reduce((sum: number, d: any) =>
+                sum + (d.vatAmount || 0), 0
+            );
+
+            // 6. SALES = People fed × selling prices (check if selling price includes VAT)
+            // ASSUMPTION: sellingPrice is PER PERSON and EXCLUDES VAT
+            const periodSalesExclVAT = periodDispatches.reduce((sum: number, d: any) => {
+                const sellingPriceExclVAT = d.dispatchType?.sellingPrice || d.sellingPrice || 0;
                 const peopleFed = d.peopleFed || 0;
-                return sum + (sellingPrice * peopleFed);
+                return sum + (sellingPriceExclVAT * peopleFed);
             }, 0);
 
-            // 4. GET OPENING STOCK VALUE using simplified approach
+            // 7. VAT ON SALES (Output VAT)
+            const vatOnSales = periodSalesExclVAT * VAT_CONFIG.rate;
+
+            // 8. SALES INCLUDING VAT
+            const periodSalesInclVAT = periodSalesExclVAT + vatOnSales;
+
+            // 9. GET OPENING STOCK VALUE (excluding VAT)
             const stockItemsArray = stockValues?.items || [];
             setCalculatingOpeningStock(true);
             const openingStockValue = await calculateOpeningStockForDate(
@@ -1059,153 +1002,54 @@ export default function ComprehensiveReportsPage() {
                 binCounts
             );
 
-            // 5. VARIANCES from bin counts in the period
-            // FIXED: Calculate ONLY period variances
+            // 10. VARIANCES from bin counts in the period (in value terms)
             const netVariancesValue = periodBinCounts.reduce((sum: number, count: any) =>
                 sum + (count.countedItems?.reduce((itemSum: number, item: any) => {
-                    // Only include variances from items that were actually counted in the period
                     const varianceValue = (item.variance || 0) * (item.stockItem?.unitPrice || 0);
                     return itemSum + varianceValue;
                 }, 0) || 0), 0
             );
 
-            // 6. CLOSING STOCK = Opening + Purchases - Consumption + Variances
-            // const closingStockValue = openingStockValue + periodPurchasesValue - periodConsumption + netVariancesValue;
-
-            // FIXED: Closing stock calculation with proper historical data
-            // For closing stock, use the same method but for end date
-            //const closingStockDate = dateRange.end; // Your end date
-            // You would need to call calculateOpeningStockForDate for the end date
-            // But since we're calculating period transactions, we can also do:
-
-            // OPTION 1: Calculate closing stock as: opening + purchases - consumption + period variances
-            //const closingStockValue = openingStockValue + periodPurchasesValue - periodConsumption + netVariancesValue;
-
-            // OPTION 2: Calculate closing stock using getStockAsOfDate for end of period
-            // This is more accurate but requires another API call
-
-
-            // Calculate closing stock using the new function
-
-            // FIXED: Closing stock calculation with proper historical data
-            // For closing stock, use the same method but for end date
-            const closingStockDate = dateRange.end; // Your end date
-            // You would need to call calculateOpeningStockForDate for the end date
-            // But since we're calculating period transactions, we can also do:
-
-            // OPTION 1: Calculate closing stock as: opening + purchases - consumption + period variances
-            // const closingStockValue = openingStockValue + periodPurchasesValue - periodConsumption + netVariancesValue;
-
-            // OPTION 2: Calculate closing stock using getStockAsOfDate for end of period
-            // This is more accurate but requires another API call
-
-
-
-
-
-
-
-            /*const closingStockValue = await calculateClosingStockForDate(
-                dateRange.end,
-                stockItemsArray
-            );*/
-
-
-            // 6. CALCULATE CLOSING STOCK using the correct formula
-            // 6. CLOSING STOCK = Opening + Purchases - Consumption + Variances (ALL in VALUE terms)
-            const closingStockValue = openingStockValue + periodPurchasesValue - periodConsumption + netVariancesValue;
+            // 11. CLOSING STOCK = Opening + Purchases - Consumption + Variances (ALL in VALUE terms)
+            const closingStockValue = openingStockValue + periodPurchasesExclVAT - periodConsumptionExclVAT + netVariancesValue;
 
             console.log('📦 Closing stock calculation:', {
                 openingStock: openingStockValue,
-                purchases: periodPurchasesValue,
-                consumption: periodConsumption,
+                purchases: periodPurchasesExclVAT,
+                consumption: periodConsumptionExclVAT,
                 variances: netVariancesValue,
                 closingStock: closingStockValue
             });
 
             setCalculatingOpeningStock(false);
 
+            // 12. FINANCIAL CALCULATIONS - CORRECTED
+            // COGS = Cost of Goods Sold = Consumption (dispatched items cost)
+            const COGS = periodConsumptionExclVAT;
 
+            // Gross Profit Before VAT = Sales (excl VAT) - COGS
+            const grossProfitBeforeVAT = periodSalesExclVAT - COGS;
 
-            setCalculatingOpeningStock(false);
-
-            // FINANCIAL CALCULATIONS WITH VAT - CORRECTED
-            // COGS should equal the actual consumption (dispatched items cost)
-            // The stock formula (Opening + Purchases - Closing) should equal consumption
-            const COGS = periodConsumption; // This is the actual cost of goods consumed
-
-            // Validate that the stock formula matches consumption
-            const COGSFromStockFormula = openingStockValue + periodPurchasesValue - closingStockValue;
-            const stockFormulaMatch = Math.abs(COGS - COGSFromStockFormula) < 0.01; // Check if they match within 1 cent
-
-            if (!stockFormulaMatch) {
-                console.warn('⚠️ Stock formula mismatch:', {
-                    COGSFromConsumption: COGS,
-                    COGSFromStockFormula: COGSFromStockFormula,
-                    difference: COGSFromStockFormula - COGS
-                });
-            }
-
-            // CORRECT FINANCIAL CALCULATIONS WITH VAT
-            // Step 1: Calculate VAT properly
-            // VAT on Sales (Output VAT) - this is what you collect from customers
-            const vatOnSales = periodDispatches.reduce((sum: number, d: any) => {
-                const sellingPrice = d.dispatchType?.sellingPrice || d.sellingPrice || 0;
-                const peopleFed = d.peopleFed || 0;
-                const salesExclVAT = sellingPrice * peopleFed;
-                // IMPORTANT: Check if sellingPrice includes or excludes VAT
-                // Assuming sellingPrice EXCLUDES VAT (most common for B2B)
-                const vatAmount = salesExclVAT * VAT_CONFIG.rate;
-                return sum + vatAmount;
-            }, 0);
-
-            // VAT on Purchases (Input VAT) - this is what you pay to suppliers
-            const vatOnPurchases = periodGoodsReceipts.reduce((sum: number, gr: any) =>
-                sum + (gr.vatAmount || 0), 0
-            );
-
-            // Net VAT Payable = Output VAT - Input VAT
+            // VAT Payable = Output VAT (sales) - Input VAT (purchases)
             const netVATPayable = vatOnSales - vatOnPurchases;
 
-            // Step 2: Calculate Sales (EXCLUDING VAT)
-            const periodSalesExclVAT = periodDispatches.reduce((sum: number, d: any) => {
-                const sellingPrice = d.dispatchType?.sellingPrice || d.sellingPrice || 0;
-                const peopleFed = d.peopleFed || 0;
-                return sum + (sellingPrice * peopleFed);
-            }, 0);
-
-            // Step 3: Calculate Gross Profit (BEFORE VAT)
-            const grossProfitBeforeVAT = periodSalesExclVAT - periodConsumption;
-
-            // Step 4: Calculate Net Profit (AFTER VAT)
-            // VAT is a tax liability, not an expense against gross profit
-            // But for your reporting needs, we can show both
-            const profitBeforeTax = grossProfitBeforeVAT;
-            const netProfit = profitBeforeTax - netVATPayable;
-
+            // IMPORTANT: VAT doesn't directly affect gross profit in standard accounting
+            // But for your reporting needs:
+            const netProfit = grossProfitBeforeVAT - netVATPayable;
             const profitPercentage = periodSalesExclVAT > 0 ? (netProfit / periodSalesExclVAT) * 100 : 0;
 
-            // For backward compatibility
-            const profit = netProfit;
-            const grossProfitAfterVAT = netProfit; // This is misleading but matches your previous variable
-
-            // Add consumption analysis for clarity
-            const consumptionVsCOGS = actualConsumption - COGS; // Positive = over-consumption
-
-            console.log('💰 CORRECTED Financial calculations with VAT:', {
+            console.log('💰 CORRECTED Financial calculations:', {
                 openingStockValue,
-                periodPurchasesValue,
-                actualConsumption,
+                periodPurchasesExclVAT,
+                periodConsumptionExclVAT,
                 COGS,
-                consumptionVsCOGS,
                 closingStockValue,
-                periodSales,
+                periodSalesExclVAT,
                 vatOnPurchases,
                 vatOnSales,
                 netVATPayable,
                 grossProfitBeforeVAT,
-                grossProfitAfterVAT,
-                profit,
+                netProfit,
                 profitPercentage
             });
 
@@ -1529,15 +1373,15 @@ export default function ComprehensiveReportsPage() {
                         return { date: 'Unknown', cost: 0 };
                     }).filter((item: any) => item.date !== 'Unknown').slice(-30),
                     inventoryTurnover: 0.5, // This would need more complex calculation
-                    totalReceivedGoodsValue: periodPurchasesValue,
-                    totalSales: periodSales,
-                    consumption: periodConsumption,
-                    profit,
+                    totalReceivedGoodsValue: periodPurchasesExclVAT,
+                    totalSales: periodSalesExclVAT,
+                    consumption: periodConsumptionExclVAT,
+                    profit: netProfit,
                     profitPercentage,
                     closingStockValue,
-                    periodPurchases: periodPurchasesValue,
-                    periodConsumption,
-                    periodSales,
+                    periodPurchases: periodPurchasesExclVAT,
+                    periodConsumption: periodConsumptionExclVAT,
+                    periodSales: periodSalesExclVAT,
                     openingStock: openingStockValue,
                     netVariances: netVariancesValue,
                     // VAT-specific financials
@@ -1545,7 +1389,7 @@ export default function ComprehensiveReportsPage() {
                     vatOnSales,
                     netVATPayable,
                     grossProfitBeforeVAT,
-                    grossProfitAfterVAT
+                    grossProfitAfterVAT: netProfit
                 },
                 suppliers: {
                     performance: supplierPerformance,
@@ -1575,11 +1419,11 @@ export default function ComprehensiveReportsPage() {
                     breakdown: {
                         purchases: {
                             vatAmount: vatOnPurchases,
-                            totalWithVAT: periodPurchasesValue + vatOnPurchases
+                            totalWithVAT: periodPurchasesExclVAT + vatOnPurchases
                         },
                         sales: {
                             vatAmount: vatOnSales,
-                            totalWithVAT: periodSales + vatOnSales
+                            totalWithVAT: periodSalesExclVAT + vatOnSales
                         },
                         inventory: {
                             vatAmount: stockValues.summary.totalVAT || 0,
@@ -1735,9 +1579,6 @@ export default function ComprehensiveReportsPage() {
     const handleUpdateAnalytics = () => {
         fetchAllData(true);
     };
-
-
-
 
     // Smart auto-fit columns function that calculates optimal widths
     const autoFitColumns = (worksheet: any) => {
@@ -2722,11 +2563,6 @@ export default function ComprehensiveReportsPage() {
         }
     }, [currentReport, fetchReportData, status]);
 
-    // Add this above the useEffect to memoize fetchAllData
-    const memoizedFetchAllData = useCallback(() => {
-        fetchAllData();
-    }, [fetchAllData]);
-
     // Auto-load data on mount and when date range changes
     useEffect(() => {
         if (status === 'authenticated' && activeTab === 0) {
@@ -2944,41 +2780,15 @@ export default function ComprehensiveReportsPage() {
                                                             </HStack>
                                                         </VStack>
 
-                                                        {/*<RadioGroup onChange={(value) => setCompareMode(value === 'true')} value={compareMode ? 'true' : 'false'}>
-                                                            <Stack direction="row">
-                                                                <Radio value="false">Single Period</Radio>
-                                                                <Radio value="true">Compare Periods</Radio>
-                                                            </Stack>
-                                                        </RadioGroup>*/}
-
-                                                        {/*compareMode && (
-                                                            <VStack align="start">
-                                                                <Text fontWeight="medium">Comparison Period</Text>
-                                                                <HStack>
-                                                                    <Input
-                                                                        type="date"
-                                                                        value={comparisonDateRange.start}
-                                                                        onChange={(e) => setComparisonDateRange(prev => ({ ...prev, start: e.target.value }))}
-                                                                    />
-                                                                    <Text>to</Text>
-                                                                    <Input
-                                                                        type="date"
-                                                                        value={comparisonDateRange.end}
-                                                                        onChange={(e) => setComparisonDateRange(prev => ({ ...prev, end: e.target.value }))}
-                                                                    />
-                                                                </HStack>
-                                                            </VStack>
-                                                        )*/}
+                                                        <Button
+                                                            leftIcon={<FiFilter />}
+                                                            onClick={handleUpdateAnalytics}
+                                                            isLoading={analyticsLoading}
+                                                            colorScheme="brand"
+                                                        >
+                                                            Update Analytics
+                                                        </Button>
                                                     </HStack>
-
-                                                    <Button
-                                                        leftIcon={<FiFilter />}
-                                                        onClick={handleUpdateAnalytics}
-                                                        isLoading={analyticsLoading}
-                                                        colorScheme="brand"
-                                                    >
-                                                        Update Analytics
-                                                    </Button>
                                                 </VStack>
                                             </CardBody>
                                         </Card>
@@ -3178,11 +2988,9 @@ export default function ComprehensiveReportsPage() {
                                                             <Stat>
                                                                 <StatLabel>Cost of Goods Sold (COGS)</StatLabel>
                                                                 <StatNumber>
-                                                                    SZL {((analyticsData?.financial?.openingStock || 0) +
-                                                                        (analyticsData?.financial?.periodPurchases || 0) -
-                                                                        (analyticsData?.financial?.closingStockValue || 0)).toLocaleString()}
+                                                                    SZL {analyticsData?.financial?.periodConsumption?.toLocaleString() || '0'}
                                                                 </StatNumber>
-                                                                <StatHelpText>Opening + Purchases - Closing</StatHelpText>
+                                                                <StatHelpText>Actual consumption</StatHelpText>
                                                             </Stat>
                                                             <Stat>
                                                                 <StatLabel>Period Sales</StatLabel>
@@ -3215,7 +3023,7 @@ export default function ComprehensiveReportsPage() {
                                                             <Text fontSize="sm">• Opening Stock: Reconstructed from transaction history</Text>
                                                             <Text fontSize="sm">• Goods Received: Actual receipts in period (SZL {analyticsData?.financial?.periodPurchases?.toLocaleString()})</Text>
                                                             <Text fontSize="sm">• Closing Stock: Calculated value (SZL {analyticsData?.financial?.closingStockValue?.toLocaleString()})</Text>
-                                                            <Text fontSize="sm">• COGS: Opening Stock + Purchases - Closing Stock</Text>
+                                                            <Text fontSize="sm">• COGS: Actual consumption (dispatched items cost)</Text>
                                                             <Text fontSize="sm">• Gross Profit Before VAT: Sales - COGS</Text>
                                                             <Text fontSize="sm">• Gross Profit After VAT: Gross Profit Before VAT - Net VAT Payable</Text>
                                                             <Text fontSize="sm">• VAT Rate: {VAT_CONFIG.ratePercentage}% (Eswatini Standard Rate)</Text>
@@ -3637,4 +3445,4 @@ const DataExportTab = ({ exportToExcel, loading, dataAvailable }: { exportToExce
             </CardBody>
         </Card>
     </VStack>
-);
+); 
