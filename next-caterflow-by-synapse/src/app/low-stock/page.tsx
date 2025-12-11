@@ -177,75 +177,116 @@ export default function LowStockPage() {
 
             console.log('✅ Bulk stock calculation complete. Results:', Object.keys(stockResults).length, 'item-bin pairs');
 
-            // Process results and aggregate stock by item (sum across all bins)
+            // Process results and create LOW STOCK items grouped by site
             setProgress({ stage: 'Processing results...', percentage: 80 });
-            console.log('📊 Processing results and aggregating stock by item...');
+            console.log('📊 Processing results and creating low stock items grouped by site...');
             const itemsWithCalculatedStock: LowStockItem[] = [];
-            const itemStockMap: { [itemId: string]: { totalStock: number, bins: any[] } } = {};
 
-            // Aggregate stock for each item across all bins
+            // Create a map for site lookups
+            const siteMap = new Map();
+            sites.forEach(site => {
+                siteMap.set(site._id, site.name);
+            });
+
+            // Track items by site
+            const itemsBySite: { [siteId: string]: any[] } = {};
+
+            // For EACH item and EACH bin combination
             stockItems.forEach(item => {
-                let totalStock = 0;
-                const itemBins: any[] = [];
-
                 bins.forEach((bin: any) => {
                     const key = `${item._id}-${bin._id}`;
                     const quantity = stockResults[key] || 0;
-                    if (quantity > 0) {
-                        totalStock += quantity;
-                        itemBins.push({
-                            ...bin,
-                            quantity
+
+                    // Check if item needs attention in this bin
+                    const isLowStock = quantity > 0 && quantity <= item.minimumStockLevel;
+                    const isOutOfStock = quantity === 0;
+
+                    // Include BOTH low stock AND out of stock items
+                    if (isLowStock || isOutOfStock) {
+                        // Get site ID and name
+                        let siteId = "unknown";
+                        let siteName = "Unknown site";
+
+                        if (bin.site) {
+                            if (typeof bin.site === 'object' && bin.site._id) {
+                                siteId = bin.site._id;
+                                siteName = bin.site.name;
+                            } else if (typeof bin.site === 'string') {
+                                siteId = bin.site;
+                                siteName = siteMap.get(bin.site) || "Unknown site";
+                            }
+                        }
+
+                        // Group by site
+                        if (!itemsBySite[siteId]) {
+                            itemsBySite[siteId] = [];
+                        }
+
+                        itemsBySite[siteId].push({
+                            item,
+                            bin,
+                            quantity,
+                            siteName,
+                            isOutOfStock // Track this for priority calculation
                         });
                     }
                 });
-
-                if (totalStock > 0 || item.minimumStockLevel > 0) {
-                    itemStockMap[item._id] = {
-                        totalStock,
-                        bins: itemBins
-                    };
-                }
             });
 
-            // Create LowStockItem entries for items that are below minimum stock level
-            stockItems.forEach(item => {
-                const stockInfo = itemStockMap[item._id];
-                const currentStock = stockInfo?.totalStock || 0;
+            // Now create one entry per item per site (not per bin)
+            Object.entries(itemsBySite).forEach(([siteId, siteItems]) => {
+                // Group siteItems by item ID
+                const itemsByItemId: { [itemId: string]: any[] } = {};
 
-                // Only include items that are below minimum stock level
-                if (currentStock <= item.minimumStockLevel) {
-                    // For low stock items, we'll show the primary bin or first bin with stock
-                    const primaryBin = stockInfo?.bins?.[0] || bins[0];
-
-                    let stockStatus: 'in-stock' | 'low-stock' | 'out-of-stock' = 'low-stock';
-                    if (currentStock === 0) {
-                        stockStatus = 'out-of-stock';
-                    } else if (currentStock > item.minimumStockLevel) {
-                        stockStatus = 'in-stock';
+                siteItems.forEach(({ item, bin, quantity, siteName }) => {
+                    if (!itemsByItemId[item._id]) {
+                        itemsByItemId[item._id] = [];
                     }
+                    itemsByItemId[item._id].push({ item, bin, quantity, siteName });
+                });
 
-                    // Calculate priority based on urgency
-                    const criticality = currentStock === 0 ? 'critical' :
-                        currentStock <= (item.minimumStockLevel * 0.3) ? 'high' :
-                            currentStock <= (item.minimumStockLevel * 0.7) ? 'medium' : 'low';
+                // Create one entry per item for this site
+                Object.entries(itemsByItemId).forEach(([itemId, itemBins]) => {
+                    const firstEntry = itemBins[0];
+                    const item = firstEntry.item;
 
-                    // Estimate days until out of stock (simple calculation)
-                    const daysUntilOut = currentStock > 0 ?
-                        Math.floor(currentStock / (item.averageDailyUsage || 1)) : 0;
+                    // Calculate TOTAL stock for this item across all bins in this site
+                    const totalStockInSite = itemBins.reduce((sum, entry) => sum + entry.quantity, 0);
 
-                    itemsWithCalculatedStock.push({
-                        ...item,
-                        currentStock,
-                        stockStatus,
-                        siteName: primaryBin?.site?.name || "Unknown site",
-                        binName: primaryBin?.name || "Unknown bin",
-                        orderQuantity: item.reorderQuantity || 1,
-                        selected: false,
-                        priority: criticality,
-                        daysUntilOut
-                    });
-                }
+                    // Only include if TOTAL stock in this site is below minimum
+                    if (totalStockInSite <= item.minimumStockLevel) {
+                        let stockStatus: 'in-stock' | 'low-stock' | 'out-of-stock' = 'low-stock';
+                        if (totalStockInSite === 0) {
+                            stockStatus = 'out-of-stock';
+                        } else if (totalStockInSite > item.minimumStockLevel) {
+                            stockStatus = 'in-stock';
+                        }
+
+                        // Calculate priority based on urgency
+                        const criticality = totalStockInSite === 0 ? 'critical' :
+                            totalStockInSite <= (item.minimumStockLevel * 0.3) ? 'high' :
+                                totalStockInSite <= (item.minimumStockLevel * 0.7) ? 'medium' : 'low';
+
+                        // List all bins this item is in (for this site)
+                        const binNames = itemBins.map(entry => entry.bin.name).join(', ');
+
+                        itemsWithCalculatedStock.push({
+                            ...item,
+                            _id: `${item._id}-${siteId}`, // Unique ID for item-site combination
+                            currentStock: totalStockInSite,
+                            stockStatus,
+                            siteName: firstEntry.siteName,
+                            binName: itemBins.length > 1 ?
+                                `${itemBins.length} bins: ${binNames}` :
+                                firstEntry.bin.name,
+                            orderQuantity: item.reorderQuantity || 1,
+                            selected: false,
+                            priority: criticality,
+                            daysUntilOut: totalStockInSite > 0 ?
+                                Math.floor(totalStockInSite / (item.averageDailyUsage || 1)) : 0
+                        });
+                    }
+                });
             });
 
             // Sort by priority (critical first)
@@ -329,6 +370,7 @@ export default function LowStockPage() {
     }, [isAuthReady, isAuthenticated, selectedSiteId, calculateStockForSite]);
 
     // Filter items based on search term and active filters
+    // Filter items based on search term and active filters
     useEffect(() => {
         let filtered = lowStockItems.filter(item => {
             if (!searchTerm) return true;
@@ -342,20 +384,29 @@ export default function LowStockPage() {
             );
         });
 
-        // Apply priority filter
+        // Apply priority filter (from dropdown menu)
         if (filterPriority !== 'all') {
             filtered = filtered.filter(item => item.priority === filterPriority);
         }
 
-        // Apply tab filter
+        // Apply tab filter (from tabs)
         switch (activeTab) {
             case 1: // Critical
                 filtered = filtered.filter(item => item.priority === 'critical');
                 break;
-            case 2: // Out of Stock
+            case 2: // High
+                filtered = filtered.filter(item => item.priority === 'high');
+                break;
+            case 3: // Medium
+                filtered = filtered.filter(item => item.priority === 'medium');
+                break;
+            case 4: // Low
+                filtered = filtered.filter(item => item.priority === 'low');
+                break;
+            case 5: // Out of Stock
                 filtered = filtered.filter(item => item.stockStatus === 'out-of-stock');
                 break;
-            default: // All
+            default: // All (tab 0)
                 break;
         }
 
@@ -574,9 +625,6 @@ export default function LowStockPage() {
                         {getStockStatusText(row.priority, row.currentStock)}
                     </Badge>
                     <Text fontWeight="bold">{row.currentStock}</Text>
-                    <Text fontSize="sm" color={secondaryTextColor}>
-                        / {row.minimumStockLevel} min
-                    </Text>
                 </Flex>
             ),
         },
@@ -984,39 +1032,9 @@ export default function LowStockPage() {
                     </Card>
                 )}
 
-                {/* Filter Tabs */}
-                <Tabs index={activeTab} onChange={setActiveTab} variant="enclosed" colorScheme="brand">
-                    <TabList>
-                        <Tab>All Items ({lowStockItems.length})</Tab>
-                        <Tab>
-                            <HStack>
-                                <FiAlertTriangle />
-                                <Text>Critical</Text>
-                                <Badge colorScheme="red" borderRadius="full">
-                                    {lowStockItems.filter(item => item.priority === 'critical').length}
-                                </Badge>
-                            </HStack>
-                        </Tab>
-                        <Tab>
-                            Out of Stock ({lowStockItems.filter(item => item.stockStatus === 'out-of-stock').length})
-                        </Tab>
-                    </TabList>
-                    <TabPanels>
-                        <TabPanel p={0} pt={4}>
-                            {/* All items */}
-                        </TabPanel>
-                        <TabPanel p={0} pt={4}>
-                            {/* Critical items */}
-                        </TabPanel>
-                        <TabPanel p={0} pt={4}>
-                            {/* Out of stock items */}
-                        </TabPanel>
-                    </TabPanels>
-                </Tabs>
-
                 {/* Low Stock Summary Cards */}
                 {!isLoading && lowStockItems.length > 0 && (
-                    <SimpleGrid columns={{ base: 1, sm: 2, md: 4 }} spacing={4}>
+                    <SimpleGrid columns={{ base: 1, sm: 2, md: 3, lg: 6 }} spacing={4}>
                         <Card bg={bgCard} borderColor={borderColor} borderWidth="1px">
                             <CardBody>
                                 <VStack spacing={1}>
@@ -1027,7 +1045,7 @@ export default function LowStockPage() {
                                         {lowStockItems.filter(item => item.priority === 'critical').length}
                                     </Text>
                                     <Text fontSize="sm" color={secondaryTextColor}>
-                                        Immediate action needed
+                                        Immediate action
                                     </Text>
                                 </VStack>
                             </CardBody>
@@ -1036,13 +1054,43 @@ export default function LowStockPage() {
                             <CardBody>
                                 <VStack spacing={1}>
                                     <Badge colorScheme="orange" borderRadius="full" px={3} py={1}>
-                                        High Priority
+                                        High
                                     </Badge>
                                     <Text fontSize="2xl" fontWeight="bold">
                                         {lowStockItems.filter(item => item.priority === 'high').length}
                                     </Text>
                                     <Text fontSize="sm" color={secondaryTextColor}>
                                         Reorder soon
+                                    </Text>
+                                </VStack>
+                            </CardBody>
+                        </Card>
+                        <Card bg={bgCard} borderColor={borderColor} borderWidth="1px">
+                            <CardBody>
+                                <VStack spacing={1}>
+                                    <Badge colorScheme="yellow" borderRadius="full" px={3} py={1}>
+                                        Medium
+                                    </Badge>
+                                    <Text fontSize="2xl" fontWeight="bold">
+                                        {lowStockItems.filter(item => item.priority === 'medium').length}
+                                    </Text>
+                                    <Text fontSize="sm" color={secondaryTextColor}>
+                                        Monitor closely
+                                    </Text>
+                                </VStack>
+                            </CardBody>
+                        </Card>
+                        <Card bg={bgCard} borderColor={borderColor} borderWidth="1px">
+                            <CardBody>
+                                <VStack spacing={1}>
+                                    <Badge colorScheme="gray" borderRadius="full" px={3} py={1}>
+                                        Low
+                                    </Badge>
+                                    <Text fontSize="2xl" fontWeight="bold">
+                                        {lowStockItems.filter(item => item.priority === 'low').length}
+                                    </Text>
+                                    <Text fontSize="sm" color={secondaryTextColor}>
+                                        Keep an eye
                                     </Text>
                                 </VStack>
                             </CardBody>
@@ -1057,7 +1105,7 @@ export default function LowStockPage() {
                                         {selectedItems.length}
                                     </Text>
                                     <Text fontSize="sm" color={secondaryTextColor}>
-                                        Ready for ordering
+                                        Ready for order
                                     </Text>
                                 </VStack>
                             </CardBody>
@@ -1065,20 +1113,118 @@ export default function LowStockPage() {
                         <Card bg={bgCard} borderColor={borderColor} borderWidth="1px">
                             <CardBody>
                                 <VStack spacing={1}>
-                                    <Badge colorScheme="gray" borderRadius="full" px={3} py={1}>
-                                        Total
+                                    <Badge colorScheme="purple" borderRadius="full" px={3} py={1}>
+                                        Out of Stock
                                     </Badge>
                                     <Text fontSize="2xl" fontWeight="bold">
-                                        {lowStockItems.length}
+                                        {lowStockItems.filter(item => item.stockStatus === 'out-of-stock').length}
                                     </Text>
                                     <Text fontSize="sm" color={secondaryTextColor}>
-                                        Low stock items
+                                        Urgent restock
                                     </Text>
                                 </VStack>
                             </CardBody>
                         </Card>
                     </SimpleGrid>
                 )}
+
+                {/* Filter Tabs - ALL Priority Levels */}
+                <Tabs index={activeTab} onChange={setActiveTab} variant="enclosed" colorScheme="brand">
+                    <Box
+                        overflowX="auto"
+                        overflowY="hidden"
+                        css={{
+                            '&::-webkit-scrollbar': {
+                                height: '8px',
+                            },
+                            '&::-webkit-scrollbar-track': {
+                                backgroundColor: useColorModeValue('gray.100', 'gray.700'),
+                                borderRadius: '4px',
+                            },
+                            '&::-webkit-scrollbar-thumb': {
+                                backgroundColor: useColorModeValue('brand.500', 'brand.300'),
+                                borderRadius: '4px',
+                            },
+                        }}
+                    >
+                        <TabList whiteSpace="nowrap">
+                            <Tab whiteSpace="nowrap" minWidth="fit-content">All Items ({lowStockItems.length})</Tab>
+                            <Tab whiteSpace="nowrap" minWidth="fit-content">
+                                <HStack>
+                                    <FiAlertTriangle />
+                                    <Text>Critical</Text>
+                                    <Badge colorScheme="red" borderRadius="full">
+                                        {lowStockItems.filter(item => item.priority === 'critical').length}
+                                    </Badge>
+                                </HStack>
+                            </Tab>
+                            <Tab whiteSpace="nowrap" minWidth="fit-content">
+                                <HStack>
+                                    <Badge colorScheme="orange" borderRadius="full" mr={1}>
+                                        !
+                                    </Badge>
+                                    <Text>High</Text>
+                                    <Badge colorScheme="orange" borderRadius="full">
+                                        {lowStockItems.filter(item => item.priority === 'high').length}
+                                    </Badge>
+                                </HStack>
+                            </Tab>
+                            <Tab whiteSpace="nowrap" minWidth="fit-content">
+                                <HStack>
+                                    <Badge colorScheme="yellow" borderRadius="full" mr={1}>
+                                        !
+                                    </Badge>
+                                    <Text>Medium</Text>
+                                    <Badge colorScheme="yellow" borderRadius="full">
+                                        {lowStockItems.filter(item => item.priority === 'medium').length}
+                                    </Badge>
+                                </HStack>
+                            </Tab>
+                            <Tab whiteSpace="nowrap" minWidth="fit-content">
+                                <HStack>
+                                    <Badge colorScheme="gray" borderRadius="full" mr={1}>
+                                        !
+                                    </Badge>
+                                    <Text>Low</Text>
+                                    <Badge colorScheme="gray" borderRadius="full">
+                                        {lowStockItems.filter(item => item.priority === 'low').length}
+                                    </Badge>
+                                </HStack>
+                            </Tab>
+                            <Tab whiteSpace="nowrap" minWidth="fit-content">
+                                <HStack>
+                                    <FiAlertTriangle />
+                                    <Text>Out of Stock</Text>
+                                    <Badge colorScheme="red" borderRadius="full">
+                                        {lowStockItems.filter(item => item.stockStatus === 'out-of-stock').length}
+                                    </Badge>
+                                </HStack>
+                            </Tab>
+                        </TabList>
+                    </Box>
+                    <TabPanels>
+                        <TabPanel p={0} pt={4}>
+                            {/* All items */}
+                        </TabPanel>
+                        <TabPanel p={0} pt={4}>
+                            {/* Critical items */}
+                        </TabPanel>
+                        <TabPanel p={0} pt={4}>
+                            {/* High priority items */}
+                        </TabPanel>
+                        <TabPanel p={0} pt={4}>
+                            {/* Medium priority items */}
+                        </TabPanel>
+                        <TabPanel p={0} pt={4}>
+                            {/* Low priority items */}
+                        </TabPanel>
+                        <TabPanel p={0} pt={4}>
+                            {/* Out of stock items */}
+                        </TabPanel>
+                    </TabPanels>
+                </Tabs>
+
+
 
                 {/* Data Table */}
                 {error ? (

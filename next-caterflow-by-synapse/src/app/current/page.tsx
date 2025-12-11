@@ -160,47 +160,92 @@ export default function CurrentStockPage() {
 
             console.log('✅ Bulk stock calculation complete. Results:', Object.keys(stockResults).length, 'item-bin pairs');
 
+            // DEBUG: Check Beef Sausages specifically
+            console.log('🔍 DEBUG: Checking for Beef Sausages stock...');
+            const beefSausagesItems = stockItems.filter(item =>
+                item.name?.toLowerCase().includes('beef') ||
+                item.name?.toLowerCase().includes('sausage')
+            );
+
+            beefSausagesItems.forEach(item => {
+                console.log(`🔍 Item: ${item.name} (ID: ${item._id})`);
+                bins.forEach((bin: { _id: any; name: any; }) => {
+                    const key = `${item._id}-${bin._id}`;
+                    const quantity = stockResults[key] || 0;
+                    if (quantity > 0) {
+                        console.log(`  📦 Bin: ${bin.name} (ID: ${bin._id}): ${quantity}`);
+                    }
+                });
+            });
+
+            // Also log all stock results for debugging
+            console.log('📊 All stock results (first 20):');
+            Object.entries(stockResults)
+                .slice(0, 20)
+                .forEach(([key, value]) => {
+                    if (Number(value) > 0) {
+                        console.log(`  ${key}: ${value}`);
+                    }
+                });
+
             // Process results and create a separate entry for each item-bin combination with stock
             setProgress({ stage: 'Processing results...', percentage: 80 });
             console.log('📊 Processing results and creating individual entries for each bin...');
             const itemsWithCalculatedStock: CurrentStockItem[] = [];
 
-            stockItems.forEach(item => {
-                let foundStock = false;
+            // CRITICAL: Create a map for site lookups
+            const siteMap = new Map();
+            sites.forEach(site => {
+                siteMap.set(site._id, site.name);
+            });
 
-                // Find all bins that contain this item
-                const itemBins = bins.filter((bin: any) => {
+            // For EACH item and EACH bin combination
+            stockItems.forEach(item => {
+                bins.forEach((bin: any) => {
                     const key = `${item._id}-${bin._id}`;
                     const quantity = stockResults[key] || 0;
-                    if (quantity > 0) {
-                        foundStock = true;
-                        return true;
-                    }
-                    return false;
-                });
 
-                if (foundStock) {
-                    // Create a separate entry for each bin that has stock
-                    itemBins.forEach((bin: any) => {
-                        const quantity = stockResults[`${item._id}-${bin._id}`];
+                    // *** CRITICAL CHANGE: Only create entry if there's ACTUAL stock ***
+                    if (quantity > 0) {
                         let stockStatus: 'in-stock' | 'low-stock' | 'out-of-stock' = 'in-stock';
                         if (quantity <= item.minimumStockLevel) {
                             stockStatus = 'low-stock';
                         }
-                        if (quantity === 0) {
-                            stockStatus = 'out-of-stock';
+
+                        // Get site name - handle both object and reference formats
+                        let siteName = "Unknown site";
+                        if (bin.site) {
+                            if (typeof bin.site === 'object' && bin.site.name) {
+                                siteName = bin.site.name;
+                            } else if (typeof bin.site === 'string') {
+                                siteName = siteMap.get(bin.site) || "Unknown site";
+                            }
                         }
+
+                        // Create a UNIQUE ID for this item-bin combination
+                        const uniqueId = `${item._id}-${bin._id}`;
 
                         itemsWithCalculatedStock.push({
                             ...item,
+                            _id: uniqueId, // ← CRITICAL: Override with unique ID
                             currentStock: quantity,
                             stockStatus,
-                            siteName: bin.site?.name || "Unknown site",
+                            siteName,
                             binName: bin.name,
                             lastUpdated: new Date().toISOString(),
                         });
-                    });
-                }
+                    }
+                });
+            });
+
+            // DEBUG: Show what we created
+            console.log(`✅ Created ${itemsWithCalculatedStock.length} entries total`);
+            console.log('🔍 Checking B-WELL Tangy Mayo entries (should have 2):');
+            const tangyMayoEntries = itemsWithCalculatedStock.filter(item =>
+                item.name === 'B-WELL Tangy Mayo'
+            );
+            tangyMayoEntries.forEach(entry => {
+                console.log(`  - ${entry.binName}: ${entry.currentStock}`);
             });
 
             const duration = Date.now() - startTime;
@@ -211,6 +256,55 @@ export default function CurrentStockPage() {
             });
 
             console.log('✅ Stock calculation complete. Total items to display:', itemsWithCalculatedStock.length);
+            // Add this simple debug
+            console.log('🔍 SIMPLE DEBUG: All items with their stock:');
+            stockItems.slice(0, 20).forEach(item => {
+                console.log(`${item.name}:`);
+                bins.forEach((bin: { _id: any; name: any; }) => {
+                    const key = `${item._id}-${bin._id}`;
+                    const quantity = stockResults[key] || 0;
+                    if (quantity > 0) {
+                        console.log(`  - ${bin.name}: ${quantity}`);
+                    }
+                });
+            });
+
+            // After processing, verify the results
+            console.log('🧪 FINAL VERIFICATION:');
+            console.log(`Total items in final array: ${itemsWithCalculatedStock.length}`);
+
+            // Show all items with multiple bins
+            const itemGroups: { [name: string]: CurrentStockItem[] } = {};
+            itemsWithCalculatedStock.forEach(item => {
+                if (!itemGroups[item.name]) {
+                    itemGroups[item.name] = [];
+                }
+                itemGroups[item.name].push(item);
+            });
+
+            console.log('📊 Items with multiple bin entries:');
+            Object.entries(itemGroups).forEach(([name, entries]) => {
+                if (entries.length > 1) {
+                    console.log(`  ${name}: ${entries.length} entries`);
+                    entries.forEach(entry => {
+                        console.log(`    - ${entry.binName}: ${entry.currentStock}`);
+                    });
+                }
+            });
+
+            // Specifically check Braaiworse Mbuluzi
+            console.log('🔍 Checking Braaiworse Mbuluzi:');
+            const braaiworseEntries = itemsWithCalculatedStock.filter(item =>
+                item.name.includes('Braaiworse') || item.name.includes('wors') || item.name.includes('sausage')
+            );
+            if (braaiworseEntries.length > 0) {
+                braaiworseEntries.forEach(entry => {
+                    console.log(`  - ${entry.name}: ${entry.currentStock} in ${entry.binName}`);
+                });
+            } else {
+                console.log('  No braaiworse/sausage items found in final array');
+            }
+
             setCurrentStockItems(itemsWithCalculatedStock);
 
             // Show success toast with metrics
@@ -421,9 +515,6 @@ export default function CurrentStockPage() {
                     </Badge>
                     <Flex direction="column">
                         <Text fontWeight="bold">{row.currentStock}</Text>
-                        <Text fontSize="xs" color={secondaryTextColor}>
-                            min: {row.minimumStockLevel}
-                        </Text>
                     </Flex>
                 </Flex>
             ),
@@ -596,11 +687,14 @@ export default function CurrentStockPage() {
         </div>
     </div>
 
-    <div class="no-print" style="text-align: center; margin-top: 20px;">
-        <button onclick="window.print()" style="background: #0067FF; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer;">
-            Print / Save as PDF
-        </button>
-    </div>
+    <div class="no-print" style="text-align: center; margin-top: 20px; display: flex; gap: 10px; justify-content: center;">
+    <button onclick="window.print()" style="background: #0067FF; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer;">
+        Print / Save as PDF
+    </button>
+    <button onclick="window.close()" style="background: #E2E8F0; color: #4A5568; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer;">
+        Close Window
+    </button>
+</div>
 </body>
 </html>`;
 
