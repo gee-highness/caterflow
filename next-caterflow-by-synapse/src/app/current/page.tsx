@@ -44,7 +44,7 @@ import { FiArrowLeft, FiArrowRight, FiSearch, FiRefreshCw, FiFileText, FiInfo, F
 import { MdOutlineSort } from 'react-icons/md';
 import DataTable, { Column } from './DataTable';
 import { Site, StockItem } from '@/lib/sanityTypes';
-import { calculateBulkStock } from '@/lib/stockCalculations';
+import { calculateBulkStock, emergencyRecalculateAllStock } from '@/lib/stockCalculations';
 
 interface CurrentStockItem extends StockItem {
     currentStock: number;
@@ -264,6 +264,8 @@ export default function CurrentStockPage() {
         console.log('🔄 Manual refresh triggered');
         setIsRefreshing(true);
         calculateStockForSite(selectedSiteId);
+
+        emergencyRecalculateAllStock();
     };
 
     useEffect(() => {
