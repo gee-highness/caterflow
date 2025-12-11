@@ -29,6 +29,36 @@ import * as XLSX from 'xlsx';
 import { saveAs } from 'file-saver';
 import { format, subDays, subMonths, startOfMonth, endOfMonth, parseISO, isWithinInterval } from 'date-fns';
 
+// Add this hook at the top of your component file, after imports
+const useChartReady = () => {
+    const [isReady, setIsReady] = useState(false);
+    const containerRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        const checkDimensions = () => {
+            if (containerRef.current) {
+                const { width, height } = containerRef.current.getBoundingClientRect();
+                if (width > 0 && height > 0) {
+                    setIsReady(true);
+                }
+            }
+        };
+
+        checkDimensions();
+        const timer = setTimeout(checkDimensions, 100);
+
+        // Check on resize
+        window.addEventListener('resize', checkDimensions);
+
+        return () => {
+            clearTimeout(timer);
+            window.removeEventListener('resize', checkDimensions);
+        };
+    }, []);
+
+    return { isReady, containerRef };
+};
+
 // Types based on your Sanity schemas
 interface AppUser {
     _id: string;
@@ -797,6 +827,10 @@ export default function ComprehensiveReportsPage() {
     }, [dateRangeMemo]);
 
     // SIMPLIFIED opening stock calculation - using current stock as fallback
+    // CORRECTED: Use the same calculation as other pages
+    // SIMPLIFIED VERSION: Uses the same endpoint as current stock page
+    // SIMPLIFIED opening stock calculation - using current stock as fallback
+    // CORRECTED: Use the same calculation as other pages
     const calculateOpeningStockForDate = useCallback(async (
         targetDate: Date,
         currentStockItems: any[],
@@ -805,111 +839,147 @@ export default function ComprehensiveReportsPage() {
         allBinCounts: any[]
     ): Promise<number> => {
         try {
-            console.log('🔍 Calculating opening stock for date:', targetDate.toDateString());
+            console.log('🔍 Calculating opening stock for:', targetDate.toDateString());
+            console.log('📊 Current stock items count:', currentStockItems?.length || 0);
 
-            // Validate inputs
-            if (!currentStockItems || currentStockItems.length === 0) {
-                console.warn('⚠️ No stock items provided for opening stock calculation');
-                return 0;
-            }
-            // Check if the API endpoint exists first
-            const endpointCheck = await fetch('/api/stock-as-of-date', { method: 'HEAD' });
-            if (!endpointCheck.ok) {
-                console.warn('⚠️ /api/stock-as-of-date endpoint not available, using fallback calculation');
-            }
+            // Format date for API call
+            const formattedDate = targetDate.toISOString().split('T')[0];
 
-            // Get all stock item IDs
-            const stockItemIds = currentStockItems.map(item => item._id);
-
-            // Get all bins
-            const binsResponse = await fetch('/api/bins');
-            const bins = await binsResponse.json();
-            const binIds = bins.map((bin: any) => bin._id);
-
-            if (binIds.length === 0) {
-                console.warn('⚠️ No bins found');
-                return 0;
-            }
-
-            console.log(`📊 Calculating opening stock for ${stockItemIds.length} items across ${binIds.length} bins`);
-
-            // Call the new API endpoint
-            const response = await fetch('/api/stock-as-of-date', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    stockItemIds,
-                    binIds,
-                    asOfDate: targetDate.toISOString()
-                })
-            });
+            // Use the SAME calculation as current stock page by calling the low-stock API
+            const response = await fetch(`/api/low-stock/calculate?siteId=all&date=${formattedDate}`);
 
             if (response.ok) {
-                const result = await response.json();
-                console.log('💰 Opening stock calculated:', result.summary.totalValue);
-                return result.summary.totalValue;
+                const data = await response.json();
+                const openingStockValue = data.summary?.totalInventoryValue || 0;
+                console.log('💰 Opening stock from API:', openingStockValue);
+                console.log('📈 API Response summary:', data.summary);
+                console.log('🔍 Debug info from API:', data.debug);
+
+                // If API returns 0, try to calculate manually from current stock
+                if (openingStockValue === 0) {
+                    console.log('⚠️ API returned 0, calculating manually...');
+                    return calculateManualOpeningStock(targetDate, currentStockItems, allGoodsReceipts, allDispatches);
+                }
+
+                return openingStockValue;
             } else {
-                console.warn('⚠️ Failed to calculate opening stock via API, using fallback');
-
-                // Fallback: calculate manually using transactions before target date
-                const goodsReceiptsBefore = allGoodsReceipts.filter(gr =>
-                    gr.receiptDate && new Date(gr.receiptDate) < targetDate
-                );
-
-                const dispatchesBefore = allDispatches.filter(d =>
-                    d.dispatchDate && new Date(d.dispatchDate) < targetDate
-                );
-
-                // Get latest bin count before target date
-                const binCountsBefore = allBinCounts.filter(bc =>
-                    bc.countDate && new Date(bc.countDate) < targetDate
-                ).sort((a, b) => new Date(b.countDate).getTime() - new Date(a.countDate).getTime());
-
-                // For each item, calculate stock based on last count + transactions
-                let totalOpeningStock = 0;
-
-                currentStockItems.forEach(item => {
-                    // Find latest count for this item before target date
-                    let lastCountedQuantity = 0;
-
-                    for (const bc of binCountsBefore) {
-                        const countedItem = bc.countedItems?.find((ci: any) =>
-                            ci.stockItem?._id === item._id
-                        );
-                        if (countedItem) {
-                            lastCountedQuantity = countedItem.countedQuantity || 0;
-                            break;
-                        }
-                    }
-
-                    // Add receipts before target date
-                    const receiptsQty = goodsReceiptsBefore.reduce((sum, gr) => {
-                        const receivedItem = gr.receivedItems?.find((ri: any) =>
-                            ri.stockItem?._id === item._id
-                        );
-                        return sum + (receivedItem?.receivedQuantity || 0);
-                    }, 0);
-
-                    // Subtract dispatches before target date
-                    const dispatchesQty = dispatchesBefore.reduce((sum, d) => {
-                        const dispatchedItem = d.dispatchedItems?.find((di: any) =>
-                            di.stockItem?._id === item._id
-                        );
-                        return sum + (dispatchedItem?.dispatchedQuantity || 0);
-                    }, 0);
-
-                    const itemStock = Math.max(0, lastCountedQuantity + receiptsQty - dispatchesQty);
-                    totalOpeningStock += itemStock * (item.unitPrice || 0);
-                });
-
-                console.log('💰 Fallback opening stock calculated:', totalOpeningStock);
-                return totalOpeningStock;
+                // Log error details
+                const errorText = await response.text();
+                console.error('❌ API Error:', response.status, errorText);
             }
 
+            // Fallback: Calculate from current stock items
+            console.log('🔄 Using current stock as fallback');
+            if (!Array.isArray(currentStockItems) || currentStockItems.length === 0) {
+                console.log('⚠️ No current stock items available');
+                return 0;
+            }
+
+            const totalValue = currentStockItems.reduce((sum, item) => {
+                const currentStock = item?.currentStock || 0;
+                const unitPrice = item?.unitPrice || 0;
+                const stockValue = currentStock * unitPrice;
+
+                // Debug individual items
+                if (stockValue > 0) {
+                    console.log(`📦 ${item?.name}: ${currentStock} × ${unitPrice} = ${stockValue}`);
+                }
+
+                return sum + stockValue;
+            }, 0);
+
+            console.log('💰 Calculated total value from current stock:', totalValue);
+            return totalValue;
+
         } catch (error) {
-            console.error('❌ Error calculating opening stock:', error);
+            console.error('❌ Error in simplified opening stock:', error);
+            return 0;
+        }
+    }, []);
+
+    // Add this helper function
+    const calculateManualOpeningStock = useCallback((
+        targetDate: Date,
+        currentStockItems: any[],
+        allGoodsReceipts: any[],
+        allDispatches: any[]
+    ): number => {
+        try {
+            console.log('🧮 Calculating manual opening stock for:', targetDate.toDateString());
+
+            // Filter goods receipts before target date
+            const receiptsBeforeDate = allGoodsReceipts.filter(gr => {
+                try {
+                    const receiptDate = new Date(gr.receiptDate);
+                    return receiptDate < targetDate;
+                } catch {
+                    return false;
+                }
+            });
+
+            // Filter dispatches before target date
+            const dispatchesBeforeDate = allDispatches.filter(d => {
+                try {
+                    const dispatchDate = new Date(d.dispatchDate);
+                    return dispatchDate < targetDate;
+                } catch {
+                    return false;
+                }
+            });
+
+            console.log(`📦 Receipts before date: ${receiptsBeforeDate.length}`);
+            console.log(`🚚 Dispatches before date: ${dispatchesBeforeDate.length}`);
+
+            // Calculate net stock change
+            let totalStockValue = 0;
+            const itemBalances: { [itemId: string]: number } = {};
+
+            // Start with current stock items as baseline
+            currentStockItems.forEach(item => {
+                if (item?._id && item?.unitPrice) {
+                    itemBalances[item._id] = item.currentStock || 0;
+                }
+            });
+
+            // Subtract receipts (stock additions)
+            receiptsBeforeDate.forEach(receipt => {
+                receipt.receivedItems?.forEach((item: any) => {
+                    const itemId = item.stockItem?._id;
+                    const quantity = item.receivedQuantity || 0;
+                    if (itemId && quantity > 0) {
+                        itemBalances[itemId] = (itemBalances[itemId] || 0) - quantity;
+                    }
+                });
+            });
+
+            // Add dispatches (stock reductions)
+            dispatchesBeforeDate.forEach(dispatch => {
+                dispatch.dispatchedItems?.forEach((item: any) => {
+                    const itemId = item.stockItem?._id;
+                    const quantity = item.dispatchedQuantity || 0;
+                    if (itemId && quantity > 0) {
+                        itemBalances[itemId] = (itemBalances[itemId] || 0) + quantity;
+                    }
+                });
+            });
+
+            // Calculate total value
+            currentStockItems.forEach(item => {
+                const balance = itemBalances[item._id] || 0;
+                const unitPrice = item.unitPrice || 0;
+                const itemValue = balance * unitPrice;
+
+                if (itemValue > 0) {
+                    console.log(`📊 ${item.name}: ${balance} × ${unitPrice} = ${itemValue}`);
+                    totalStockValue += itemValue;
+                }
+            });
+
+            console.log('💰 Manual opening stock calculation:', totalStockValue);
+            return totalStockValue;
+
+        } catch (error) {
+            console.error('❌ Error in manual opening stock:', error);
             return 0;
         }
     }, []);
@@ -943,8 +1013,39 @@ export default function ComprehensiveReportsPage() {
             const periodDispatches = filterDataByDateRange(dispatches, 'dispatchDate');
             const periodBinCounts = filterDataByDateRange(binCounts, 'countDate');
 
-            // SIMPLIFIED FINANCIAL CALCULATIONS WITH VAT - CORRECTED VERSION
-            // 1. PURCHASES = Goods Receipts value in the period (excluding VAT)
+            // CORRECTED FINANCIAL CALCULATIONS - USING SAME METHOD AS OTHER PAGES
+            // 1. Calculate opening stock using the SAME function as current stock page
+            setCalculatingOpeningStock(true);
+
+            // Get all stock items for opening stock calculation
+            const allStockItems = await fetch('/api/stock-items').then(res => res.json());
+            const openingStockValue = await calculateOpeningStockForDate(
+                dateRange.start,
+                allStockItems,
+                goodsReceipts,
+                dispatches,
+                binCounts
+            );
+
+            // 2. Calculate current stock using the SAME function as current stock page
+            const currentStockValue = await calculateOpeningStockForDate(
+                new Date(), // Current date
+                allStockItems,
+                goodsReceipts,
+                dispatches,
+                binCounts
+            );
+
+            setCalculatingOpeningStock(false);
+
+            console.log('📊 Stock calculations for period:', {
+                openingDate: dateRange.start.toDateString(),
+                openingStock: openingStockValue,
+                currentStock: currentStockValue,
+                periodLength: Math.ceil((dateRange.end.getTime() - dateRange.start.getTime()) / (1000 * 60 * 60 * 24)) + ' days'
+            });
+
+            // 3. PERIOD PURCHASES = Goods receipts in the period
             const periodPurchasesExclVAT = periodGoodsReceipts.reduce((sum: number, gr: any) => {
                 const receiptValue = gr.receivedItems?.reduce((itemSum: number, item: any) => {
                     const unitPrice = item.unitPrice || item.stockItem?.unitPrice || 0;
@@ -954,55 +1055,39 @@ export default function ComprehensiveReportsPage() {
                 return sum + receiptValue;
             }, 0);
 
-            // 2. VAT ON PURCHASES (Input VAT)
-            const vatOnPurchases = periodGoodsReceipts.reduce((sum: number, gr: any) =>
-                sum + (gr.vatAmount || 0), 0
-            );
-
-            // 3. PURCHASES INCLUDING VAT
-            const periodPurchasesInclVAT = periodPurchasesExclVAT + vatOnPurchases;
-
-            // 4. CONSUMPTION = Dispatch costs in the period (excluding VAT)
+            // 4. PERIOD CONSUMPTION = Dispatch costs in the period
             const periodConsumptionExclVAT = periodDispatches.reduce((sum: number, d: any) => {
                 const dispatchCost = d.dispatchedItems?.reduce((itemSum: number, item: any) => {
-                    // Use totalCost excluding VAT for COGS calculation
+                    // Use actual cost from dispatch item
                     const itemCostExclVAT = item.totalCost || 0;
                     return itemSum + itemCostExclVAT;
                 }, 0) || 0;
                 return sum + dispatchCost;
             }, 0);
 
-            // 5. VAT ON DISPATCH COSTS (this is input VAT on items being consumed)
-            const vatOnDispatchCosts = periodDispatches.reduce((sum: number, d: any) =>
-                sum + (d.vatAmount || 0), 0
-            );
+            // 5. CLOSING STOCK CALCULATION (using the same method as current stock page)
+            // This is already calculated as currentStockValue above
 
-            // 6. SALES = People fed × selling prices (check if selling price includes VAT)
-            // ASSUMPTION: sellingPrice is PER PERSON and EXCLUDES VAT
+            // 6. SALES = People fed × selling price
             const periodSalesExclVAT = periodDispatches.reduce((sum: number, d: any) => {
                 const sellingPriceExclVAT = d.dispatchType?.sellingPrice || d.sellingPrice || 0;
                 const peopleFed = d.peopleFed || 0;
                 return sum + (sellingPriceExclVAT * peopleFed);
             }, 0);
 
-            // 7. VAT ON SALES (Output VAT)
-            const vatOnSales = periodSalesExclVAT * VAT_CONFIG.rate;
-
-            // 8. SALES INCLUDING VAT
-            const periodSalesInclVAT = periodSalesExclVAT + vatOnSales;
-
-            // 9. GET OPENING STOCK VALUE (excluding VAT)
-            const stockItemsArray = stockValues?.items || [];
-            setCalculatingOpeningStock(true);
-            const openingStockValue = await calculateOpeningStockForDate(
-                dateRange.start,
-                stockItemsArray,
-                goodsReceipts,
-                dispatches,
-                binCounts
+            // 7. VAT calculations
+            const vatOnPurchases = periodGoodsReceipts.reduce((sum: number, gr: any) =>
+                sum + (gr.vatAmount || 0), 0
             );
 
-            // 10. VARIANCES from bin counts in the period (in value terms)
+            const vatOnSales = periodSalesExclVAT * VAT_CONFIG.rate;
+            const netVATPayable = vatOnSales - vatOnPurchases;
+
+            // 8. PROFIT CALCULATIONS - ADD MISSING VARIABLES
+            const COGS = periodConsumptionExclVAT;
+            const grossProfitBeforeVAT = periodSalesExclVAT - COGS;
+
+            // Calculate net variances from bin counts
             const netVariancesValue = periodBinCounts.reduce((sum: number, count: any) =>
                 sum + (count.countedItems?.reduce((itemSum: number, item: any) => {
                     const varianceValue = (item.variance || 0) * (item.stockItem?.unitPrice || 0);
@@ -1010,47 +1095,24 @@ export default function ComprehensiveReportsPage() {
                 }, 0) || 0), 0
             );
 
-            // 11. CLOSING STOCK = Opening + Purchases - Consumption + Variances (ALL in VALUE terms)
+            // Calculate closing stock value
             const closingStockValue = openingStockValue + periodPurchasesExclVAT - periodConsumptionExclVAT + netVariancesValue;
 
-            console.log('📦 Closing stock calculation:', {
-                openingStock: openingStockValue,
-                purchases: periodPurchasesExclVAT,
-                consumption: periodConsumptionExclVAT,
-                variances: netVariancesValue,
-                closingStock: closingStockValue
-            });
-
-            setCalculatingOpeningStock(false);
-
-            // 12. FINANCIAL CALCULATIONS - CORRECTED
-            // COGS = Cost of Goods Sold = Consumption (dispatched items cost)
-            const COGS = periodConsumptionExclVAT;
-
-            // Gross Profit Before VAT = Sales (excl VAT) - COGS
-            const grossProfitBeforeVAT = periodSalesExclVAT - COGS;
-
-            // VAT Payable = Output VAT (sales) - Input VAT (purchases)
-            const netVATPayable = vatOnSales - vatOnPurchases;
-
-            // IMPORTANT: VAT doesn't directly affect gross profit in standard accounting
-            // But for your reporting needs:
+            // Calculate net profit (gross profit after VAT)
             const netProfit = grossProfitBeforeVAT - netVATPayable;
             const profitPercentage = periodSalesExclVAT > 0 ? (netProfit / periodSalesExclVAT) * 100 : 0;
 
-            console.log('💰 CORRECTED Financial calculations:', {
+            console.log('💰 FINAL Financial calculations (consistent with other pages):', {
                 openingStockValue,
                 periodPurchasesExclVAT,
                 periodConsumptionExclVAT,
-                COGS,
-                closingStockValue,
+                currentStockValue,
                 periodSalesExclVAT,
                 vatOnPurchases,
                 vatOnSales,
                 netVATPayable,
                 grossProfitBeforeVAT,
-                netProfit,
-                profitPercentage
+                profitPercentage: profitPercentage.toFixed(1) + '%'
             });
 
             // Helper functions
@@ -1154,7 +1216,9 @@ export default function ComprehensiveReportsPage() {
             }, []).sort((a: any, b: any) => b.quantity - a.quantity).slice(0, 10);
 
             // Process inventory with VAT data
-            const inventoryByCategory = stockItemsArray.reduce((acc: any[], item: any) => {
+            // Get stock items from data - make sure we have the array
+            const stockItemsArray = stockValues?.items || Array.isArray(stockValues) ? stockValues : [];
+            const inventoryByCategory = (Array.isArray(stockItemsArray) ? stockItemsArray : []).reduce((acc: any[], item: any) => {
                 const category = item.category?.title || 'Uncategorized';
                 const existing = acc.find(cat => cat.name === category);
                 if (existing) {
@@ -1170,7 +1234,7 @@ export default function ComprehensiveReportsPage() {
             const warningStockItems = lowStock.filter((item: any) =>
                 (item.currentStock || 0) > 0 && (item.currentStock || 0) <= (item.minimumStockLevel || 0)
             ).length;
-            const healthyStockItems = stockItemsArray.length - lowStock.length;
+            const healthyStockItems = (Array.isArray(stockItemsArray) ? stockItemsArray.length : 0) - lowStock.length;
 
             // Process bin counts with accurate data
             const binCountAccuracy = periodBinCounts.length > 0 ?
@@ -1388,7 +1452,7 @@ export default function ComprehensiveReportsPage() {
                     vatOnPurchases,
                     vatOnSales,
                     netVATPayable,
-                    grossProfitBeforeVAT,
+                    grossProfitBeforeVAT: grossProfitBeforeVAT,
                     grossProfitAfterVAT: netProfit
                 },
                 suppliers: {
@@ -2901,48 +2965,34 @@ export default function ComprehensiveReportsPage() {
 
                                                 {/* Operational Overview */}
                                                 <SimpleGrid columns={{ base: 1, lg: 2 }} spacing={6}>
-                                                    {analyticsLoading ? (
-                                                        <>
-                                                            <ChartSkeleton />
-                                                            <ChartSkeleton />
-                                                        </>
-                                                    ) : (
-                                                        <>
-                                                            <StatusPieChart
-                                                                data={analyticsData.purchaseOrders.byStatus}
-                                                                title="Purchase Orders by Status"
-                                                                colors={[CHART_COLORS.primary[0], CHART_COLORS.warning[0], CHART_COLORS.success[0], CHART_COLORS.error[0]]}
-                                                            />
-                                                            <BarChartComponent
-                                                                data={analyticsData.purchaseOrders.bySite}
-                                                                title="Purchase Orders by Site"
-                                                                dataKey="value"
-                                                            />
-                                                        </>
-                                                    )}
+                                                    <StatusPieChart
+                                                        data={analyticsData.purchaseOrders?.byStatus || []}
+                                                        title="Purchase Orders by Status"
+                                                        colors={[CHART_COLORS.primary[0], CHART_COLORS.warning[0], CHART_COLORS.success[0], CHART_COLORS.error[0]]}
+                                                        isLoading={analyticsLoading}
+                                                    />
+                                                    <BarChartComponent
+                                                        data={analyticsData.purchaseOrders?.bySite || []}
+                                                        title="Purchase Orders by Site"
+                                                        dataKey="value"
+                                                        isLoading={analyticsLoading}
+                                                    />
                                                 </SimpleGrid>
 
                                                 {/* Dispatch & Inventory Analytics */}
                                                 <SimpleGrid columns={{ base: 1, lg: 2 }} spacing={6}>
-                                                    {analyticsLoading ? (
-                                                        <>
-                                                            <ChartSkeleton />
-                                                            <ChartSkeleton />
-                                                        </>
-                                                    ) : (
-                                                        <>
-                                                            <StatusPieChart
-                                                                data={analyticsData.dispatches.byType}
-                                                                title="Dispatches by Type"
-                                                                colors={CHART_COLORS.success}
-                                                            />
-                                                            <StatusPieChart
-                                                                data={analyticsData.inventory.byCategory}
-                                                                title="Inventory by Category"
-                                                                colors={CHART_COLORS.purple}
-                                                            />
-                                                        </>
-                                                    )}
+                                                    <StatusPieChart
+                                                        data={analyticsData.dispatches?.byType || []}
+                                                        title="Dispatches by Type"
+                                                        colors={CHART_COLORS.success}
+                                                        isLoading={analyticsLoading}
+                                                    />
+                                                    <StatusPieChart
+                                                        data={analyticsData.inventory?.byCategory || []}
+                                                        title="Inventory by Category"
+                                                        colors={CHART_COLORS.purple}
+                                                        isLoading={analyticsLoading}
+                                                    />
                                                 </SimpleGrid>
 
                                                 {/* Financial Metrics - PERIOD-BASED CALCULATIONS WITH VAT */}
@@ -3097,82 +3147,320 @@ interface PieChartData {
     value: number;
 }
 
-// Fixed StatusPieChart component
-const StatusPieChart = ({ data, title, colors = CHART_COLORS.primary }: { data: any[], title: string, colors?: string[] }) => (
-    <Card minH="400px">
-        <CardBody>
-            <Text fontWeight="bold" mb={4}>{title}</Text>
-            <Box height="300px" minWidth="100%">
-                <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                        <Pie
-                            data={data}
-                            cx="50%"
-                            cy="50%"
-                            labelLine={true}
-                            label={({ name, value }) => {
-                                const total = data.reduce((sum, item) => sum + item.value, 0);
-                                const percentage = (((value as number) / total) * 100).toFixed(0);
-                                return `${name}: ${percentage}%`;
-                            }}
-                            outerRadius={80}
-                            fill="#8884d8"
-                            dataKey="value"
-                        >
-                            {data.map((entry, index) => (
-                                <Cell key={`cell-${index}`} fill={colors[index % colors.length]} />
-                            ))}
-                        </Pie>
-                        <Tooltip formatter={(value) => [value, 'Count']} />
-                        <Legend />
-                    </PieChart>
-                </ResponsiveContainer>
-            </Box>
-        </CardBody>
-    </Card>
-);
 
-// Fixed BarChartComponent
-const BarChartComponent = ({ data, title, dataKey, color = CHART_COLORS.primary[0] }: { data: any[], title: string, dataKey: string, color?: string }) => (
-    <Card minH="400px">
-        <CardBody>
-            <Text fontWeight="bold" mb={4}>{title}</Text>
-            <Box height="300px" minWidth="100%">
-                <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={data}>
-                        <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="name" />
-                        <YAxis />
-                        <Tooltip />
-                        <Legend />
-                        <Bar dataKey={dataKey} fill={color} />
-                    </BarChart>
-                </ResponsiveContainer>
-            </Box>
-        </CardBody>
-    </Card>
-);
+// Custom hook to ensure chart containers have dimensions before rendering
+const useChartDimensions = () => {
+    const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
+    const containerRef = useRef<HTMLDivElement>(null);
 
-// Fixed LineChartComponent
-const LineChartComponent = ({ data, title, dataKey, color = CHART_COLORS.primary[0] }: { data: any[], title: string, dataKey: string, color?: string }) => (
-    <Card minH="400px">
-        <CardBody>
-            <Text fontWeight="bold" mb={4}>{title}</Text>
-            <Box height="300px" minWidth="100%">
-                <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={data}>
-                        <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="name" />
-                        <YAxis />
-                        <Tooltip />
-                        <Legend />
-                        <Line type="monotone" dataKey={dataKey} stroke={color} strokeWidth={2} />
-                    </LineChart>
-                </ResponsiveContainer>
-            </Box>
-        </CardBody>
-    </Card>
-);
+    useEffect(() => {
+        const updateDimensions = () => {
+            if (containerRef.current) {
+                const { width, height } = containerRef.current.getBoundingClientRect();
+                if (width > 0 && height > 0) {
+                    setDimensions({ width, height });
+                }
+            }
+        };
+
+        updateDimensions();
+
+        // Use a timeout to ensure the component is fully rendered
+        const timer = setTimeout(updateDimensions, 100);
+
+        // Update on resize
+        window.addEventListener('resize', updateDimensions);
+
+        return () => {
+            clearTimeout(timer);
+            window.removeEventListener('resize', updateDimensions);
+        };
+    }, []);
+
+    return { dimensions, containerRef };
+};
+
+
+
+// Simple, reliable BarChartComponent
+const BarChartComponent = ({
+    data,
+    title,
+    dataKey,
+    color = CHART_COLORS.primary[0],
+    isLoading = false
+}: {
+    data: any[],
+    title: string,
+    dataKey: string,
+    color?: string,
+    isLoading?: boolean
+}) => {
+    const [isMounted, setIsMounted] = useState(false);
+
+    // Add this to each chart component at the beginning
+    console.log(`📊 ${title} - Data:`, data?.length, 'items');
+    console.log(`📊 ${title} - isMounted:`, isMounted);
+    console.log(`📊 ${title} - isLoading:`, isLoading);
+
+    useEffect(() => {
+        setIsMounted(true);
+    }, []);
+
+    if (isLoading) {
+        return (
+            <Card minH="400px">
+                <CardBody>
+                    <Skeleton height="24px" mb={4} width="200px" />
+                    <Skeleton height="300px" />
+                </CardBody>
+            </Card>
+        );
+    }
+
+    if (!data || data.length === 0) {
+        return (
+            <Card minH="400px">
+                <CardBody>
+                    <Text fontWeight="bold" mb={4}>{title}</Text>
+                    <Box height="300px" display="flex" alignItems="center" justifyContent="center">
+                        <Text color="gray.500">No data available</Text>
+                    </Box>
+                </CardBody>
+            </Card>
+        );
+    }
+
+    return (
+        <Card minH="400px">
+            <CardBody>
+                <Text fontWeight="bold" mb={4}>{title}</Text>
+                <Box height="350px" width="100%" minWidth="100%">
+                    {isMounted && (
+                        <ResponsiveContainer width="100%" height="100%">
+                            <BarChart
+                                data={data}
+                                margin={{ top: 20, right: 30, left: 20, bottom: 5 }}
+                            >
+                                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                                <XAxis
+                                    dataKey="name"
+                                    angle={-45}
+                                    textAnchor="end"
+                                    height={60}
+                                    tick={{ fontSize: 12 }}
+                                />
+                                <YAxis tick={{ fontSize: 12 }} />
+                                <Tooltip
+                                    formatter={(value) => [`${value}`, title]}
+                                    contentStyle={{ borderRadius: '8px', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}
+                                />
+                                <Legend />
+                                <Bar
+                                    dataKey={dataKey}
+                                    fill={color}
+                                    radius={[4, 4, 0, 0]}
+                                    name={title}
+                                />
+                            </BarChart>
+                        </ResponsiveContainer>
+                    )}
+                </Box>
+            </CardBody>
+        </Card>
+    );
+};
+
+// Simple, reliable LineChartComponent
+const LineChartComponent = ({
+    data,
+    title,
+    dataKey,
+    color = CHART_COLORS.primary[0],
+    isLoading = false
+}: {
+    data: any[],
+    title: string,
+    dataKey: string,
+    color?: string,
+    isLoading?: boolean
+}) => {
+    const [isMounted, setIsMounted] = useState(false);
+
+    // Add this to each chart component at the beginning
+    console.log(`📊 ${title} - Data:`, data?.length, 'items');
+    console.log(`📊 ${title} - isMounted:`, isMounted);
+    console.log(`📊 ${title} - isLoading:`, isLoading);
+
+    useEffect(() => {
+        setIsMounted(true);
+    }, []);
+
+    if (isLoading) {
+        return (
+            <Card minH="400px">
+                <CardBody>
+                    <Skeleton height="24px" mb={4} width="200px" />
+                    <Skeleton height="300px" />
+                </CardBody>
+            </Card>
+        );
+    }
+
+    if (!data || data.length === 0) {
+        return (
+            <Card minH="400px">
+                <CardBody>
+                    <Text fontWeight="bold" mb={4}>{title}</Text>
+                    <Box height="300px" display="flex" alignItems="center" justifyContent="center">
+                        <Text color="gray.500">No data available</Text>
+                    </Box>
+                </CardBody>
+            </Card>
+        );
+    }
+
+    return (
+        <Card minH="400px">
+            <CardBody>
+                <Text fontWeight="bold" mb={4}>{title}</Text>
+                <Box height="350px" width="100%" minWidth="100%">
+                    {isMounted && (
+                        <ResponsiveContainer width="100%" height="100%">
+                            <LineChart
+                                data={data}
+                                margin={{ top: 20, right: 30, left: 20, bottom: 5 }}
+                            >
+                                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                                <XAxis
+                                    dataKey="name"
+                                    tick={{ fontSize: 12 }}
+                                />
+                                <YAxis tick={{ fontSize: 12 }} />
+                                <Tooltip
+                                    formatter={(value) => [`${value}`, title]}
+                                    contentStyle={{ borderRadius: '8px', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}
+                                />
+                                <Legend />
+                                <Line
+                                    type="monotone"
+                                    dataKey={dataKey}
+                                    stroke={color}
+                                    strokeWidth={2}
+                                    dot={{ stroke: color, strokeWidth: 2, r: 4 }}
+                                    activeDot={{ r: 6, strokeWidth: 0 }}
+                                    name={title}
+                                />
+                            </LineChart>
+                        </ResponsiveContainer>
+                    )}
+                </Box>
+            </CardBody>
+        </Card>
+    );
+};
+
+// Simple, reliable StatusPieChart
+const StatusPieChart = ({
+    data,
+    title,
+    colors = CHART_COLORS.primary,
+    isLoading = false
+}: {
+    data: any[],
+    title: string,
+    colors?: string[],
+    isLoading?: boolean
+}) => {
+    const [isMounted, setIsMounted] = useState(false);
+
+    // Add this to each chart component at the beginning
+    console.log(`📊 ${title} - Data:`, data?.length, 'items');
+    console.log(`📊 ${title} - isMounted:`, isMounted);
+    console.log(`📊 ${title} - isLoading:`, isLoading);
+
+    useEffect(() => {
+        setIsMounted(true);
+    }, []);
+
+    if (isLoading) {
+        return (
+            <Card minH="400px">
+                <CardBody>
+                    <Skeleton height="24px" mb={4} width="200px" />
+                    <Skeleton height="300px" />
+                </CardBody>
+            </Card>
+        );
+    }
+
+    if (!data || data.length === 0) {
+        return (
+            <Card minH="400px">
+                <CardBody>
+                    <Text fontWeight="bold" mb={4}>{title}</Text>
+                    <Box height="300px" display="flex" alignItems="center" justifyContent="center">
+                        <Text color="gray.500">No data available</Text>
+                    </Box>
+                </CardBody>
+            </Card>
+        );
+    }
+
+    // Calculate total for percentages
+    const total = data.reduce((sum, item) => sum + (item.value || 0), 0);
+
+    return (
+        <Card minH="400px">
+            <CardBody>
+                <Text fontWeight="bold" mb={4}>{title}</Text>
+                <Box height="350px" width="100%" minWidth="100%">
+                    {isMounted && (
+                        <ResponsiveContainer width="100%" height="100%">
+                            <PieChart>
+                                <Pie
+                                    data={data}
+                                    cx="50%"
+                                    cy="50%"
+                                    labelLine={true}
+                                    label={(entry) => {
+                                        const percentage = total > 0 ? ((entry.value / total) * 100).toFixed(0) : '0';
+                                        return `${entry.name} (${percentage}%)`;
+                                    }}
+                                    outerRadius={100}
+                                    fill="#8884d8"
+                                    dataKey="value"
+                                    paddingAngle={1}
+                                >
+                                    {data.map((entry, index) => (
+                                        <Cell
+                                            key={`cell-${index}`}
+                                            fill={colors[index % colors.length]}
+                                            stroke="#fff"
+                                            strokeWidth={1}
+                                        />
+                                    ))}
+                                </Pie>
+                                <Tooltip
+                                    formatter={(value, name) => {
+                                        const percentage = total > 0 ? ((Number(value) / total) * 100).toFixed(1) : '0';
+                                        return [`${value} (${percentage}%)`, name];
+                                    }}
+                                    contentStyle={{
+                                        borderRadius: '8px',
+                                        boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
+                                    }}
+                                />
+                                <Legend />
+                            </PieChart>
+                        </ResponsiveContainer>
+                    )}
+                </Box>
+            </CardBody>
+        </Card>
+    );
+};
+
 
 // Visual Analytics Tab Component with VAT
 const VisualAnalyticsTab = ({ analyticsData, loading }: { analyticsData: EnhancedAnalyticsData | null, loading: boolean }) => {

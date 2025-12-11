@@ -1,75 +1,96 @@
-// src/app/api/stock-as-of-date/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { getStockAsOfDate } from '@/lib/stockCalculations';
-import { client } from '@/lib/sanity';
-import { groq } from 'next-sanity';
 
 export async function POST(request: NextRequest) {
 	try {
-		const { stockItemIds, binIds, asOfDate } = await request.json();
+		const body = await request.json();
+		const { stockItemIds, binIds, asOfDate } = body;
 
-		if (!stockItemIds || !binIds || !asOfDate) {
+		if (!stockItemIds || !Array.isArray(stockItemIds) || stockItemIds.length === 0) {
 			return NextResponse.json(
-				{ error: 'Missing required parameters: stockItemIds, binIds, asOfDate' },
+				{ error: 'Invalid stockItemIds' },
 				{ status: 400 }
 			);
 		}
 
-		console.log('📅 Calculating stock as of:', asOfDate, 'for', stockItemIds.length, 'items across', binIds.length, 'bins');
+		if (!binIds || !Array.isArray(binIds) || binIds.length === 0) {
+			return NextResponse.json(
+				{ error: 'Invalid binIds' },
+				{ status: 400 }
+			);
+		}
 
-		// Use the getStockAsOfDate function from stockCalculations
-		const stockResults = await getStockAsOfDate(stockItemIds, binIds, new Date(asOfDate));
+		if (!asOfDate) {
+			return NextResponse.json(
+				{ error: 'asOfDate is required' },
+				{ status: 400 }
+			);
+		}
 
-		// Get stock item details for value calculation
-		const stockItemsQuery = groq`*[_type == "StockItem" && _id in $stockItemIds] {
-            _id,
-            name,
-            unitPrice,
-            isVATApplicable
-        }`;
+		const targetDate = new Date(asOfDate);
 
-		const stockItems = await client.fetch(stockItemsQuery, { stockItemIds });
+		// Use the same calculation function as other pages
+		const stockResults = await getStockAsOfDate(stockItemIds, binIds, targetDate);
+
+		// Calculate summary
+		let totalValue = 0;
+		const itemDetails: { [key: string]: any } = {};
+
+		// Get item details for value calculation
+		const stockItemsResponse = await fetch(`${process.env.NEXTAUTH_URL}/api/stock-items`);
+		const stockItems = await stockItemsResponse.json();
+
+		// Create a map for quick lookup
+		const itemMap = new Map();
+		stockItems.forEach((item: any) => {
+			itemMap.set(item._id, item);
+		});
 
 		// Calculate total value
-		let totalValue = 0;
-		let totalVAT = 0;
+		for (const [key, quantity] of Object.entries(stockResults)) {
+			if (typeof quantity === 'number' && quantity > 0) {
+				const [itemId, binId] = key.split('-');
+				const item = itemMap.get(itemId);
+				if (item) {
+					const itemValue = quantity * (item.unitPrice || 0);
+					totalValue += itemValue;
 
-		stockItems.forEach((item: any) => {
-			binIds.forEach((binId: string) => {
-				const key = `${item._id}-${binId}`;
-				const quantity = stockResults[key] || 0;
-				const itemValue = quantity * (item.unitPrice || 0);
-				totalValue += itemValue;
+					if (!itemDetails[itemId]) {
+						itemDetails[itemId] = {
+							name: item.name,
+							sku: item.sku,
+							unitPrice: item.unitPrice || 0,
+							totalStock: 0,
+							totalValue: 0,
+							bins: {}
+						};
+					}
 
-				// Calculate VAT if applicable
-				if (item.isVATApplicable !== false) {
-					totalVAT += itemValue * 0.15; // 15% VAT
+					itemDetails[itemId].totalStock += quantity;
+					itemDetails[itemId].totalValue += itemValue;
+					itemDetails[itemId].bins[binId] = quantity;
 				}
-			});
-		});
+			}
+		}
 
 		return NextResponse.json({
-			stockResults,
+			success: true,
 			summary: {
+				totalItems: stockItemIds.length,
+				totalBins: binIds.length,
+				totalCombinations: Object.keys(stockResults).length,
 				totalValue,
-				totalVAT,
-				totalValueWithVAT: totalValue + totalVAT,
-				itemCount: stockItemIds.length,
-				binCount: binIds.length,
-				asOfDate
+				calculatedAt: new Date().toISOString(),
+				asOfDate: targetDate.toISOString()
 			},
-			stockItems: stockItems.map((item: any) => ({
-				_id: item._id,
-				name: item.name,
-				unitPrice: item.unitPrice,
-				isVATApplicable: item.isVATApplicable !== false
-			}))
+			stockResults,
+			itemDetails
 		});
 
-	} catch (error) {
-		console.error('Error calculating stock as of date:', error);
+	} catch (error: any) {
+		console.error('❌ Error in stock-as-of-date API:', error);
 		return NextResponse.json(
-			{ error: 'Failed to calculate historical stock' },
+			{ error: 'Failed to calculate stock', details: error.message },
 			{ status: 500 }
 		);
 	}
