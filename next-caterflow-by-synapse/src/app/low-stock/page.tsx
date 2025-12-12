@@ -65,6 +65,7 @@ interface LowStockItem extends StockItem {
     selected: boolean;
     priority: 'critical' | 'high' | 'medium' | 'low';
     daysUntilOut: number | null;
+    originalStockItemId?: string;
 }
 
 interface OrderItem {
@@ -111,6 +112,10 @@ export default function LowStockPage() {
     const successColor = useColorModeValue('green.500', 'green.300');
     const warningColor = useColorModeValue('orange.500', 'orange.300');
     const bgCard = useColorModeValue('neutral.light.bg-card', 'neutral.dark.bg-card');
+
+
+    const scrollbarTrackColor = useColorModeValue('gray.100', 'gray.700');
+    const scrollbarThumbColor = useColorModeValue('brand.500', 'brand.300');
 
     // Calculate stock for low stock items with progress tracking
     const calculateStockForSite = useCallback(async (siteId: string | null) => {
@@ -272,7 +277,8 @@ export default function LowStockPage() {
 
                         itemsWithCalculatedStock.push({
                             ...item,
-                            _id: `${item._id}-${siteId}`, // Unique ID for item-site combination
+                            _id: `${item._id}-${siteId}`, // Synthetic ID for item-site combination
+                            originalStockItemId: item._id, // Preserve original ID
                             currentStock: totalStockInSite,
                             stockStatus,
                             siteName: firstEntry.siteName,
@@ -330,7 +336,7 @@ export default function LowStockPage() {
             setIsRefreshing(false);
             console.log('🏁 Low stock calculation finished');
         }
-    }, [toast]);
+    }, [toast, sites]);
 
     const fetchSuppliers = async () => {
         try {
@@ -454,7 +460,21 @@ export default function LowStockPage() {
             });
             return;
         }
-        setSelectedItems(items);
+
+        // Transform items to have original IDs for the modal
+        const transformedItems = items.map(item => {
+            // Extract original ID from synthetic ID (format: "originalId-siteId")
+            const originalId = item._id.includes('-')
+                ? item._id.split('-').slice(0, -1).join('-')
+                : item._id;
+
+            return {
+                ...item,
+                _id: originalId // Replace synthetic ID with original ID
+            };
+        });
+
+        setSelectedItems(transformedItems);
         onOpen();
     };
 
@@ -1138,11 +1158,11 @@ export default function LowStockPage() {
                                 height: '8px',
                             },
                             '&::-webkit-scrollbar-track': {
-                                backgroundColor: useColorModeValue('gray.100', 'gray.700'),
+                                backgroundColor: 'var(--scrollbar-track)',
                                 borderRadius: '4px',
                             },
                             '&::-webkit-scrollbar-thumb': {
-                                backgroundColor: useColorModeValue('brand.500', 'brand.300'),
+                                backgroundColor: 'var(--scrollbar-thumb)',
                                 borderRadius: '4px',
                             },
                         }}

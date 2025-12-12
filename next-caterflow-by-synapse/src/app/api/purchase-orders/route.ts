@@ -356,7 +356,10 @@ export async function PATCH(request: Request) {
         const existingPO = await client.fetch(
             groq`*[_type == "PurchaseOrder" && _id == $id][0] {
                 _id,
-                site->_id
+                site->{
+                    _id,
+                    name
+                }
             }`,
             { id: _id }
         );
@@ -366,52 +369,51 @@ export async function PATCH(request: Request) {
             return setNoCache(res);
         }
 
-        if (!userSiteInfo.canAccessMultipleSites && existingPO.site._id !== userSiteInfo.userSiteId) {
+        if (!userSiteInfo.canAccessMultipleSites && existingPO.site?._id !== userSiteInfo.userSiteId) {
             const res = NextResponse.json({ error: 'Access denied to update this purchase order' }, { status: 403 });
             return setNoCache(res);
         }
 
-        const transaction = writeClient.transaction();
+        // Start building the patch
+        let patch = writeClient.patch(_id);
 
         // Handle general top-level updates
         if (Object.keys(updateData).some(key => key !== 'orderedItems')) {
             const cleanUpdateData = { ...updateData };
             delete cleanUpdateData.orderedItems;
 
-            // Correct way to patch within a transaction
-            transaction.patch(_id, (patch) =>
-                patch.set(cleanUpdateData)
-            );
+            // Add top-level updates to patch
+            patch = patch.set(cleanUpdateData);
         }
 
-        // Handle orderedItems updates
+        // Handle orderedItems updates - if we need to replace the entire array
         if (updateData.orderedItems && Array.isArray(updateData.orderedItems)) {
-            updateData.orderedItems.forEach((item: any) => {
-                if (item._key) {
-                    const patchObject: { [key: string]: any } = {};
-
-                    if (item.orderedQuantity !== undefined) {
-                        patchObject[`orderedItems[_key=="${item._key}"].orderedQuantity`] = item.orderedQuantity;
-                    }
-                    if (item.unitPrice !== undefined) {
-                        patchObject[`orderedItems[_key=="${item._key}"].unitPrice`] = item.unitPrice;
-                    }
-
-                    // Only apply the patch if there's something to update
-                    if (Object.keys(patchObject).length > 0) {
-                        transaction.patch(_id, (patch) =>
-                            patch.set(patchObject)
-                        );
-                    }
-                }
+            // If you want to replace the entire orderedItems array
+            patch = patch.set({
+                orderedItems: updateData.orderedItems.map((item: any) => ({
+                    _key: item._key || nanoid(),
+                    orderedQuantity: item.orderedQuantity || 0,
+                    unitPrice: item.unitPrice || 0,
+                    stockItem: {
+                        _type: 'reference',
+                        _ref: item.stockItem
+                    },
+                    ...(item.supplier && {
+                        supplier: {
+                            _type: 'reference',
+                            _ref: item.supplier
+                        }
+                    })
+                }))
             });
         }
 
-        const purchaseOrder = await transaction.commit();
+        // Commit the patch
+        const purchaseOrder = await patch.commit();
 
         await logSanityInteraction(
             'update',
-            `Updated purchase order: ${purchaseOrder.documentIds || _id}`,
+            `Updated purchase order: ${purchaseOrder._id}`,
             'PurchaseOrder',
             _id,
             session.user.id,
@@ -423,7 +425,15 @@ export async function PATCH(request: Request) {
     } catch (error: any) {
         console.error('Failed to update purchase order:', error);
         const res = NextResponse.json(
-            { error: 'Failed to update purchase order', details: error?.message || String(error) },
+            {
+                error: 'Failed to update purchase order',
+                details: error?.message || String(error),
+                // Add more debugging info in development
+                ...(process.env.NODE_ENV === 'development' && {
+                    stack: error?.stack,
+                    fullError: error
+                })
+            },
             { status: 500 }
         );
         return setNoCache(res);

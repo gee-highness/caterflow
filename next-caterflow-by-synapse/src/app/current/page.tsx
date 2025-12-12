@@ -332,7 +332,7 @@ export default function CurrentStockPage() {
             setIsRefreshing(false);
             console.log('🏁 Stock calculation finished');
         }
-    }, [toast]);
+    }, [toast, sites]);
 
     const fetchSites = async () => {
         try {

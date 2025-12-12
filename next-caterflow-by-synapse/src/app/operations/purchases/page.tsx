@@ -27,7 +27,7 @@ import {
     Icon,
     HStack,
 } from '@chakra-ui/react';
-import { FiPlus, FiSearch, FiEye, FiFilter, FiEdit } from 'react-icons/fi';
+import { FiPlus, FiSearch, FiEye, FiFilter, FiEdit, FiXCircle, FiCheckCircle } from 'react-icons/fi'; // Added missing icons
 import DataTable from '@/app/actions/DataTable';
 import { useSession } from 'next-auth/react';
 import CreatePurchaseOrderModal from '@/app/actions/CreatePurchaseOrderModal';
@@ -35,6 +35,8 @@ import PurchaseOrderModal, { PurchaseOrderDetails } from '@/app/actions/Purchase
 import { PendingAction } from '@/app/actions/types';
 import { StockItem, Category, Site } from '@/lib/sanityTypes';
 import { FaCheck } from 'react-icons/fa';
+
+import StockItemSelectorModal from '@/components/StockItemSelectorModal';
 
 // Interfaces remain the same...
 interface PurchaseOrderItem {
@@ -114,6 +116,8 @@ export default function PurchasesPage() {
     const [editedPrices, setEditedPrices] = useState<{ [key: string]: number | undefined }>({});
     const [editedQuantities, setEditedQuantities] = useState<{ [key: string]: number | undefined }>({});
     const [isSaving, setIsSaving] = useState(false);
+
+    const [isAddItemModalOpen, setIsAddItemModalOpen] = useState(false);
 
 
     const bgPrimary = useColorModeValue('neutral.light.bg-primary', 'neutral.dark.bg-primary');
@@ -217,7 +221,93 @@ export default function PurchasesPage() {
         fetchPurchaseOrders();
     }, [fetchPurchaseOrders]);
 
+
+    // Add this useEffect after your other useEffect hooks
+    useEffect(() => {
+        if (poDetails && isOrderModalOpen) {
+            // Initialize edited states when modal opens
+            const initialQuantities: { [key: string]: number } = {};
+            const initialPrices: { [key: string]: number } = {};
+
+            poDetails.orderedItems?.forEach(item => {
+                if (item._key) {
+                    initialQuantities[item._key] = item.orderedQuantity;
+                    initialPrices[item._key] = item.unitPrice;
+                }
+            });
+
+            setEditedQuantities(initialQuantities);
+            setEditedPrices(initialPrices);
+        }
+    }, [poDetails, isOrderModalOpen]);
+
     const handleAddOrder = () => onOpen();
+
+
+    const handleRemoveItem = async (itemKey: string) => {
+        if (!poDetails) return;
+
+        try {
+            // Filter out the item to be removed
+            const updatedItems = poDetails.orderedItems?.filter(item => item._key !== itemKey) || [];
+
+            // Update local state
+            setPoDetails(prev => prev ? {
+                ...prev,
+                orderedItems: updatedItems
+            } : null);
+
+            // Prepare items for API (without the removed item)
+            const itemsForApi = updatedItems.map(item => ({
+                _key: item._key,
+                stockItem: item.stockItem?._id,
+                orderedQuantity: item.orderedQuantity,
+                unitPrice: item.unitPrice,
+                supplier: item.supplier?._id || null
+            }));
+
+            // Calculate new total amount
+            const totalAmount = itemsForApi.reduce((acc, item) =>
+                acc + (item.orderedQuantity * item.unitPrice), 0
+            );
+
+            // Update via API
+            const response = await fetch('/api/purchase-orders', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    _id: poDetails._id,
+                    updateData: {
+                        orderedItems: itemsForApi,
+                        totalAmount
+                    }
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to remove item');
+            }
+
+            toast({
+                title: 'Item Removed',
+                description: 'Item has been removed from the purchase order',
+                status: 'success',
+                duration: 3000,
+                isClosable: true,
+            });
+
+            fetchPurchaseOrders();
+        } catch (error) {
+            toast({
+                title: 'Error',
+                description: 'Failed to remove item from purchase order',
+                status: 'error',
+                duration: 5000,
+                isClosable: true,
+            });
+        }
+    };
+
 
     const handleCreateOrders = async (items: OrderItem[], siteId?: string) => {
         try {
@@ -266,24 +356,36 @@ export default function PurchasesPage() {
         if (!poDetails) return;
         setIsSaving(true);
         try {
-            const updates = poDetails.orderedItems?.map((item: any) => {
-                const newPrice = editedPrices[item._key];
-                const newQuantity = editedQuantities[item._key];
-                if (newPrice !== undefined || newQuantity !== undefined) {
-                    return fetch('/api/purchase-orders/update-item', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            poId: poDetails._id,
-                            itemKey: item._key,
-                            newPrice,
-                            newQuantity,
-                        }),
-                    });
-                }
-                return Promise.resolve();
+            // Create the payload with updated quantities
+            const updatedItems = poDetails.orderedItems?.map(item => ({
+                _key: item._key,
+                orderedQuantity: editedQuantities[item._key] ?? item.orderedQuantity,
+                unitPrice: editedPrices[item._key] ?? item.unitPrice,
+                stockItem: item.stockItem?._id,
+                supplier: item.supplier?._id
+            })) || [];
+
+            // Calculate new total amount
+            const totalAmount = updatedItems.reduce((acc, item) =>
+                acc + (item.orderedQuantity * item.unitPrice), 0
+            );
+
+            // Update using the PATCH endpoint
+            const response = await fetch(`/api/purchase-orders`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    _id: poDetails._id,
+                    updateData: {
+                        orderedItems: updatedItems,
+                        totalAmount
+                    }
+                }),
             });
-            if (updates) await Promise.all(updates);
+
+            if (!response.ok) {
+                throw new Error('Failed to save purchase order');
+            }
 
             toast({
                 title: 'Order Saved',
@@ -291,11 +393,17 @@ export default function PurchasesPage() {
                 duration: 3000,
                 isClosable: true,
             });
+
             onOrderModalClose();
             fetchPurchaseOrders();
+
+            // Reset edited states
+            setEditedQuantities({});
+            setEditedPrices({});
         } catch (error) {
             toast({
                 title: 'Save Failed',
+                description: 'Failed to save purchase order changes',
                 status: 'error',
                 duration: 5000,
                 isClosable: true,
@@ -343,6 +451,87 @@ export default function PurchasesPage() {
         }
     };
 
+    // Add these functions for approving/rejecting POs in pending-approval status
+    const handleFinalApprovePO = async (poDetails: PurchaseOrderDetails) => {
+        try {
+            const response = await fetch('/api/actions/update', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    id: poDetails._id,
+                    type: 'PurchaseOrder',
+                    status: 'approved',
+                    approvedBy: user?.id,
+                    approvedAt: new Date().toISOString(),
+                }),
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.error || 'Failed to approve purchase order');
+            }
+
+            toast({
+                title: 'Purchase Order Approved',
+                description: `PO ${poDetails.poNumber} has been approved.`,
+                status: 'success',
+                duration: 5000,
+                isClosable: true,
+            });
+
+            onOrderModalClose();
+            fetchPurchaseOrders();
+        } catch (error: any) {
+            toast({
+                title: 'Error',
+                description: error.message || 'Failed to approve purchase order. Please try again.',
+                status: 'error',
+                duration: 5000,
+                isClosable: true,
+            });
+        }
+    };
+
+    const handleRejectPO = async (poDetails: PurchaseOrderDetails) => {
+        try {
+            const response = await fetch('/api/actions/update', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    id: poDetails._id,
+                    type: 'PurchaseOrder',
+                    status: 'rejected',
+                    rejectedBy: user?.id,
+                    rejectedAt: new Date().toISOString(),
+                }),
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.error || 'Failed to reject purchase order');
+            }
+
+            toast({
+                title: 'Purchase Order Rejected',
+                description: `PO ${poDetails.poNumber} has been rejected.`,
+                status: 'info',
+                duration: 5000,
+                isClosable: true,
+            });
+
+            onOrderModalClose();
+            fetchPurchaseOrders();
+        } catch (error: any) {
+            toast({
+                title: 'Error',
+                description: error.message || 'Failed to reject purchase order. Please try again.',
+                status: 'error',
+                duration: 5000,
+                isClosable: true,
+            });
+        }
+    };
+
     const handleViewOrder = async (order: PurchaseOrder) => {
         try {
             const response = await fetch(`/api/purchase-orders?id=${order._id}`);
@@ -374,14 +563,6 @@ export default function PurchasesPage() {
                 isClosable: true,
             });
         }
-    };
-
-    const handleRemoveItem = (itemKey: string) => {
-        if (!poDetails) return;
-        setPoDetails(prev => prev ? {
-            ...prev,
-            orderedItems: prev.orderedItems?.filter(item => item._key !== itemKey) || [],
-        } : null);
     };
 
     const handleAddItems = (items: any[]) => {
@@ -420,6 +601,83 @@ export default function PurchasesPage() {
         }
     };
 
+    const handleAddItemsToPO = async (selectedItems: any[]) => {
+        if (!poDetails) return;
+
+        try {
+            // Transform selected items to match the orderedItems structure
+            const newOrderedItems = selectedItems.map(item => ({
+                _key: Math.random().toString(36).substr(2, 9),
+                stockItem: {
+                    name: item.name,
+                    _id: item._id,
+                    unitOfMeasure: item.unitOfMeasure
+                },
+                orderedQuantity: 1,
+                unitPrice: 0,
+                supplier: null
+            }));
+
+            // Update the PO details with new items
+            setPoDetails(prev => prev ? {
+                ...prev,
+                orderedItems: [...(prev.orderedItems || []), ...newOrderedItems]
+            } : null);
+
+            // Create updated items array for API
+            const updatedItems = [...(poDetails.orderedItems || []), ...newOrderedItems].map(item => ({
+                _key: item._key,
+                stockItem: item.stockItem?._id,
+                orderedQuantity: item.orderedQuantity,
+                unitPrice: item.unitPrice,
+                supplier: item.supplier?._id || null
+            }));
+
+            // Calculate new total amount
+            const totalAmount = updatedItems.reduce((acc, item) =>
+                acc + (item.orderedQuantity * item.unitPrice), 0
+            );
+
+            // Save to backend using PATCH
+            const response = await fetch('/api/purchase-orders', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    _id: poDetails._id,
+                    updateData: {
+                        orderedItems: updatedItems,
+                        totalAmount
+                    }
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to update purchase order');
+            }
+
+            toast({
+                title: 'Items Added',
+                description: `${selectedItems.length} item(s) added to purchase order`,
+                status: 'success',
+                duration: 3000,
+                isClosable: true,
+            });
+
+
+            fetchPurchaseOrders(); // In PurchasesPage.tsx
+        } catch (error) {
+            toast({
+                title: 'Error',
+                description: 'Failed to add items to purchase order',
+                status: 'error',
+                duration: 5000,
+                isClosable: true,
+            });
+        } finally {
+            setIsAddItemModalOpen(false);
+        }
+    };
+
     const getStatusColor = (status: string) => {
         switch (status) {
             case 'draft': return 'gray';
@@ -446,17 +704,24 @@ export default function PurchasesPage() {
             accessorKey: 'workflowAction',
             header: 'Action',
             isSortable: false, // Actions column should not be sortable
-            cell: (row: any) => (
-                <Button
-                    size="sm"
-                    colorScheme={row.status === 'draft' ? 'brand' : 'gray'}
-                    variant={row.status === 'draft' ? 'solid' : 'outline'}
-                    onClick={() => handleViewOrder(row)}
-                    leftIcon={<Icon as={row.status === 'draft' ? FiEdit : FiEye} />}
-                >
-                    {row.status === 'draft' ? 'Edit' : 'View'}
-                </Button>
-            )
+            cell: (row: any) => {
+                const buttonText = row.status === 'draft' ? 'Edit' :
+                    row.status === 'pending-approval' ? 'Review' : 'View';
+                const colorScheme = row.status === 'draft' ? 'brand' :
+                    row.status === 'pending-approval' ? 'orange' : 'gray';
+
+                return (
+                    <Button
+                        size="sm"
+                        colorScheme={colorScheme}
+                        variant={row.status === 'draft' ? 'solid' : 'outline'}
+                        onClick={() => handleViewOrder(row)}
+                        leftIcon={<Icon as={row.status === 'draft' ? FiEdit : FiEye} />}
+                    >
+                        {buttonText}
+                    </Button>
+                );
+            }
         },
         {
             accessorKey: 'poNumber',
@@ -601,15 +866,30 @@ export default function PurchasesPage() {
                     isSaving={isSaving}
                     onSave={handleSaveOrder}
                     onApproveRequest={() => handleConfirmSubmit(poDetails)}
+                    // Add these new props
+                    onApprovePO={() => handleFinalApprovePO(poDetails)}
+                    onRejectPO={() => handleRejectPO(poDetails)}
                     editedPrices={editedPrices}
                     setEditedPrices={setEditedPrices}
                     editedQuantities={editedQuantities}
                     setEditedQuantities={setEditedQuantities}
-                    onRemoveItem={handleRemoveItem} // This is the missing prop
+                    onRemoveItem={handleRemoveItem}
+                    onAddItems={() => setIsAddItemModalOpen(true)}
                 />
             )}
 
-
+            {/* Add Items Modal */}
+            {isAddItemModalOpen && poDetails && (
+                <StockItemSelectorModal
+                    isOpen={isAddItemModalOpen}
+                    onClose={() => setIsAddItemModalOpen(false)}
+                    onSelect={handleAddItemsToPO}
+                    existingItemIds={poDetails.orderedItems
+                        ?.map(item => item.stockItem?._id)
+                        .filter((id): id is string => !!id) || []}
+                    multiSelect={true}
+                />
+            )}
 
 
             <AlertDialog

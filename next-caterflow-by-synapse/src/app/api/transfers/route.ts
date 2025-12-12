@@ -185,9 +185,10 @@ export async function PATCH(request: Request) {
 
         const result = await patch.commit();
 
-        if (willBeCompleted) {
-            await updateStockForTransaction('transfer', _id);
+        if (result.status === 'completed') {
+            await updateStockForTransaction('transfer', result._id);
         }
+
 
         return NextResponse.json(result);
     } catch (error) {

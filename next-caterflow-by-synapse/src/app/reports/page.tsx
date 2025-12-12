@@ -826,76 +826,7 @@ export default function ComprehensiveReportsPage() {
         });
     }, [dateRangeMemo]);
 
-    // SIMPLIFIED opening stock calculation - using current stock as fallback
-    // CORRECTED: Use the same calculation as other pages
-    // SIMPLIFIED VERSION: Uses the same endpoint as current stock page
-    // SIMPLIFIED opening stock calculation - using current stock as fallback
-    // CORRECTED: Use the same calculation as other pages
-    const calculateOpeningStockForDate = useCallback(async (
-        targetDate: Date,
-        currentStockItems: any[],
-        allGoodsReceipts: any[],
-        allDispatches: any[],
-        allBinCounts: any[]
-    ): Promise<number> => {
-        try {
-            console.log('🔍 Calculating opening stock for:', targetDate.toDateString());
-            console.log('📊 Current stock items count:', currentStockItems?.length || 0);
 
-            // Format date for API call
-            const formattedDate = targetDate.toISOString().split('T')[0];
-
-            // Use the SAME calculation as current stock page by calling the low-stock API
-            const response = await fetch(`/api/low-stock/calculate?siteId=all&date=${formattedDate}`);
-
-            if (response.ok) {
-                const data = await response.json();
-                const openingStockValue = data.summary?.totalInventoryValue || 0;
-                console.log('💰 Opening stock from API:', openingStockValue);
-                console.log('📈 API Response summary:', data.summary);
-                console.log('🔍 Debug info from API:', data.debug);
-
-                // If API returns 0, try to calculate manually from current stock
-                if (openingStockValue === 0) {
-                    console.log('⚠️ API returned 0, calculating manually...');
-                    return calculateManualOpeningStock(targetDate, currentStockItems, allGoodsReceipts, allDispatches);
-                }
-
-                return openingStockValue;
-            } else {
-                // Log error details
-                const errorText = await response.text();
-                console.error('❌ API Error:', response.status, errorText);
-            }
-
-            // Fallback: Calculate from current stock items
-            console.log('🔄 Using current stock as fallback');
-            if (!Array.isArray(currentStockItems) || currentStockItems.length === 0) {
-                console.log('⚠️ No current stock items available');
-                return 0;
-            }
-
-            const totalValue = currentStockItems.reduce((sum, item) => {
-                const currentStock = item?.currentStock || 0;
-                const unitPrice = item?.unitPrice || 0;
-                const stockValue = currentStock * unitPrice;
-
-                // Debug individual items
-                if (stockValue > 0) {
-                    console.log(`📦 ${item?.name}: ${currentStock} × ${unitPrice} = ${stockValue}`);
-                }
-
-                return sum + stockValue;
-            }, 0);
-
-            console.log('💰 Calculated total value from current stock:', totalValue);
-            return totalValue;
-
-        } catch (error) {
-            console.error('❌ Error in simplified opening stock:', error);
-            return 0;
-        }
-    }, []);
 
     // Add this helper function
     const calculateManualOpeningStock = useCallback((
@@ -983,6 +914,78 @@ export default function ComprehensiveReportsPage() {
             return 0;
         }
     }, []);
+
+    // SIMPLIFIED opening stock calculation - using current stock as fallback
+    // CORRECTED: Use the same calculation as other pages
+    // SIMPLIFIED VERSION: Uses the same endpoint as current stock page
+    // SIMPLIFIED opening stock calculation - using current stock as fallback
+    // CORRECTED: Use the same calculation as other pages
+    const calculateOpeningStockForDate = useCallback(async (
+        targetDate: Date,
+        currentStockItems: any[],
+        allGoodsReceipts: any[],
+        allDispatches: any[],
+        allBinCounts: any[]
+    ): Promise<number> => {
+        try {
+            console.log('🔍 Calculating opening stock for:', targetDate.toDateString());
+            console.log('📊 Current stock items count:', currentStockItems?.length || 0);
+
+            // Format date for API call
+            const formattedDate = targetDate.toISOString().split('T')[0];
+
+            // Use the SAME calculation as current stock page by calling the low-stock API
+            const response = await fetch(`/api/low-stock/calculate?siteId=all&date=${formattedDate}`);
+
+            if (response.ok) {
+                const data = await response.json();
+                const openingStockValue = data.summary?.totalInventoryValue || 0;
+                console.log('💰 Opening stock from API:', openingStockValue);
+                console.log('📈 API Response summary:', data.summary);
+                console.log('🔍 Debug info from API:', data.debug);
+
+                // If API returns 0, try to calculate manually from current stock
+                if (openingStockValue === 0) {
+                    console.log('⚠️ API returned 0, calculating manually...');
+                    return calculateManualOpeningStock(targetDate, currentStockItems, allGoodsReceipts, allDispatches);
+                }
+
+                return openingStockValue;
+            } else {
+                // Log error details
+                const errorText = await response.text();
+                console.error('❌ API Error:', response.status, errorText);
+            }
+
+            // Fallback: Calculate from current stock items
+            console.log('🔄 Using current stock as fallback');
+            if (!Array.isArray(currentStockItems) || currentStockItems.length === 0) {
+                console.log('⚠️ No current stock items available');
+                return 0;
+            }
+
+            const totalValue = currentStockItems.reduce((sum, item) => {
+                const currentStock = item?.currentStock || 0;
+                const unitPrice = item?.unitPrice || 0;
+                const stockValue = currentStock * unitPrice;
+
+                // Debug individual items
+                if (stockValue > 0) {
+                    console.log(`📦 ${item?.name}: ${currentStock} × ${unitPrice} = ${stockValue}`);
+                }
+
+                return sum + stockValue;
+            }, 0);
+
+            console.log('💰 Calculated total value from current stock:', totalValue);
+            return totalValue;
+
+        } catch (error) {
+            console.error('❌ Error in simplified opening stock:', error);
+            return 0;
+        }
+    }, [calculateManualOpeningStock]);
+
 
     // UPDATED processAnalyticsData function with VAT calculations - CORRECTED VERSION
     const processAnalyticsData = useCallback(async (data: any, dateRange: { start: Date; end: Date }): Promise<EnhancedAnalyticsData> => {
@@ -3423,7 +3426,7 @@ const StatusPieChart = ({
                                     cx="50%"
                                     cy="50%"
                                     labelLine={true}
-                                    label={(entry) => {
+                                    label={(entry: any) => {
                                         const percentage = total > 0 ? ((entry.value / total) * 100).toFixed(0) : '0';
                                         return `${entry.name} (${percentage}%)`;
                                     }}

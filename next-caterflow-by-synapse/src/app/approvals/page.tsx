@@ -61,6 +61,7 @@ interface TransferApproval {
         _id: string;
         name: string;
         site: {
+            _id: string;
             name: string;
         };
     };
@@ -68,6 +69,7 @@ interface TransferApproval {
         _id: string;
         name: string;
         site: {
+            _id: string;
             name: string;
         };
     };
@@ -88,7 +90,10 @@ interface PurchaseOrderApproval {
     description: string;
     status: 'pending-approval';
     orderedItems: any[];
-    siteName: string;
+    site: {
+        _id: string;
+        name: string;
+    };
     createdAt: string;
     priority: 'high' | 'medium' | 'low';
 }
@@ -125,6 +130,7 @@ export default function ApprovalsPage() {
         return titles[type] || 'Items';
     };
 
+    // Update the fetchPendingApprovals function in ApprovalsPage.tsx
     const fetchPendingApprovals = useCallback(async () => {
         setLoading(true);
         setError(null);
@@ -140,10 +146,24 @@ export default function ApprovalsPage() {
                 return;
             }
 
+            // Build API URL for transfers - SAME as Transfers page
+            let transfersApiUrl = '/api/operations/transfers?status=pending-approval';
+
+            // For purchase orders, use the approvals API
+            let purchaseOrdersApiUrl = `/api/approvals?userRole=${user.role}`;
+
+            // Add site parameter for site managers
+            if (user.role === 'siteManager') {
+                const siteId = user.associatedSite?._id || user.associatedSite;
+                if (siteId) {
+                    purchaseOrdersApiUrl += `&userSite=${siteId}`;
+                }
+            }
+
             // Fetch both transfers AND purchase orders pending approval
             const [transfersResponse, purchaseOrdersResponse] = await Promise.all([
-                fetch('/api/operations/transfers?status=pending-approval'),
-                fetch(`/api/approvals?userSite=${user.associatedSite || ''}&userRole=${user.role || ''}`)
+                fetch(transfersApiUrl),  // Same endpoint as Transfers page
+                fetch(purchaseOrdersApiUrl)
             ]);
 
             if (!transfersResponse.ok) {
@@ -156,17 +176,22 @@ export default function ApprovalsPage() {
             const transfersData = await transfersResponse.json();
             const purchaseOrdersData = await purchaseOrdersResponse.json();
 
-            // Transform transfers data
+            console.log('Transfers data from API:', {
+                count: transfersData.length,
+                data: transfersData
+            });
+
+            // Transform transfers data - keep same structure as Transfers page
             const transferApprovals: TransferApproval[] = transfersData.map((transfer: any) => ({
                 _id: transfer._id,
                 _type: 'InternalTransfer',
                 transferNumber: transfer.transferNumber || 'Unknown',
                 transferDate: transfer.transferDate || new Date().toISOString(),
                 status: 'pending-approval',
-                fromBin: transfer.fromBin || { _id: 'unknown', name: 'Unknown Bin', site: { name: 'Unknown Site' } },
-                toBin: transfer.toBin || { _id: 'unknown', name: 'Unknown Bin', site: { name: 'Unknown Site' } },
+                fromBin: transfer.fromBin || { _id: 'unknown', name: 'Unknown Bin', site: { _id: 'unknown', name: 'Unknown Site' } },
+                toBin: transfer.toBin || { _id: 'unknown', name: 'Unknown Bin', site: { _id: 'unknown', name: 'Unknown Site' } },
                 transferredBy: transfer.transferredBy || null,
-                transferredItems: transfer.items || transfer.transferredItems || [],
+                transferredItems: transfer.transferredItems || transfer.items || [],
                 notes: transfer.notes,
                 createdAt: transfer.transferDate || new Date().toISOString(),
                 title: `Transfer: ${transfer.transferNumber || 'Unknown'}`,
@@ -186,11 +211,9 @@ export default function ApprovalsPage() {
                     description: po.description || 'Purchase order for items',
                     status: 'pending-approval' as const,
                     orderedItems: po.orderedItems || [],
-                    siteName: po.siteName || po.site?.name || 'Unknown Site',
+                    site: po.site || { _id: 'unknown', name: po.siteName || 'Unknown Site' },
                     createdAt: po.createdAt || po._createdAt || new Date().toISOString(),
                     priority: po.priority || 'medium',
-                    // Add additional PO-specific fields
-                    site: po.site,
                     orderedByName: po.orderedByName,
                     supplierNames: po.supplierNames,
                 }));
@@ -199,7 +222,14 @@ export default function ApprovalsPage() {
             const allApprovals = [...transferApprovals, ...purchaseOrderApprovals];
             setPendingApprovals(allApprovals);
 
+            console.log('Final approvals:', {
+                total: allApprovals.length,
+                transfers: transferApprovals.length,
+                purchaseOrders: purchaseOrderApprovals.length
+            });
+
         } catch (err: any) {
+            console.error('Error fetching approvals:', err);
             setError(err.message);
             toast({
                 title: 'Error',
@@ -304,7 +334,6 @@ export default function ApprovalsPage() {
     const handleReject = async () => {
         if (!selectedApproval) return;
 
-        // Quick permission check
         if (!canUserApprove(selectedApproval)) {
             toast({
                 title: 'Permission Denied',
@@ -320,7 +349,7 @@ export default function ApprovalsPage() {
             let response;
 
             if (selectedApproval._type === 'InternalTransfer') {
-                // Reject transfer
+                // Reject transfer - use the SAME endpoint as Transfers page
                 response = await fetch(`/api/operations/transfers/${selectedApproval._id}`, {
                     method: 'PATCH',
                     headers: { 'Content-Type': 'application/json' },
@@ -379,20 +408,21 @@ export default function ApprovalsPage() {
         if (user.role === 'admin' || user.role === 'auditor') return true;
 
         // Site managers can only approve items from their site
-        if (user.role === 'siteManager') {
-            /*if (approval._type === 'InternalTransfer') {
+        if (user.role === 'siteManager' && user.associatedSite) {
+            const userSiteId = user.associatedSite._id || user.associatedSite;
+
+            if (approval._type === 'InternalTransfer') {
                 const transfer = approval as TransferApproval;
-                const userSiteId = user.associatedSite?._id || user.associatedSite;
-                const fromSiteId = transfer.fromBin?.site || transfer.fromBin?.site;
-                return userSiteId === fromSiteId;
+                const fromSiteId = transfer.fromBin?.site?._id || transfer.fromBin?.site;
+                const toSiteId = transfer.toBin?.site?._id || transfer.toBin?.site;
+
+                // Site managers can approve transfers from OR to their site
+                return fromSiteId === userSiteId || toSiteId === userSiteId;
             } else if (approval._type === 'PurchaseOrder') {
                 const po = approval as PurchaseOrderApproval;
-                const userSiteId = user.associatedSite?._id || user.associatedSite;
-                const poSiteId = po.siteName || po.siteName;
-                return userSiteId === poSiteId;
-            }*/
-
-            return true;
+                const poSiteId = po.site?._id || po.site.name;
+                return poSiteId === userSiteId;
+            }
         }
 
         return false;
@@ -413,7 +443,7 @@ export default function ApprovalsPage() {
                 referenceNumber: approval.poNumber || 'Unknown',
                 title: approval.title || 'Unknown Title',
                 description: approval.description || 'No description',
-                siteName: approval.siteName || 'Unknown Site',
+                siteName: approval.site.name || 'Unknown Site',
                 requestedBy: 'Unknown',
             };
         }
@@ -605,7 +635,7 @@ export default function ApprovalsPage() {
                                     <Text color={primaryTextColor}>
                                         {selectedApproval?._type === 'InternalTransfer'
                                             ? selectedApproval.fromBin?.site?.name || 'Unknown Site'
-                                            : selectedApproval?.siteName || 'N/A'
+                                            : selectedApproval?.site.name || 'N/A'
                                         }
                                     </Text>
                                 </Box>

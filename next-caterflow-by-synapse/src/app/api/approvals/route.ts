@@ -2,9 +2,9 @@
 import { NextResponse } from 'next/server';
 import { client } from '@/lib/sanity';
 import { groq } from 'next-sanity';
-import { getUserSiteInfo, buildSiteFilter, buildTransactionSiteFilter } from '@/lib/siteFiltering';
+import { getUserSiteInfo } from '@/lib/siteFiltering';
 
-// Purchase orders pending approval
+// Purchase orders pending approval - simplified filter
 const purchaseOrderApprovalQuery = (siteFilter: string) => groq`
   *[_type == "PurchaseOrder" && status == "pending-approval" ${siteFilter}] {
     _id,
@@ -27,7 +27,7 @@ const purchaseOrderApprovalQuery = (siteFilter: string) => groq`
   }
 `;
 
-// Internal transfers pending approval
+// Internal transfers pending approval - simplified filter
 const internalTransferApprovalQuery = (siteFilter: string) => groq`
   *[_type == "InternalTransfer" && status == "pending-approval" ${siteFilter}] {
     _id,
@@ -49,20 +49,42 @@ export async function GET(request: Request) {
         const userSite = searchParams.get('userSite');
         const userRole = searchParams.get('userRole');
 
-        // Get user site info for filtering
-        const userSiteInfo = await getUserSiteInfo(request);
+        console.log('Approvals API called with:', { userRole, userSite });
 
-        // For purchase orders
-        const poSiteFilter = buildSiteFilter(userSiteInfo, 'site._ref');
-        // For transfers
-        const transferSiteFilter = buildTransactionSiteFilter(userSiteInfo);
+        // If userSite is provided directly, use it (for site managers)
+        let siteFilter = '';
 
+        if (userRole === 'siteManager' && userSite) {
+            console.log('Building site filter for site manager with site:', userSite);
+
+            // For purchase orders: only show POs from their site
+            siteFilter = `&& site._ref == "${userSite}"`;
+
+            // For transfers: show transfers FROM their site (since they approve outgoing transfers)
+            // This is handled in the client-side filter below
+        } else if (userRole === 'admin' || userRole === 'auditor' || userRole === 'procurer') {
+            // Admins, auditors, and procurers can see everything
+            siteFilter = '';
+        } else {
+            // No permission
+            return NextResponse.json([]);
+        }
+
+        console.log('Site filter being used:', siteFilter);
+
+        // Fetch both types of approvals
         const [purchaseOrders, internalTransfers] = await Promise.all([
-            client.fetch(purchaseOrderApprovalQuery(poSiteFilter)),
-            client.fetch(internalTransferApprovalQuery(transferSiteFilter)),
+            client.fetch(purchaseOrderApprovalQuery(siteFilter)),
+            client.fetch(internalTransferApprovalQuery('')), // Transfers filtered client-side
         ]);
 
         let approvals = [...purchaseOrders, ...internalTransfers];
+
+        console.log('Raw approvals fetched:', {
+            purchaseOrders: purchaseOrders.length,
+            internalTransfers: internalTransfers.length,
+            total: approvals.length
+        });
 
         // Normalize items
         approvals = approvals.map((approval: any) => {
@@ -74,6 +96,7 @@ export async function GET(request: Request) {
                     description: supplierNames.length > 0
                         ? `Purchase order from ${supplierNames.join(', ')}`
                         : (approval.description || 'Purchase order'),
+                    supplierNames: supplierNames.join(', ')
                 };
             } else if (approval._type === 'InternalTransfer') {
                 return {
@@ -84,24 +107,26 @@ export async function GET(request: Request) {
             return approval;
         });
 
-        // Additional client-side filtering by role/site if needed
-        if (userRole === 'admin' || userRole === 'auditor' || userRole === 'procurer') {
-            // no additional filter - already handled by GROQ query
-        } else if (userRole === 'siteManager' && userSite) {
+        // Additional client-side filtering for site managers
+        if (userRole === 'siteManager' && userSite) {
             approvals = approvals.filter((approval: any) => {
                 if (approval._type === 'PurchaseOrder') {
                     return approval.site?._id === userSite;
                 }
                 if (approval._type === 'InternalTransfer') {
-                    return (approval.fromSite?._id === userSite) || (approval.toSite?._id === userSite);
+                    // Site managers approve transfers FROM their site
+                    return approval.fromSite?._id === userSite;
                 }
                 return false;
             });
-        } else {
-            approvals = []; // not authorized
+
+            console.log('After site manager filtering:', approvals.length, 'approvals');
         }
 
+        // Sort by creation date, newest first
         approvals.sort((a: any, b: any) => new Date(b._createdAt).getTime() - new Date(a._createdAt).getTime());
+
+        console.log('Final approvals to return:', approvals.length);
 
         return NextResponse.json(approvals);
     } catch (error: any) {

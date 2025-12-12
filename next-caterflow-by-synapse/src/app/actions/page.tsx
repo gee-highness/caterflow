@@ -31,6 +31,8 @@ import GoodsReceiptModal from '@/app/actions/GoodsReceiptModal';
 import TransferModal from '@/components/TransferModal';
 import BinCountModal from '@/components/BinCountModal';
 import DispatchModal from '@/components/DispatchModal';
+import StockItemSelectorModal from '@/components/StockItemSelectorModal';
+import { FiPlus } from 'react-icons/fi'; // Add this import
 
 // Interfaces matching the individual operation pages
 interface PurchaseOrder {
@@ -146,9 +148,10 @@ const OPERATION_TYPES = {
     PurchaseOrder: {
         title: 'Purchase Orders',
         roles: ['admin', 'siteManager', 'stockController', 'auditor'],
-        statusFilter: ['draft'],
+        // Add 'pending-approval' to statusFilter for site managers to see POs needing approval
+        statusFilter: ['draft', 'pending-approval'],
         icon: FiEdit,
-        actionLabel: 'Edit',
+        actionLabel: 'Edit', // Keep as Edit for draft, but will handle differently for pending-approval
         apiEndpoint: '/api/purchase-orders',
         detailEndpoint: (id: string) => `/api/purchase-orders?id=${id}`,
     },
@@ -220,6 +223,8 @@ export default function ActionsPage() {
     const [editedPrices, setEditedPrices] = useState<{ [key: string]: number | undefined }>({});
     const [editedQuantities, setEditedQuantities] = useState<{ [key: string]: number | undefined }>({});
     const [isSaving, setIsSaving] = useState(false);
+
+    const [isAddItemModalOpen, setIsAddItemModalOpen] = useState(false);
 
     // Extract user data from session
     const user = session?.user as any;
@@ -567,24 +572,36 @@ export default function ActionsPage() {
         if (!poDetails) return;
         setIsSaving(true);
         try {
-            const updates = poDetails.orderedItems?.map((item: any) => {
-                const newPrice = editedPrices[item._key];
-                const newQuantity = editedQuantities[item._key];
-                if (newPrice !== undefined || newQuantity !== undefined) {
-                    return fetch('/api/purchase-orders/update-item', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            poId: poDetails._id,
-                            itemKey: item._key,
-                            newPrice,
-                            newQuantity,
-                        }),
-                    });
-                }
-                return Promise.resolve();
+            // Create the payload with updated quantities
+            const updatedItems = poDetails.orderedItems?.map(item => ({
+                _key: item._key,
+                orderedQuantity: editedQuantities[item._key] ?? item.orderedQuantity,
+                unitPrice: editedPrices[item._key] ?? item.unitPrice,
+                stockItem: item.stockItem?._id,
+                supplier: item.supplier?._id
+            })) || [];
+
+            // Calculate new total amount
+            const totalAmount = updatedItems.reduce((acc, item) =>
+                acc + (item.orderedQuantity * item.unitPrice), 0
+            );
+
+            // Update using the PATCH endpoint
+            const response = await fetch(`/api/purchase-orders`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    _id: poDetails._id,
+                    updateData: {
+                        orderedItems: updatedItems,
+                        totalAmount
+                    }
+                }),
             });
-            if (updates) await Promise.all(updates);
+
+            if (!response.ok) {
+                throw new Error('Failed to save purchase order');
+            }
 
             toast({
                 title: 'Order Saved',
@@ -592,11 +609,17 @@ export default function ActionsPage() {
                 duration: 3000,
                 isClosable: true,
             });
+
             onOrderModalClose();
             refreshCurrentTab();
+
+            // Reset edited states
+            setEditedQuantities({});
+            setEditedPrices({});
         } catch (error) {
             toast({
                 title: 'Save Failed',
+                description: 'Failed to save purchase order changes',
                 status: 'error',
                 duration: 5000,
                 isClosable: true,
@@ -606,7 +629,7 @@ export default function ActionsPage() {
         }
     };
 
-    const handleApprovePO = async (action: PurchaseOrderDetails | any) => {
+    /*const handleApprovePO = async (action: PurchaseOrderDetails | any) => {
         try {
             const response = await fetch('/api/actions/update', {
                 method: 'POST',
@@ -641,6 +664,86 @@ export default function ActionsPage() {
                 isClosable: true,
             });
         }
+    };*/
+
+    const handleApprovePO = async (poDetails: PurchaseOrderDetails) => {
+        try {
+            const response = await fetch('/api/actions/update', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    id: poDetails._id,
+                    type: 'PurchaseOrder',
+                    status: 'approved',
+                    approvedBy: user?.id,
+                    approvedAt: new Date().toISOString(),
+                }),
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.error || 'Failed to approve purchase order');
+            }
+
+            toast({
+                title: 'Purchase Order Approved',
+                description: `PO ${poDetails.poNumber} has been approved.`,
+                status: 'success',
+                duration: 5000,
+                isClosable: true,
+            });
+
+            onOrderModalClose();
+            refreshCurrentTab();
+        } catch (error: any) {
+            toast({
+                title: 'Error',
+                description: error.message || 'Failed to approve purchase order. Please try again.',
+                status: 'error',
+                duration: 5000,
+                isClosable: true,
+            });
+        }
+    };
+
+    const handleRejectPO = async (poDetails: PurchaseOrderDetails) => {
+        try {
+            const response = await fetch('/api/actions/update', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    id: poDetails._id,
+                    type: 'PurchaseOrder',
+                    status: 'rejected',
+                    rejectedBy: user?.id,
+                    rejectedAt: new Date().toISOString(),
+                }),
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.error || 'Failed to reject purchase order');
+            }
+
+            toast({
+                title: 'Purchase Order Rejected',
+                description: `PO ${poDetails.poNumber} has been rejected.`,
+                status: 'info',
+                duration: 5000,
+                isClosable: true,
+            });
+
+            onOrderModalClose();
+            refreshCurrentTab();
+        } catch (error: any) {
+            toast({
+                title: 'Error',
+                description: error.message || 'Failed to reject purchase order. Please try again.',
+                status: 'error',
+                duration: 5000,
+                isClosable: true,
+            });
+        }
     };
 
     // Effect to fetch data when component mounts or refresh triggers change
@@ -649,6 +752,26 @@ export default function ActionsPage() {
             fetchActions();
         }
     }, [isAuthReady, isAuthenticated, user, fetchActions, refreshTriggers]);
+
+
+    // Add this useEffect after your other useEffect hooks
+    useEffect(() => {
+        if (poDetails && isOrderModalOpen) {
+            // Initialize edited states when modal opens
+            const initialQuantities: { [key: string]: number } = {};
+            const initialPrices: { [key: string]: number } = {};
+
+            poDetails.orderedItems?.forEach(item => {
+                if (item._key) {
+                    initialQuantities[item._key] = item.orderedQuantity;
+                    initialPrices[item._key] = item.unitPrice;
+                }
+            });
+
+            setEditedQuantities(initialQuantities);
+            setEditedPrices(initialPrices);
+        }
+    }, [poDetails, isOrderModalOpen]);
 
     if (status === 'loading' || loading) {
         return (
@@ -670,6 +793,123 @@ export default function ActionsPage() {
             </Flex>
         );
     }
+
+    const handleFinalApprovePO = async (poDetails: PurchaseOrderDetails) => {
+        try {
+            const response = await fetch('/api/actions/update', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    id: poDetails._id,
+                    type: 'PurchaseOrder',
+                    status: 'approved',
+                    approvedBy: user?.id,
+                    approvedAt: new Date().toISOString(),
+                }),
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.error || 'Failed to approve purchase order');
+            }
+
+            toast({
+                title: 'Purchase Order Approved',
+                description: `PO ${poDetails.poNumber} has been approved.`,
+                status: 'success',
+                duration: 5000,
+                isClosable: true,
+            });
+
+            onOrderModalClose();
+            refreshCurrentTab();
+        } catch (error: any) {
+            toast({
+                title: 'Error',
+                description: error.message || 'Failed to approve purchase order. Please try again.',
+                status: 'error',
+                duration: 5000,
+                isClosable: true,
+            });
+        }
+    };
+
+    const handleAddItemsToPO = async (selectedItems: any[]) => {
+        if (!poDetails) return;
+
+        try {
+            // Transform selected items to match the orderedItems structure
+            const newOrderedItems = selectedItems.map(item => ({
+                _key: Math.random().toString(36).substr(2, 9),
+                stockItem: {
+                    name: item.name,
+                    _id: item._id,
+                    unitOfMeasure: item.unitOfMeasure
+                },
+                orderedQuantity: 1,
+                unitPrice: 0,
+                supplier: null
+            }));
+
+            // Update the PO details with new items
+            setPoDetails(prev => prev ? {
+                ...prev,
+                orderedItems: [...(prev.orderedItems || []), ...newOrderedItems]
+            } : null);
+
+            // Create updated items array for API
+            const updatedItems = [...(poDetails.orderedItems || []), ...newOrderedItems].map(item => ({
+                _key: item._key,
+                stockItem: item.stockItem?._id,
+                orderedQuantity: item.orderedQuantity,
+                unitPrice: item.unitPrice,
+                supplier: item.supplier?._id || null
+            }));
+
+            // Calculate new total amount
+            const totalAmount = updatedItems.reduce((acc, item) =>
+                acc + (item.orderedQuantity * item.unitPrice), 0
+            );
+
+            // Save to backend using PATCH
+            const response = await fetch('/api/purchase-orders', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    _id: poDetails._id,
+                    updateData: {
+                        orderedItems: updatedItems,
+                        totalAmount
+                    }
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to update purchase order');
+            }
+
+            toast({
+                title: 'Items Added',
+                description: `${selectedItems.length} item(s) added to purchase order`,
+                status: 'success',
+                duration: 3000,
+                isClosable: true,
+            });
+
+            // Refresh data
+            refreshCurrentTab(); // In actions/page.tsx
+        } catch (error) {
+            toast({
+                title: 'Error',
+                description: 'Failed to add items to purchase order',
+                status: 'error',
+                duration: 5000,
+                isClosable: true,
+            });
+        } finally {
+            setIsAddItemModalOpen(false);
+        }
+    };
 
     return (
         <Box p={{ base: 2, md: 6, lg: 8 }} bg={primaryBgColor} minH="calc(100vh - 60px)">
@@ -785,22 +1025,27 @@ export default function ActionsPage() {
                                                 {
                                                     accessorKey: 'action',
                                                     header: 'Action',
-                                                    cell: (row: any) => (
-                                                        <Button
-                                                            size="sm"
-                                                            colorScheme="brand"
-                                                            onClick={() => handleActionClick(row)}
-                                                            leftIcon={<Icon as={operation.icon} />}
-                                                            width={{ base: 'full', sm: 'auto' }}
-                                                        >
-                                                            <Text display={{ base: 'none', sm: 'block' }}>
-                                                                {operation.actionLabel}
-                                                            </Text>
-                                                            <Text display={{ base: 'block', sm: 'none' }}>
-                                                                {operation.actionLabel === 'Edit' ? 'Edit' : 'View'}
-                                                            </Text>
-                                                        </Button>
-                                                    )
+                                                    cell: (row: any) => {
+                                                        const buttonText = row.status === 'draft' ? 'Edit' :
+                                                            row.status === 'pending-approval' ? 'Review' : 'View';
+
+                                                        return (
+                                                            <Button
+                                                                size="sm"
+                                                                colorScheme={row.status === 'pending-approval' ? 'orange' : 'brand'}
+                                                                onClick={() => handleActionClick(row)}
+                                                                leftIcon={<Icon as={operation.icon} />}
+                                                                width={{ base: 'full', sm: 'auto' }}
+                                                            >
+                                                                <Text display={{ base: 'none', sm: 'block' }}>
+                                                                    {buttonText}
+                                                                </Text>
+                                                                <Text display={{ base: 'block', sm: 'none' }}>
+                                                                    {buttonText}
+                                                                </Text>
+                                                            </Button>
+                                                        );
+                                                    }
                                                 },
                                                 {
                                                     accessorKey: 'poNumber',
@@ -868,7 +1113,6 @@ export default function ActionsPage() {
                 </TabPanels>
             </Tabs>
 
-            {/* Modals for different operation types */}
             {poDetails && (
                 <PurchaseOrderModal
                     isOpen={isOrderModalOpen}
@@ -888,11 +1132,23 @@ export default function ActionsPage() {
                     }}
                     onApproveRequest={() => {
                         if (poDetails) {
+                            // This submits the PO for approval (changes status to 'pending-approval')
                             handleApprovePO(poDetails);
                             refreshCurrentTab();
                         }
                     }}
+                    onApprovePO={() => {
+                        // This approves a PO that's already in 'pending-approval' status
+                        handleFinalApprovePO(poDetails);
+                    }}
+                    onRejectPO={() => {
+                        // This rejects a PO that's in 'pending-approval' status
+                        handleRejectPO(poDetails);
+                    }}
                     onRemoveItem={() => { }}
+                    onAddItems={() => {
+                        setIsAddItemModalOpen(true);
+                    }}
                 />
             )}
 
@@ -936,6 +1192,19 @@ export default function ActionsPage() {
                 dispatch={selectedDispatch}
                 onSave={refreshCurrentTab}
             />
+
+            {/* Add Items Modal */}
+            {isAddItemModalOpen && poDetails && (
+                <StockItemSelectorModal
+                    isOpen={isAddItemModalOpen}
+                    onClose={() => setIsAddItemModalOpen(false)}
+                    onSelect={handleAddItemsToPO}
+                    existingItemIds={poDetails.orderedItems
+                        ?.map(item => item.stockItem?._id)
+                        .filter((id): id is string => !!id) || []}
+                    multiSelect={true}
+                />
+            )}
         </Box>
     );
 }

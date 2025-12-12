@@ -11,6 +11,7 @@ import {
 } from '@chakra-ui/react';
 import { FaBoxes, FaCheck, FaSave } from 'react-icons/fa';
 import { Dispatch, SetStateAction, useMemo } from 'react';
+import { FiPlus, FiXCircle, FiCheckCircle } from 'react-icons/fi'; // Add the missing icons
 
 // Interfaces remain the same...
 export interface OrderedItem {
@@ -58,13 +59,16 @@ interface PurchaseOrderModalProps {
     isSaving: boolean;
     onSave: () => void;
     onApproveRequest: () => void;
+    onApprovePO: () => void;  // Add this
+    onRejectPO: () => void;   // Add this
     onRemoveItem: (itemKey: string) => void;
+    onAddItems: () => void;
 }
 
 export default function PurchaseOrderModal({
     isOpen, onClose, poDetails, editedPrices, setEditedPrices,
     editedQuantities, setEditedQuantities, isSaving, onSave,
-    onApproveRequest, onRemoveItem,
+    onApproveRequest, onApprovePO, onRejectPO, onRemoveItem, onAddItems,
 }: PurchaseOrderModalProps) {
     // Theme-based colors
     const primaryTextColor = useColorModeValue('neutral.light.text-primary', 'neutral.dark.text-primary');
@@ -148,7 +152,7 @@ export default function PurchaseOrderModal({
                     <ModalBody py={6}>
                         <VStack spacing={6} align="stretch">
                             <Flex direction={{ base: 'column', md: 'row' }} justify="space-between" wrap="wrap" gap={4}>
-                                {[{ label: 'PO Number', value: poDetails?.poNumber }, { label: 'Supplier', value: poDetails?.supplierNames }, { label: 'Ordered By', value: poDetails?.orderedBy?.name }, { label: 'Site', value: poDetails?.site?.name }, { label: 'Order Date', value: formatOrderDate(poDetails?.orderDate) }].map(detail => (
+                                {[{ label: 'PO Number', value: poDetails?.poNumber }, { label: 'Ordered By', value: poDetails?.orderedBy?.name }, { label: 'Site', value: poDetails?.site?.name }, { label: 'Order Date', value: formatOrderDate(poDetails?.orderDate) }].map(detail => (
                                     <Box key={detail.label} flex="1" minW="180px">
                                         <Text fontWeight="bold" color={primaryTextColor}>{detail.label}:</Text>
                                         <Text color={secondaryTextColor}>{detail.value || 'N/A'}</Text>
@@ -173,8 +177,8 @@ export default function PurchaseOrderModal({
                                                     <Tr>
                                                         <Th>Item</Th>
                                                         <Th isNumeric>Qty</Th>
-                                                        {/*<Th isNumeric>Unit Price</Th>
-                                                        <Th isNumeric>Subtotal</Th>*/}
+                                                        <Th isNumeric>Unit Price</Th>
+                                                        <Th isNumeric>Subtotal</Th>
                                                         {isEditable && <Th></Th>}
                                                     </Tr>
                                                 </Thead>
@@ -195,28 +199,45 @@ export default function PurchaseOrderModal({
                                                                         <HStack>
                                                                             <Text>({item.stockItem?.unitOfMeasure || 'unit'})</Text>
                                                                             <Input
-                                                                                value={quantity === 0 ? '' : quantity}
-                                                                                onChange={(e) => handleQuantityChange(e.target.value, item._key)}
+                                                                                value={editedQuantities[item._key] ?? item.orderedQuantity}
+                                                                                onChange={(e) => {
+                                                                                    const val = e.target.value;
+                                                                                    // Handle empty string or invalid input
+                                                                                    if (val === '') {
+                                                                                        setEditedQuantities(prev => ({
+                                                                                            ...prev,
+                                                                                            [item._key]: undefined
+                                                                                        }));
+                                                                                    } else {
+                                                                                        const numVal = parseFloat(val);
+                                                                                        if (!isNaN(numVal)) {
+                                                                                            setEditedQuantities(prev => ({
+                                                                                                ...prev,
+                                                                                                [item._key]: numVal
+                                                                                            }));
+                                                                                        }
+                                                                                    }
+                                                                                }}
                                                                                 type="number"
                                                                                 step="0.1"
                                                                                 min="0"
                                                                                 size="sm"
                                                                                 width="100px"
                                                                                 isDisabled={!isEditable}
-                                                                                placeholder="0"
+                                                                                placeholder="Enter quantity"
                                                                             />
                                                                         </HStack>
                                                                     </VStack>
                                                                 </Td>
 
-                                                                {/*<Td isNumeric>
-                                                                    < NumberInput size="sm" value={price?.toFixed(2)} onChange={(val) => handlePriceChange(item._key, parseFloat(val))} min={0} precision={2} isDisabled={!isEditable} w="120px">
-                                                                <NumberInputField />
-                                                            </NumberInput>
+                                                                <Td isNumeric>
+                                                                    < NumberInput isReadOnly={true} size="sm" value={price?.toFixed(2)} onChange={(val) => handlePriceChange(item._key, parseFloat(val))} min={0} precision={2} isDisabled={!isEditable} w="120px">
+                                                                        <NumberInputField />
+                                                                    </NumberInput>
                                                                 </Td>
                                                                 <Td isNumeric>
                                                                     <Text fontWeight="bold" color={primaryTextColor}>E {(quantity * price).toFixed(2)}</Text>
-                                                                </Td>*/}
+                                                                </Td>
 
                                                                 {isEditable && (
                                                                     <Td>
@@ -251,8 +272,17 @@ export default function PurchaseOrderModal({
                     <ModalFooter borderTopWidth="1px">
                         <HStack spacing={3}>
                             <Button variant="ghost" onClick={onClose}>Cancel</Button>
-                            {isEditable && (
+
+                            {poDetails?.status === 'draft' && (
                                 <>
+                                    <Button
+                                        colorScheme="blue"
+                                        variant="outline"
+                                        onClick={onAddItems}
+                                        leftIcon={<FiPlus />}
+                                    >
+                                        Add Items
+                                    </Button>
                                     <Button
                                         colorScheme="brand"
                                         variant="outline"
@@ -270,6 +300,25 @@ export default function PurchaseOrderModal({
                                         leftIcon={<FaCheck />}
                                     >
                                         Confirm PO
+                                    </Button>
+                                </>
+                            )}
+
+                            {poDetails?.status === 'pending-approval' && (
+                                <>
+                                    <Button
+                                        colorScheme="red"
+                                        onClick={onRejectPO} // Use the passed prop
+                                        leftIcon={<FiXCircle />}
+                                    >
+                                        Reject
+                                    </Button>
+                                    <Button
+                                        colorScheme="green"
+                                        onClick={onApprovePO} // Use the passed prop
+                                        leftIcon={<FiCheckCircle />}
+                                    >
+                                        Approve
                                     </Button>
                                 </>
                             )}
