@@ -117,6 +117,8 @@ export default function LowStockPage() {
     const scrollbarTrackColor = useColorModeValue('gray.100', 'gray.700');
     const scrollbarThumbColor = useColorModeValue('brand.500', 'brand.300');
 
+    const sitesRef = useRef<Site[]>([]);
+
     // Calculate stock for low stock items with progress tracking
     const calculateStockForSite = useCallback(async (siteId: string | null) => {
         setIsLoading(true);
@@ -187,9 +189,9 @@ export default function LowStockPage() {
             console.log('📊 Processing results and creating low stock items grouped by site...');
             const itemsWithCalculatedStock: LowStockItem[] = [];
 
-            // Create a map for site lookups
+            // Use sitesRef instead of sites state
             const siteMap = new Map();
-            sites.forEach(site => {
+            sitesRef.current.forEach(site => {
                 siteMap.set(site._id, site.name);
             });
 
@@ -336,7 +338,7 @@ export default function LowStockPage() {
             setIsRefreshing(false);
             console.log('🏁 Low stock calculation finished');
         }
-    }, [toast, sites]);
+    }, [toast]); // Only toast dependency now
 
     const fetchSuppliers = async () => {
         try {
@@ -369,11 +371,15 @@ export default function LowStockPage() {
 
     useEffect(() => {
         if (isAuthReady && isAuthenticated) {
-            calculateStockForSite(selectedSiteId);
-            fetchSuppliers();
-            fetchSites();
+            const initData = async () => {
+                await fetchSites();
+                await calculateStockForSite(selectedSiteId);
+                await fetchSuppliers();
+            };
+            initData();
         }
-    }, [isAuthReady, isAuthenticated, selectedSiteId, calculateStockForSite]);
+    }, [isAuthReady, isAuthenticated, selectedSiteId]);
+    // Removed calculateStockForSite from dependencies
 
     // Filter items based on search term and active filters
     // Filter items based on search term and active filters
@@ -419,6 +425,10 @@ export default function LowStockPage() {
         setFilteredItems(filtered);
     }, [lowStockItems, searchTerm, filterPriority, activeTab]);
 
+    useEffect(() => {
+        sitesRef.current = sites;
+    }, [sites]);
+
     const handleSiteClick = (siteId: string) => {
         console.log('📍 Site selected:', siteId);
         setSelectedSiteId(siteId);
@@ -436,10 +446,16 @@ export default function LowStockPage() {
         }
     };
 
-    const handleRefresh = () => {
+    const handleRefresh = async () => {
         console.log('🔄 Manual refresh triggered');
         setIsRefreshing(true);
-        calculateStockForSite(selectedSiteId);
+
+        // Make sure sites are loaded before calculating
+        if (sitesRef.current.length === 0) {
+            await fetchSites();
+        }
+
+        await calculateStockForSite(selectedSiteId);
     };
 
     const updateOrderQuantity = (itemId: string, quantity: number) => {
@@ -518,7 +534,10 @@ export default function LowStockPage() {
                 onClose();
 
                 // Refresh the low stock list
-                calculateStockForSite(selectedSiteId);
+                if (sitesRef.current.length === 0) {
+                    await fetchSites();
+                }
+                await calculateStockForSite(selectedSiteId);
             } else {
                 const errorData = await response.json();
                 throw new Error(errorData.error || 'Failed to create purchase order');
