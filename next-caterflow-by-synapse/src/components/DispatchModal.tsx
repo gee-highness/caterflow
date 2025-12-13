@@ -963,10 +963,14 @@ export default function DispatchModal({
                 }}
                 size={{ base: 'full', md: '4xl' }}
                 closeOnOverlayClick={!isSaving && !isUploadModalOpen}
-                scrollBehavior="inside"
+                scrollBehavior="outside"
+                isCentered
             >
                 <ModalOverlay />
-                <ModalContent maxH="100vh">
+                <ModalContent
+                    maxH="90vh"
+                    maxW={{ base: '100vw', md: '90vw', lg: '1200px' }}
+                >
                     <ModalHeader>{dispatch ? 'Update Dispatch' : 'Create New Dispatch'}</ModalHeader>
                     <ModalCloseButton isDisabled={isSaving} />
                     {loading && !dispatch ? (
@@ -976,7 +980,12 @@ export default function DispatchModal({
                         </Box>
                     ) : (
                         <form onSubmit={handleSubmit}>
-                            <ModalBody maxHeight="80vh" overflowY="auto">
+                            <ModalBody
+                                flex="1"
+                                overflowY="auto"
+                                maxH="calc(90vh - 160px)"
+                                px={4}
+                            >
                                 <VStack spacing={4} align="stretch">
                                     <Grid templateColumns={{ base: '1fr', md: 'repeat(2, 1fr)' }} gap={4}>
                                         <GridItem>
@@ -985,7 +994,7 @@ export default function DispatchModal({
                                                 <Select
                                                     placeholder="Select dispatch type"
                                                     value={dispatchType}
-                                                    onChange={(e) => handleDispatchTypeChange(e.target.value)} // UPDATED
+                                                    onChange={(e) => handleDispatchTypeChange(e.target.value)}
                                                     isDisabled={!isEditable || loading}
                                                 >
                                                     {dispatchTypes.map((type) => (
@@ -1322,7 +1331,16 @@ export default function DispatchModal({
                                 </VStack>
                             </ModalBody>
 
-                            <ModalFooter>
+                            <ModalFooter
+                                position="sticky"
+                                bottom="0"
+                                bg="white"
+                                borderTop="1px solid"
+                                borderTopColor="gray.200"
+                                zIndex="sticky"
+                                py={4}
+                                px={4}
+                            >
                                 <Button variant="outline" mr={3} onClick={onClose} isDisabled={isSaving || loading}>
                                     Cancel
                                 </Button>
@@ -1346,6 +1364,7 @@ export default function DispatchModal({
                                             isDisabled={isSubmitDisabled}
                                             loadingText={dispatch ? "Updating..." : "Creating..."}
                                             mr={3}
+                                            ml={3}
                                         >
                                             {dispatch ? 'Update Dispatch' : 'Create Dispatch'}
                                         </Button>
