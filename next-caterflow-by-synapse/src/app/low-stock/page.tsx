@@ -1,3 +1,4 @@
+// src/app/low-stock/page.tsx
 'use client';
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
@@ -378,8 +379,8 @@ export default function LowStockPage() {
             };
             initData();
         }
-    }, [isAuthReady, isAuthenticated, selectedSiteId]);
-    // Removed calculateStockForSite from dependencies
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isAuthReady, isAuthenticated, selectedSiteId, calculateStockForSite]);    // Removed calculateStockForSite from dependencies
 
     // Filter items based on search term and active filters
     // Filter items based on search term and active filters

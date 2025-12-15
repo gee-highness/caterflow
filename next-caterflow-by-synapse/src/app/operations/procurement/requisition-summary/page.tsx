@@ -192,6 +192,8 @@ export default function RequisitionSummaryPage() {
 		return keyParts.join('|');
 	}, [selectedSite, startDate, endDate]);
 
+
+
 	// Fetch requisition summary with caching
 	const fetchRequisitionSummary = useCallback(async (forceRefresh = false) => {
 		const cacheKey = getCacheKey();
@@ -354,7 +356,6 @@ export default function RequisitionSummaryPage() {
 		};
 	}, [summary, filteredItems, searchQuery]);
 
-	// Export to PDF function
 	const exportToPDF = async () => {
 		if (!summary) return;
 
@@ -363,40 +364,23 @@ export default function RequisitionSummaryPage() {
 
 			const htmlContent = generateRequisitionHTML(summary);
 
-			const exportWindow = window.open('', '_blank');
-			if (!exportWindow) {
-				throw new Error('Popup blocked. Please allow popups for this site.');
-			}
+			// Call the function directly (it's defined in the same component)
+			await exportReportsSequentialHelper([
+				{
+					htmlContent,
+					windowName: `Requisition-Summary-${new Date().toISOString().split('T')[0]}`,
+					displayName: `Requisition-Summary-${new Date().toISOString().split('T')[0]}.pdf`
+				}
+			]);
 
-			exportWindow.document.write(htmlContent);
-			exportWindow.document.close();
-			exportWindow.document.title = `Requisition-Summary-${new Date().toISOString().split('T')[0]}`;
-
-			exportWindow.onload = () => {
-				setTimeout(() => {
-					try {
-						exportWindow.print();
-						toast({
-							title: 'Print Started',
-							description: 'Document sent to printer',
-							status: 'success',
-							duration: 3000,
-							isClosable: true,
-							position: 'top-right',
-						});
-					} catch (printErr) {
-						console.warn('Auto-print failed:', printErr);
-						toast({
-							title: 'Print Ready',
-							description: 'Document is ready for manual printing (Ctrl+P)',
-							status: 'info',
-							duration: 4000,
-							isClosable: true,
-							position: 'top-right',
-						});
-					}
-				}, 500);
-			};
+			toast({
+				title: 'Print Ready',
+				description: 'Document is ready for printing (Ctrl+P)',
+				status: 'success',
+				duration: 3000,
+				isClosable: true,
+				position: 'top-right',
+			});
 
 			onExportModalClose();
 		} catch (err: any) {
@@ -413,6 +397,9 @@ export default function RequisitionSummaryPage() {
 			setExporting(false);
 		}
 	};
+
+	// You'll need to move the exportReportsSequentially function to a shared utility or export it
+	// Alternatively, you can keep it in both files but they need to be identical
 
 	// Generate HTML for PDF export
 	const generateRequisitionHTML = (summaryData: RequisitionSummary) => {
@@ -691,6 +678,111 @@ export default function RequisitionSummaryPage() {
 </body>
 </html>
         `;
+	};
+
+	// Helper function for sequential export - UPDATED VERSION (Add this inside the component)
+	const exportReportsSequentialHelper = async (
+		reports: any[],
+		onProgress?: (progress: { current: number; total: number; fileName: string }) => void
+	) => {
+		for (let i = 0; i < reports.length; i++) {
+			const report = reports[i];
+
+			// Update progress
+			if (onProgress) {
+				onProgress({
+					current: i + 1,
+					total: reports.length,
+					fileName: report.displayName || report.windowName
+				});
+			}
+
+			await new Promise<void>(async (resolve) => {
+				try {
+					const exportWindow = window.open('', '_blank');
+
+					if (!exportWindow) {
+						console.warn('Popup blocked. Please allow popups for this site.');
+						toast({
+							title: 'Popup Blocked',
+							description: 'Please allow popups for this site to export reports.',
+							status: 'warning',
+							duration: 5000,
+							isClosable: true,
+							position: 'top-right',
+						});
+						resolve();
+						return;
+					}
+
+					exportWindow.document.write(report.htmlContent);
+					exportWindow.document.close();
+					exportWindow.document.title = report.windowName;
+
+					// Wait for DOM to be ready
+					await new Promise<void>((readyResolve) => {
+						if (exportWindow.document.readyState === 'complete') {
+							readyResolve();
+							return;
+						}
+
+						exportWindow.addEventListener('DOMContentLoaded', () => readyResolve(), { once: true });
+						setTimeout(() => readyResolve(), 50);
+					});
+
+					// Try to print
+					setTimeout(() => {
+						try {
+							exportWindow.print();
+						} catch (printErr) {
+							console.warn('Auto-print failed:', printErr);
+						}
+
+						// Monitor window closure
+						let checkCount = 0;
+						const maxChecks = 300; // 30 seconds max (100ms interval)
+
+						const checkClosed = setInterval(() => {
+							checkCount++;
+
+							if (exportWindow.closed || checkCount >= maxChecks) {
+								clearInterval(checkClosed);
+								resolve();
+
+								if (!exportWindow.closed && checkCount >= maxChecks) {
+									try {
+										exportWindow.close();
+									} catch (e) {
+										console.warn('Could not close window:', e);
+									}
+								}
+							}
+						}, 100);
+					}, 50);
+
+				} catch (err) {
+					console.error('Export window error:', err);
+					toast({
+						title: 'Export Error',
+						description: 'Failed to generate the export window. Please try again.',
+						status: 'error',
+						duration: 3000,
+						isClosable: true,
+						position: 'top-right',
+					});
+					resolve();
+				}
+			});
+		}
+
+		// Final progress update
+		if (onProgress) {
+			onProgress({
+				current: reports.length,
+				total: reports.length,
+				fileName: 'Complete'
+			});
+		}
 	};
 
 	// Handle tab change

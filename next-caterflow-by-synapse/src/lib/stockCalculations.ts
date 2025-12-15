@@ -2684,8 +2684,15 @@ const calculateStockFromTransactionsFixed = async (
 
     if (verbose) {
       console.log(`✅ Fixed calculation: ${finalStock}`);
-      if (lastCountDate) {
-        console.log(`   Last count: ${lastCountDate?.toISOString().split('T')[0]}`);
+      if (lastCountDate !== null && lastCountDate !== undefined) {
+        const date: Date = lastCountDate;
+
+        // Check if it's a valid date before calling toISOString
+        if (!isNaN(date.getTime())) {
+          console.log(`   📅 Last inventory count: ${date.toISOString().split('T')[0]}`);
+        } else {
+          console.log(`   📅 Last inventory count: Invalid date`);
+        }
       }
     }
 

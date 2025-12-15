@@ -1,3 +1,4 @@
+// src/app/operations/procurement/page.tsx
 'use client';
 
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
@@ -49,6 +50,7 @@ import {
     ModalHeader,
     ModalOverlay,
     Link,
+    Progress,
 } from '@chakra-ui/react';
 import { FiPlus, FiSearch, FiEye, FiFilter, FiEdit, FiInfo, FiCheck, FiFileText } from 'react-icons/fi';
 import DataTable from '@/app/actions/DataTable';
@@ -93,43 +95,104 @@ type StockItemWithSupplier = PurchaseOrder['orderedItems'][0]['stockItem'] & {
 };
 
 // Sequential export helper function
-async function exportReportsSequentially(reports: any[]) {
-    for (const report of reports) {
-        await new Promise<void>((resolve) => {
-            const exportWindow = window.open('', '_blank');
+// Replace the exportReportsSequentially function with this version that doesn't use toast directly:
+// Sequential export helper function
+// Sequential export helper function - UPDATED VERSION
+const exportReportsSequentially = async (
+    reports: any[],
+    onProgress?: (progress: { current: number; total: number; fileName: string }) => void,
+    onPopupBlocked?: () => void,
+    onError?: (error: Error) => void
+) => {
+    for (let i = 0; i < reports.length; i++) {
+        const report = reports[i];
 
-            if (!exportWindow) {
-                console.error('Popup blocked or failed to open export window.');
-                resolve();
-                return;
-            }
+        // Update progress
+        if (onProgress) {
+            onProgress({
+                current: i + 1,
+                total: reports.length,
+                fileName: report.displayName || report.windowName
+            });
+        }
 
-            exportWindow.document.write(report.htmlContent);
-            exportWindow.document.close();
-            exportWindow.document.title = report.windowName;
+        await new Promise<void>(async (resolve) => {
+            try {
+                const exportWindow = window.open('', '_blank');
 
-            // Wait for content to load
-            exportWindow.onload = () => {
-                // Add a small delay to ensure everything is ready
+                if (!exportWindow) {
+                    console.warn('Popup blocked. Please allow popups for this site.');
+                    if (onPopupBlocked) {
+                        onPopupBlocked();
+                    }
+                    resolve();
+                    return;
+                }
+
+                exportWindow.document.write(report.htmlContent);
+                exportWindow.document.close();
+                exportWindow.document.title = report.windowName;
+
+                // Wait for DOM to be ready
+                await new Promise<void>((readyResolve) => {
+                    if (exportWindow.document.readyState === 'complete') {
+                        readyResolve();
+                        return;
+                    }
+
+                    exportWindow.addEventListener('DOMContentLoaded', () => readyResolve(), { once: true });
+                    setTimeout(() => readyResolve(), 50);
+                });
+
+                // Try to print
                 setTimeout(() => {
                     try {
                         exportWindow.print();
                     } catch (printErr) {
-                        console.warn('Auto-print failed, user can print manually:', printErr);
+                        console.warn('Auto-print failed:', printErr);
                     }
 
-                    // Check if window is closed every 500ms
+                    // Monitor window closure
+                    let checkCount = 0;
+                    const maxChecks = 300; // 30 seconds max (100ms interval)
+
                     const checkClosed = setInterval(() => {
-                        if (exportWindow.closed) {
+                        checkCount++;
+
+                        if (exportWindow.closed || checkCount >= maxChecks) {
                             clearInterval(checkClosed);
                             resolve();
+
+                            if (!exportWindow.closed && checkCount >= maxChecks) {
+                                try {
+                                    exportWindow.close();
+                                } catch (e) {
+                                    console.warn('Could not close window:', e);
+                                }
+                            }
                         }
-                    }, 500);
-                }, 700);
-            };
+                    }, 100);
+                }, 50);
+
+            } catch (err) {
+                console.error('Export window error:', err);
+                if (onError && err instanceof Error) {
+                    onError(err);
+                }
+                resolve();
+            }
         });
     }
-}
+
+    // Final progress update
+    if (onProgress) {
+        onProgress({
+            current: reports.length,
+            total: reports.length,
+            fileName: 'Complete'
+        });
+    }
+};
 
 
 export default function ProcurementPage() {
@@ -148,6 +211,10 @@ export default function ProcurementPage() {
     const [editedSuppliers, setEditedSuppliers] = useState<{ [key: string]: string | undefined }>({});
     const [editedPrices, setEditedPrices] = useState<{ [key: string]: number | undefined }>({});
     const [defaultSupplierFlags, setDefaultSupplierFlags] = useState<{ [key: string]: boolean }>({});
+
+    const [exportProgress, setExportProgress] = useState<{ current: number; total: number; fileName: string } | null>(null);
+    const [isExportProgressOpen, setIsExportProgressOpen] = useState(false);
+
 
 
     // Theming props - ALL HOOK CALLS MUST BE AT THE TOP LEVEL
@@ -168,6 +235,12 @@ export default function ProcurementPage() {
     const infoAlertTitleColor = useColorModeValue('blue.800', 'blue.100');
     const infoAlertDescriptionColor = useColorModeValue('blue.700', 'blue.200');
 
+    // Add this with your other state declarations
+    const {
+        isOpen: isPopupModalOpen,
+        onOpen: onPopupModalOpen,
+        onClose: onPopupModalClose
+    } = useDisclosure();
 
     /* ---------- Fetch helpers ---------- */
 
@@ -570,16 +643,14 @@ export default function ProcurementPage() {
         }
     };
 
+
     const exportSinglePO = async () => {
         if (!selectedPO) return;
 
         try {
-            // First save any changes
-            if (canSaveChanges()) {
-                await handleSaveChanges();
-            }
+            setExporting(true);
+            setIsExportProgressOpen(true);
 
-            // Use current state data to generate PDF
             const poData = {
                 ...selectedPO,
                 orderedItems: selectedPO.orderedItems.map(item => ({
@@ -587,31 +658,46 @@ export default function ProcurementPage() {
                     supplier: editedSuppliers[item._key]
                         ? suppliers.find(s => s._id === editedSuppliers[item._key])
                         : item.supplier,
-                    // Don't include prices in export
                     unitPrice: undefined
                 }))
             };
 
             const htmlContent = generatePDFHTML(poData, false);
 
-            // Use sequential export for single PO as well for consistency
-            setExporting(true);
-            await exportReportsSequentially([{
-                htmlContent,
-                windowName: `${selectedPO.poNumber}`
-            }]);
-            setExporting(false);
+            await exportReportsSequentially(
+                [{
+                    htmlContent,
+                    windowName: `${selectedPO.poNumber}`,
+                    displayName: `${selectedPO.poNumber}.pdf`
+                }],
+                (progress) => {
+                    setExportProgress(progress);
+                },
+                // Popup blocked handler
+                () => {
+                    onPopupModalOpen();
+                },
+                // Error handler
+                (error) => {
+                    toast({
+                        title: 'Export Error',
+                        description: error.message || 'Failed to generate PDF',
+                        status: 'error',
+                        duration: 5000,
+                        isClosable: true,
+                    });
+                }
+            );
 
             toast({
-                title: 'PDF Generated',
-                description: 'Purchase order PDF is ready for printing/saving',
+                title: 'Export Complete',
+                description: 'Purchase order PDF is ready for printing',
                 status: 'success',
-                duration: 3000,
+                duration: 2000,
                 isClosable: true,
             });
         } catch (err: any) {
             console.error('Export failed:', err);
-            setExporting(false);
             toast({
                 title: 'Export Failed',
                 description: err?.message || 'Failed to generate PDF',
@@ -619,21 +705,26 @@ export default function ProcurementPage() {
                 duration: 5000,
                 isClosable: true,
             });
+        } finally {
+            setExporting(false);
+            setTimeout(() => {
+                setIsExportProgressOpen(false);
+                setExportProgress(null);
+            }, 1000);
         }
     };
 
-    // Updated exportMultiplePOsBySupplier function
+
     const exportMultiplePOsBySupplier = async () => {
         if (!selectedPO) return;
 
         try {
-            // First save any changes
-            if (canSaveChanges()) {
-                await handleSaveChanges();
-            }
+            setExporting(true);
+            setIsExportProgressOpen(true);
 
-            // Group items by supplier using current state
+            // Group items by supplier with caching
             const itemsBySupplier: { [supplierId: string]: any[] } = {};
+            const supplierCache: { [id: string]: Supplier | undefined } = {};
 
             selectedPO.orderedItems.forEach(item => {
                 const supplierId = editedSuppliers[item._key] ?? item.supplier?._id;
@@ -643,45 +734,66 @@ export default function ProcurementPage() {
                     }
                     itemsBySupplier[supplierId].push({
                         ...item,
-                        // Don't include prices in export
                         unitPrice: undefined
                     });
+
+                    if (!supplierCache[supplierId]) {
+                        supplierCache[supplierId] = suppliers.find(s => s._id === supplierId);
+                    }
                 }
             });
 
-            // Prepare reports for sequential export
+            // Prepare reports
             const reports = Object.entries(itemsBySupplier).map(([supplierId, items], index) => {
-                const supplier = suppliers.find(s => s._id === supplierId);
+                const supplier = supplierCache[supplierId];
                 const supplierPO = {
                     ...selectedPO,
                     orderedItems: items,
                     supplierName: supplier?.name
                 };
 
-                const supplierNameSlug = supplier?.name ? supplier.name.replace(/[^a-zA-Z0-9]/g, '-') : 'supplier';
+                const supplierNameSlug = supplier?.name ? supplier.name.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase() : 'supplier';
                 const windowName = `po-${selectedPO.poNumber}-${supplierNameSlug}-${index}`;
+                const displayName = `${supplier?.name || 'Supplier'}.pdf`;
 
                 return {
                     htmlContent: generatePDFHTML(supplierPO, true),
-                    windowName
+                    windowName,
+                    displayName
                 };
             });
 
-            // Export sequentially
-            setExporting(true);
-            await exportReportsSequentially(reports);
-            setExporting(false);
+            // Export sequentially with progress tracking
+            await exportReportsSequentially(
+                reports,
+                (progress) => {
+                    setExportProgress(progress);
+                },
+                // Popup blocked handler
+                () => {
+                    onPopupModalOpen();
+                },
+                // Error handler
+                (error) => {
+                    toast({
+                        title: 'Export Error',
+                        description: error.message || 'Failed to generate PDF',
+                        status: 'error',
+                        duration: 5000,
+                        isClosable: true,
+                    });
+                }
+            );
 
             toast({
-                title: 'All exports completed',
-                description: `${reports.length} purchase order(s) have been exported successfully.`,
+                title: 'Exports Completed',
+                description: `${reports.length} PDF${reports.length !== 1 ? 's' : ''} generated successfully`,
                 status: 'success',
-                duration: 5000,
+                duration: 3000,
                 isClosable: true,
             });
         } catch (err: any) {
             console.error('Export failed:', err);
-            setExporting(false);
             toast({
                 title: 'Export Failed',
                 description: err?.message || 'Failed to generate PDFs',
@@ -689,22 +801,52 @@ export default function ProcurementPage() {
                 duration: 5000,
                 isClosable: true,
             });
+        } finally {
+            setExporting(false);
+            setTimeout(() => {
+                setIsExportProgressOpen(false);
+                setExportProgress(null);
+            }, 1000);
         }
     };
 
     // HTML generator function for PDF content
+    // Replace the broken generatePDFHTML function with this corrected version:
     const generatePDFHTML = (poData: any, isSupplierSpecific: boolean) => {
         const totalItems = poData.orderedItems.reduce((sum: number, item: any) => sum + item.orderedQuantity, 0);
 
-        // Create a descriptive title
+        // Create document title
         let documentTitle = `PO-${poData.poNumber}`;
         if (isSupplierSpecific && poData.supplierName) {
             const supplierSlug = poData.supplierName.replace(/[^a-zA-Z0-9]/g, '-');
             documentTitle += `-${supplierSlug}`;
         }
 
-        return `
-<!DOCTYPE html>
+        // Build items HTML efficiently
+        const itemsHtml = poData.orderedItems
+            .map((item: any, index: number) => {
+                const supplierName = isSupplierSpecific ? '' : `<td>${item.supplier?.name || 'Not assigned'}</td>`;
+                return `
+                <tr>
+                    <td style="font-weight: 500;">${index + 1}</td>
+                    <td><strong>${item.stockItem.name}</strong></td>
+                    <td>${item.stockItem.sku || 'N/A'}</td>
+                    <td style="font-weight: 500;">${item.orderedQuantity}</td>
+                    <td>${item.stockItem.unitOfMeasure}</td>
+                    ${supplierName}
+                </tr>
+            `;
+            })
+            .join('');
+
+        const supplierHeader = isSupplierSpecific && poData.supplierName ? `
+        <div class="supplier-header">
+            <h2>Supplier: ${poData.supplierName}</h2>
+            <p style="margin: 5px 0 0 0; font-size: 14px;">This document contains items to be quoted by ${poData.supplierName}</p>
+        </div>
+    ` : '';
+
+        return `<!DOCTYPE html>
 <html>
 <head>
     <title>${documentTitle}</title>
@@ -717,11 +859,11 @@ export default function ProcurementPage() {
         }
         .header-container {
             display: flex;
-            align-items: center; /* Center vertically */
+            align-items: center;
             margin-bottom: 30px;
             border-bottom: 2px solid #E2E8F0;
             padding-bottom: 20px;
-            gap: 20px; /* Space between logo and text */
+            gap: 20px;
         }
         
         .logo-container {
@@ -729,13 +871,13 @@ export default function ProcurementPage() {
         }
         
         .logo {
-            height: 80px; /* Increased to 60px */
+            height: 80px;
             width: auto;
             opacity: 0.8;
         }
         
         .header-content {
-            text-align: left; /* Changed from center to left */
+            text-align: left;
             flex-grow: 1;
         }
         .header-content h1 { 
@@ -869,12 +1011,7 @@ export default function ProcurementPage() {
 </div>
 </div>
 
-    ${isSupplierSpecific && poData.supplierName ? `
-        <div class="supplier-header">
-            <h2>Supplier: ${poData.supplierName}</h2>
-            <p style="margin: 5px 0 0 0; font-size: 14px;">This document contains items to be quoted by ${poData.supplierName}</p>
-        </div>
-    ` : ''}
+    ${supplierHeader}
 
     <div class="info-section">
         <div class="info-grid">
@@ -903,16 +1040,7 @@ export default function ProcurementPage() {
             </tr>
         </thead>
         <tbody>
-            ${poData.orderedItems.map((item: any, index: number) => `
-                <tr>
-                    <td style="font-weight: 500;">${index + 1}</td>
-                    <td><strong>${item.stockItem.name}</strong></td>
-                    <td>${item.stockItem.sku || 'N/A'}</td>
-                    <td style="font-weight: 500;">${item.orderedQuantity}</td>
-                    <td>${item.stockItem.unitOfMeasure}</td>
-                    ${!isSupplierSpecific ? `<td>${item.supplier?.name || 'Not assigned'}</td>` : ''}
-                </tr>
-            `).join('')}
+            ${itemsHtml}
         </tbody>
     </table>
 
@@ -963,8 +1091,7 @@ export default function ProcurementPage() {
         </button>
     </div>
 </body>
-</html>
-    `;
+</html>`;
     };
 
     /* ---------- Columns ---------- */
@@ -1243,6 +1370,150 @@ export default function ProcurementPage() {
         }
     };
 
+    // Add this component right before your return statement, after all your other functions
+
+    const ExportProgressModal = () => (
+        <Modal
+            isOpen={isExportProgressOpen}
+            onClose={() => {
+                setIsExportProgressOpen(false);
+                setExportProgress(null);
+            }}
+            closeOnOverlayClick={false}
+            isCentered
+        >
+            <ModalOverlay />
+            <ModalContent bg={bgCard} border="1px" borderColor={borderColor}>
+                <ModalHeader color={primaryTextColor}>
+                    Exporting Reports
+                </ModalHeader>
+                <ModalBody>
+                    <VStack spacing={4} align="stretch">
+                        {exportProgress && (
+                            <>
+                                <Progress
+                                    value={(exportProgress.current / exportProgress.total) * 100}
+                                    colorScheme="green"
+                                    size="sm"
+                                    borderRadius="full"
+                                />
+                                <Text textAlign="center" color={primaryTextColor} fontSize="sm">
+                                    Exporting {exportProgress.current} of {exportProgress.total}
+                                </Text>
+                                <Text textAlign="center" color={secondaryTextColor} fontSize="xs">
+                                    {exportProgress.fileName}
+                                </Text>
+                                <Alert status="info" size="sm" borderRadius="md">
+                                    <AlertIcon />
+                                    <Box>
+                                        <AlertTitle fontSize="xs">Please wait</AlertTitle>
+                                        <AlertDescription fontSize="xs">
+                                            Each report will open in a new window for printing.
+                                        </AlertDescription>
+                                    </Box>
+                                </Alert>
+                            </>
+                        )}
+                    </VStack>
+                </ModalBody>
+                <ModalFooter>
+                    <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => {
+                            setIsExportProgressOpen(false);
+                            setExportProgress(null);
+                        }}
+                        isDisabled={exportProgress?.current !== exportProgress?.total}
+                    >
+                        {exportProgress?.current === exportProgress?.total ? 'Close' : 'Cancel'}
+                    </Button>
+                </ModalFooter>
+            </ModalContent>
+        </Modal>
+    );
+
+    // Popup Blocked Modal Component (Add this after ExportProgressModal)
+    const PopupBlockedModal = () => (
+        <Modal isOpen={isPopupModalOpen} onClose={onPopupModalClose} isCentered size="md">
+            <ModalOverlay />
+            <ModalContent bg={bgCard} border="1px" borderColor={borderColor}>
+                <ModalHeader color={primaryTextColor}>
+                    <HStack spacing={2}>
+                        <Icon as={FiInfo} color="orange.500" />
+                        <Text>Popup Blocker Detected</Text>
+                    </HStack>
+                </ModalHeader>
+                <ModalBody>
+                    <VStack spacing={4} align="stretch">
+                        <Alert status="warning" borderRadius="md">
+                            <AlertIcon />
+                            <Box>
+                                <AlertTitle>Enable Popups for This Site</AlertTitle>
+                                <AlertDescription>
+                                    Your browser is blocking popup windows, which are required for PDF generation.
+                                </AlertDescription>
+                            </Box>
+                        </Alert>
+
+                        <Text color={secondaryTextColor} fontSize="sm">
+                            To generate PDF reports, please:
+                        </Text>
+
+                        <VStack align="start" spacing={2} pl={4}>
+                            <Text fontSize="sm" color={secondaryTextColor}>
+                                1. Look for a popup blocker icon in your address bar (🔴 or 🛡️)
+                            </Text>
+                            <Text fontSize="sm" color={secondaryTextColor}>
+                                2. Click it and select "Always allow popups from this site"
+                            </Text>
+                            <Text fontSize="sm" color={secondaryTextColor}>
+                                3. Try exporting again
+                            </Text>
+                        </VStack>
+
+                        <Box
+                            p={3}
+                            bg={infoAlertBg}
+                            borderRadius="md"
+                            border="1px"
+                            borderColor="blue.200"
+                        >
+                            <Text fontSize="sm" color={infoAlertDescriptionColor}>
+                                <strong>Tip:</strong> PDF generation will open in a new window for printing.
+                                You can save as PDF by choosing "Save as PDF" in the print dialog.
+                            </Text>
+                        </Box>
+                    </VStack>
+                </ModalBody>
+                <ModalFooter>
+                    <HStack spacing={3} width="full">
+                        <Button variant="ghost" onClick={onPopupModalClose} flex={1}>
+                            Cancel
+                        </Button>
+                        <Button
+                            colorScheme="blue"
+                            onClick={() => {
+                                onPopupModalClose();
+                                // Optionally retry the last export
+                                toast({
+                                    title: 'Retry Export',
+                                    description: 'Please try exporting again after enabling popups.',
+                                    status: 'info',
+                                    duration: 3000,
+                                    isClosable: true,
+                                });
+                            }}
+                            flex={1}
+                        >
+                            Try Again
+                        </Button>
+                    </HStack>
+                </ModalFooter>
+            </ModalContent>
+        </Modal>
+    );
+
     /* ---------- Render ---------- */
 
     if (status === 'loading' || loading) {
@@ -1255,6 +1526,11 @@ export default function ProcurementPage() {
 
     return (
         <Box p={{ base: 4, md: 8 }} bg={bgPrimary} minH="100vh">
+            {/* Export Progress Modal */}
+            <ExportProgressModal />
+            {/* Add this near your ExportProgressModal */}
+            <PopupBlockedModal />
+
             <VStack spacing={6} align="stretch">
                 {/* Add header with requisition button */}
                 <Flex justify="space-between" align="flex-start" wrap="wrap" gap={4}>
@@ -1492,6 +1768,20 @@ export default function ProcurementPage() {
                     </ModalFooter>
                 </ModalContent>
             </Modal>
-        </Box >
+        </Box>
     );
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
