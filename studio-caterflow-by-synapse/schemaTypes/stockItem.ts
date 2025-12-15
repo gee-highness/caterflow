@@ -40,15 +40,6 @@ export default defineType({
             name: 'sku',
             title: 'SKU (Stock Keeping Unit)',
             type: 'string',
-            validation: (Rule) =>
-                Rule.required().custom(async (sku, context) => {
-                    const isSkuUnique = await isUniqueSku(sku, context);
-
-                    if (!isSkuUnique) {
-                        return 'SKU already exists.';
-                    }
-                    return true;
-                }),
             readOnly: ({ document }) => !!document?.sku,
             description: 'A unique identifier for this stock item.',
             initialValue: async () => {

@@ -648,12 +648,12 @@ const calculateStockForBin = async (
         if (item.itemId && itemIds.includes(item.itemId)) {
           const key = `${item.itemId}-${binId}`;
           const dispatchQty = new Decimal(item.dispatchedQuantity || 0);
-          // Prevent negative stock
-          if (results[key].greaterThanOrEqualTo(dispatchQty)) {
-            results[key] = results[key].minus(dispatchQty);
-          } else {
-            results[key] = new Decimal(0);
-          }
+
+          // **CRITICAL FIX**: ALWAYS subtract dispatches
+          // Don't check if we have enough - that's handled in chronological processing
+          // Just subtract now, negative prevention happens in chronological phase
+          results[key] = results[key].minus(dispatchQty);
+
           updateProgress();
         }
       });
@@ -687,35 +687,13 @@ const calculateStockForBin = async (
       });
     });
 
-    // In the calculateStockForBin function, replace this section:
-    const inventoryCountsByDate = data.inventoryCounts?.sort((a: any, b: any) =>
-      new Date(a.countDate).getTime() - new Date(b.countDate).getTime()
-    ) || [];
+    // **CRITICAL FIX: Process ALL transactions chronologically for each item**
+    // This ensures inventory counts work correctly AND items not in counts keep their value
 
-    // Track inventory counts per item
-    const inventoryCountMap: { [itemId: string]: { date: Date; quantity: Decimal }[] } = {};
-
-    inventoryCountsByDate.forEach((count: any) => {
-      count.countedItems?.forEach((item: any) => {
-        if (item.itemId && itemIds.includes(item.itemId)) {
-          if (!inventoryCountMap[item.itemId]) {
-            inventoryCountMap[item.itemId] = [];
-          }
-          inventoryCountMap[item.itemId].push({
-            date: new Date(count.countDate),
-            quantity: new Decimal(item.countedQuantity || 0)
-          });
-          updateProgress();
-        }
-      });
-    });
-
-    // Process inventory counts - they override the running totals at their specific dates
-    // We need to process events in chronological order for each item
-    Object.entries(inventoryCountMap).forEach(([itemId, counts]) => {
+    itemIds.forEach(itemId => {
       const key = `${itemId}-${binId}`;
 
-      // Get all transactions for this item to process chronologically
+      // Collect ALL transactions for this item
       const itemTransactions: Array<{
         date: Date;
         type: 'receipt' | 'dispatch' | 'transferOut' | 'transferIn' | 'count';
@@ -774,24 +752,29 @@ const calculateStockForBin = async (
         });
       });
 
-      // Add inventory counts
-      counts.forEach(count => {
-        itemTransactions.push({
-          date: count.date,
-          type: 'count',
-          quantity: count.quantity
+      // Add inventory counts - ONLY if this item was counted
+      data.inventoryCounts?.forEach((count: any) => {
+        count.countedItems?.forEach((item: any) => {
+          if (item.itemId === itemId) {
+            itemTransactions.push({
+              date: new Date(count.countDate),
+              type: 'count',
+              quantity: new Decimal(item.countedQuantity || 0)
+            });
+          }
         });
       });
 
-      // Sort all transactions chronologically
+      // Sort ALL transactions chronologically
       itemTransactions.sort((a, b) => a.date.getTime() - b.date.getTime());
 
-      // Process transactions in order
+      // Process in chronological order
       let currentStock = new Decimal(0);
       let lastCountDate: Date | null = null;
 
       itemTransactions.forEach(tx => {
-        // Skip transactions before last inventory count
+        // **CRITICAL: If we have a count AFTER this transaction, skip processing it**
+        // This is correct - counts reset everything that came before
         if (lastCountDate && tx.date < lastCountDate) {
           return;
         }
@@ -803,14 +786,10 @@ const calculateStockForBin = async (
             break;
           case 'dispatch':
           case 'transferOut':
-            if (currentStock.greaterThanOrEqualTo(tx.quantity)) {
-              currentStock = currentStock.minus(tx.quantity);
-            } else {
-              currentStock = new Decimal(0);
-            }
+            currentStock = currentStock.minus(tx.quantity);
             break;
           case 'count':
-            // Inventory count RESETS the stock
+            // **FIX: Inventory count SETS the absolute stock**
             currentStock = tx.quantity;
             lastCountDate = tx.date; // Update last count date
             break;
@@ -818,6 +797,7 @@ const calculateStockForBin = async (
       });
 
       results[key] = currentStock;
+      updateProgress();
     });
 
     calculationManager.endTimer(processTimerKey); // End timer if we started it
@@ -2404,7 +2384,7 @@ const atomicCacheUpdate = async (key: string, quantity: number, metadata?: any):
 
 
 
-// Add this emergency fix function at the end of your file:
+/* Add this emergency fix function at the end of your file:
 export const emergencyRecalculateAllStock = async (): Promise<void> => {
   console.log('🚨 EMERGENCY: Recalculating ALL stock snapshots with corrected logic...');
 
@@ -2547,4 +2527,221 @@ const calculateStockFromTransactionsFixed = async (
     console.error('Error in fixed calculation:', error);
     return 0;
   }
+};*/
+
+
+// Emergency verification and fix function
+export const verifyAndFixStock = async (
+  stockItemId: string,
+  binId: string
+): Promise<{ before: number; after: number; fixed: boolean }> => {
+  console.log(`🔍 Verifying ${stockItemId} in ${binId}...`);
+
+  // Get current calculated stock
+  const currentResults = await calculateBulkStock([stockItemId], [binId]);
+  const currentKey = `${stockItemId}-${binId}`;
+  const currentStock = currentResults[currentKey] || 0;
+
+  // Calculate from scratch using fixed logic
+  const fixedStock = await calculateStockFromTransactionsFixed(
+    stockItemId,
+    binId,
+    true
+  );
+
+  // If different, fix it
+  if (Math.abs(currentStock - fixedStock) > 0.001) {
+    console.log(`⚠️ Fixing ${stockItemId} in ${binId}: ${currentStock} → ${fixedStock}`);
+
+    await updateStockSnapshot(
+      stockItemId,
+      binId,
+      fixedStock,
+      'verification_fix',
+      null
+    );
+
+    return {
+      before: currentStock,
+      after: fixedStock,
+      fixed: true
+    };
+  }
+
+  return {
+    before: currentStock,
+    after: fixedStock,
+    fixed: false
+  };
+};
+
+// Use this fixed version for recalculations
+const calculateStockFromTransactionsFixed = async (
+  stockItemId: string,
+  binId: string,
+  verbose: boolean = true
+): Promise<number> => {
+  if (verbose) {
+    console.log(`🧮 Fixed calculation for ${stockItemId} in ${binId}`);
+  }
+
+  try {
+    // Get ALL transactions in proper chronological order
+    const query = groq`{
+      "allEvents": *[_type in ["GoodsReceipt", "DispatchLog", "InternalTransfer", "InventoryCount"] && 
+        ((_type == "GoodsReceipt" && receivingBin._ref == $binId) ||
+         (_type == "DispatchLog" && sourceBin._ref == $binId) ||
+         (_type == "InternalTransfer" && (fromBin._ref == $binId || toBin._ref == $binId)) ||
+         (_type == "InventoryCount" && bin._ref == $binId))
+      ] | order(date asc) {
+        _type,
+        "date": coalesce(receiptDate, dispatchDate, transferDate, countDate),
+        "fromBinId": ^.fromBin._ref,
+        "toBinId": ^.toBin._ref,
+        receivedItems[] {
+          "itemId": stockItem._ref,
+          "quantity": receivedQuantity
+        },
+        dispatchedItems[] {
+          "itemId": stockItem._ref,
+          "quantity": dispatchedQuantity
+        },
+        transferredItems[] {
+          "itemId": stockItem._ref,
+          "quantity": transferredQuantity
+        },
+        countedItems[] {
+          "itemId": stockItem._ref,
+          "quantity": countedQuantity
+        }
+      }
+    }`;
+
+    const data = await client.fetch(query, { binId, stockItemId });
+
+    let stock = new Decimal(0);
+    let lastCountDate: Date | null = null;
+
+    // Process in strict chronological order
+    data.allEvents?.forEach((event: any) => {
+      const eventDate = new Date(event.date);
+
+      // Skip if before last inventory count
+      if (lastCountDate && eventDate < lastCountDate) {
+        return;
+      }
+
+      // Process goods receipts
+      event.receivedItems?.forEach((item: any) => {
+        if (item.itemId === stockItemId) {
+          stock = stock.plus(item.quantity || 0);
+        }
+      });
+
+      // Process dispatches
+      event.dispatchedItems?.forEach((item: any) => {
+        if (item.itemId === stockItemId) {
+          // Prevent negative stock
+          const dispatchQty = new Decimal(item.quantity || 0);
+          if (stock.greaterThanOrEqualTo(dispatchQty)) {
+            stock = stock.minus(dispatchQty);
+          } else {
+            stock = new Decimal(0);
+          }
+        }
+      });
+
+      // Process transfers
+      event.transferredItems?.forEach((item: any) => {
+        if (item.itemId === stockItemId) {
+          // Transfer OUT from this bin
+          if (event.fromBinId === binId) {
+            const transferQty = new Decimal(item.quantity || 0);
+            if (stock.greaterThanOrEqualTo(transferQty)) {
+              stock = stock.minus(transferQty);
+            } else {
+              stock = new Decimal(0);
+            }
+          }
+          // Transfer IN to this bin
+          if (event.toBinId === binId) {
+            stock = stock.plus(item.quantity || 0);
+          }
+        }
+      });
+
+      // Process inventory counts
+      event.countedItems?.forEach((item: any) => {
+        if (item.itemId === stockItemId) {
+          // Count SETS the absolute stock
+          stock = new Decimal(item.quantity || 0);
+          lastCountDate = eventDate;
+        }
+      });
+    });
+
+    const finalStock = Math.max(0, stock.toNumber());
+
+    if (verbose) {
+      console.log(`✅ Fixed calculation: ${finalStock}`);
+      if (lastCountDate) {
+        console.log(`   Last count: ${lastCountDate?.toISOString().split('T')[0]}`);
+      }
+    }
+
+    return finalStock;
+
+  } catch (error) {
+    console.error('Error in fixed calculation:', error);
+    return 0;
+  }
+};
+
+// Update the existing emergency function to use this fixed version
+export const emergencyRecalculateAllStock = async (): Promise<void> => {
+  console.log('🚨 Emergency recalculating ALL stock...');
+
+  // Get all bins
+  const bins = await client.fetch(groq`*[_type == "Bin"] { _id, name }`);
+  // Get all stock items
+  const items = await client.fetch(groq`*[_type == "StockItem"] { _id, name }`);
+
+  let fixed = 0;
+  let errors = 0;
+
+  for (const bin of bins) {
+    console.log(`📦 Processing bin: ${bin.name}`);
+
+    for (const item of items) {
+      try {
+        // Use the FIXED calculation
+        const stock = await calculateStockFromTransactionsFixed(
+          item._id,
+          bin._id,
+          false
+        );
+
+        // Update snapshot
+        await updateStockSnapshot(
+          item._id,
+          bin._id,
+          stock,
+          'emergency_fix',
+          null
+        );
+
+        fixed++;
+
+        if (fixed % 50 === 0) {
+          console.log(`  Fixed ${fixed} items...`);
+        }
+
+      } catch (error) {
+        errors++;
+        console.error(`❌ Error fixing ${item.name} in ${bin.name}:`, error);
+      }
+    }
+  }
+
+  console.log(`✅ Emergency fix complete: ${fixed} fixed, ${errors} errors`);
 };

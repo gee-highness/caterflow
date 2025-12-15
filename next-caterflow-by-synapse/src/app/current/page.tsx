@@ -1,3 +1,4 @@
+// src/app/current/page.tsx
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
@@ -443,12 +444,14 @@ export default function CurrentStockPage() {
     };
 
     const getStockStatusColor = (currentStock: number, minimumStockLevel: number) => {
+        if (currentStock < 0) return 'red'; // NEW: Negative = Critical error
         if (currentStock === 0) return 'red';
         if (currentStock <= minimumStockLevel) return 'orange';
         return 'green';
     };
 
     const getStockStatusText = (currentStock: number, minimumStockLevel: number) => {
+        if (currentStock < 0) return 'DATA ERROR: Negative Stock'; // NEW
         if (currentStock === 0) return 'Out of Stock';
         if (currentStock <= minimumStockLevel) return 'Low Stock';
         return 'In Stock';
