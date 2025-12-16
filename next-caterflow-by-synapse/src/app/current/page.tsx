@@ -372,8 +372,30 @@ export default function CurrentStockPage() {
                     duration: 2000,
                     isClosable: true,
                 });
+
+                // ✅ Use API route instead of direct function call
+                const response = await fetch('/api/stock/emergency-recalculate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.error || 'Emergency recalculation failed');
+                }
+
+                const result = await response.json();
+
+                toast({
+                    title: 'Emergency Recalculation Complete',
+                    description: `Processed ${result.stats.receiptsProcessed} receipts`,
+                    status: 'success',
+                    duration: 3000,
+                    isClosable: true,
+                });
             }
 
+            // Always refresh current view after emergency recalculation
             await calculateStockForSite(selectedSiteId);
 
             // Update cache version
@@ -381,13 +403,18 @@ export default function CurrentStockPage() {
             const data = await response.json();
             localStorage.setItem('stockCacheVersion', data.version);
 
-        } catch (error) {
+        } catch (error: any) {
             console.error('Refresh failed:', error);
+            toast({
+                title: 'Refresh Failed',
+                description: error.message,
+                status: 'error',
+                duration: 5000,
+                isClosable: true,
+            });
         } finally {
             setIsRefreshing(false);
         }
-
-        emergencyRecalculateAllStock();
     };
 
     useEffect(() => {
@@ -784,6 +811,54 @@ export default function CurrentStockPage() {
         );
     }
 
+    async function refreshStockCalc() {
+        setIsRefreshing(true);
+        try {
+            toast({
+                title: 'Starting Emergency Recalculation',
+                description: 'This may take a few moments...',
+                status: 'info',
+                duration: 3000,
+                isClosable: true,
+            });
+
+            const response = await fetch('/api/stock/emergency-recalculate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.error || 'Emergency recalculation failed');
+            }
+
+            const result = await response.json();
+
+            toast({
+                title: 'Emergency Recalculation Complete',
+                description: `Processed ${result.stats?.receiptsProcessed || 0} receipts and ${result.stats?.itemsProcessed || 0} items`,
+                status: 'success',
+                duration: 5000,
+                isClosable: true,
+            });
+
+            // Refresh the current stock display
+            await calculateStockForSite(selectedSiteId);
+
+        } catch (error: any) {
+            console.error('Emergency recalculation failed:', error);
+            toast({
+                title: 'Emergency Recalculation Failed',
+                description: error.message,
+                status: 'error',
+                duration: 5000,
+                isClosable: true,
+            });
+        } finally {
+            setIsRefreshing(false);
+        }
+    }
+
     return (
         <Box p={{ base: 4, md: 8 }} bg={bgPrimary} minH="100vh">
             <VStack spacing={6} align="stretch">
@@ -832,7 +907,7 @@ export default function CurrentStockPage() {
                                     Force Recalculate (Full)
                                 </MenuItem>
                                 <MenuDivider />
-                                <MenuItem onClick={emergencyRecalculateAllStock}>
+                                <MenuItem onClick={refreshStockCalc}>
                                     Emergency Recalculate All
                                 </MenuItem>
                             </MenuList>
