@@ -355,10 +355,37 @@ export default function CurrentStockPage() {
         setSelectedSiteId(siteId);
     };
 
-    const handleRefresh = () => {
-        console.log('🔄 Manual refresh triggered');
+    const handleRefresh = async (forceRecalc = false) => {
+        console.log('🔄 Manual refresh triggered', { forceRecalc });
         setIsRefreshing(true);
-        calculateStockForSite(selectedSiteId);
+
+        try {
+            if (forceRecalc) {
+                // Clear cache and force full recalculation
+                localStorage.removeItem('stockCacheVersion');
+                localStorage.removeItem('lastStockCalculation');
+
+                toast({
+                    title: 'Forcing Recalculation',
+                    description: 'Clearing cache and recalculating from scratch...',
+                    status: 'info',
+                    duration: 2000,
+                    isClosable: true,
+                });
+            }
+
+            await calculateStockForSite(selectedSiteId);
+
+            // Update cache version
+            const response = await fetch('/api/stock/cache-version');
+            const data = await response.json();
+            localStorage.setItem('stockCacheVersion', data.version);
+
+        } catch (error) {
+            console.error('Refresh failed:', error);
+        } finally {
+            setIsRefreshing(false);
+        }
 
         emergencyRecalculateAllStock();
     };
@@ -430,6 +457,43 @@ export default function CurrentStockPage() {
 
         setFilteredItems(filtered);
     }, [currentStockItems, searchTerm, activeTab, sortConfig]);
+
+    useEffect(() => {
+        const checkAndRecalculate = async () => {
+            // Check if we need to recalculate
+            const lastCalculation = localStorage.getItem('lastStockCalculation');
+            const now = new Date().getTime();
+
+            // Recalculate if never done or older than 1 hour
+            if (!lastCalculation || (now - parseInt(lastCalculation)) > 3600000) {
+                console.log('🔄 Auto-recalculating stock...');
+
+                // Show loading state
+                setIsLoading(true);
+
+                // Trigger recalculation
+                await calculateStockForSite(selectedSiteId);
+
+                // Update timestamp
+                localStorage.setItem('lastStockCalculation', now.toString());
+
+                // Show success toast
+                toast({
+                    title: 'Stock Updated',
+                    description: 'Current stock has been recalculated',
+                    status: 'success',
+                    duration: 2000,
+                    isClosable: true,
+                });
+            }
+        };
+
+        if (isAuthenticated && selectedSiteId !== null) {
+            checkAndRecalculate();
+        }
+    }, [isAuthenticated, selectedSiteId, calculateStockForSite, toast]);
+
+
 
     const handleScroll = (direction: 'left' | 'right') => {
         if (sitesContainerRef.current) {
@@ -756,16 +820,23 @@ export default function CurrentStockPage() {
                                 </MenuItem>
                             </MenuList>
                         </Menu>
-                        <Button
-                            leftIcon={<FiRefreshCw />}
-                            onClick={handleRefresh}
-                            isLoading={isRefreshing}
-                            variant="outline"
-                            colorScheme="brand"
-                            size="sm"
-                        >
-                            Refresh
-                        </Button>
+                        <Menu>
+                            <MenuButton as={Button} leftIcon={<FiRefreshCw />} isLoading={isRefreshing}>
+                                Refresh
+                            </MenuButton>
+                            <MenuList>
+                                <MenuItem onClick={() => handleRefresh(false)}>
+                                    Quick Refresh (Use Cache)
+                                </MenuItem>
+                                <MenuItem onClick={() => handleRefresh(true)}>
+                                    Force Recalculate (Full)
+                                </MenuItem>
+                                <MenuDivider />
+                                <MenuItem onClick={emergencyRecalculateAllStock}>
+                                    Emergency Recalculate All
+                                </MenuItem>
+                            </MenuList>
+                        </Menu>
                         <Button
                             leftIcon={<FiFileText />}
                             onClick={exportCurrentStockPDF}
