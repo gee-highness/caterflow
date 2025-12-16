@@ -207,7 +207,7 @@ export default function CurrentStockPage() {
                     const quantity = stockResults[key] || 0;
 
                     // *** CRITICAL CHANGE: Only create entry if there's ACTUAL stock ***
-                    if (quantity > 0) {
+                    if (quantity >= 0) {
                         let stockStatus: 'in-stock' | 'low-stock' | 'out-of-stock' = 'in-stock';
                         if (quantity <= item.minimumStockLevel) {
                             stockStatus = 'low-stock';

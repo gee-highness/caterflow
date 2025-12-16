@@ -144,20 +144,31 @@ export async function PUT(
         // Remove _id from update data to avoid conflicts
         const { _id, ...dataToUpdate } = updateData;
 
-
-        // ✅ ADD: Get existing for revert
+        // ✅ Get existing receipt to check previous status
         const existingReceipt = await client.fetch(
-            groq`*[_type == "GoodsReceipt" && _id == $id][0] { status }`,
+            groq`*[_type == "GoodsReceipt" && _id == $id][0] { 
+                status,
+                receiptNumber
+            }`,
             { id }
         );
 
-        // ✅ ADD: Revert if editing completed receipt
-        const wasCompleted = existingReceipt?.status === 'completed';
-        if (wasCompleted && dataToUpdate.receivedItems) {
-            await revertPreviousStockChanges(id);
+        if (!existingReceipt) {
+            return NextResponse.json(
+                { error: 'Goods receipt not found' },
+                { status: 404 }
+            );
         }
 
+        const wasCompleted = existingReceipt?.status === 'completed';
+        const willBeCompleted = dataToUpdate.status === 'completed';
+        const isStatusChangeToCompleted = !wasCompleted && willBeCompleted;
 
+        // ✅ Revert if editing completed receipt with new items
+        if (wasCompleted && dataToUpdate.receivedItems) {
+            console.log('↩️ Reverting previous stock changes for goods receipt edit:', existingReceipt.receiptNumber);
+            await revertPreviousStockChanges(id);
+        }
 
         const result = await writeClient
             .patch(id)
@@ -167,13 +178,15 @@ export async function PUT(
             })
             .commit();
 
-        if (result.status === 'completed') {
-            await updateStockForTransaction('procurement', result._id);
+        // ✅ CRITICAL FIX: Update stock if receipt status changed to 'completed'
+        if (isStatusChangeToCompleted) {
+            console.log('📦 Updating stock for completed goods receipt:', existingReceipt.receiptNumber);
+            await updateStockForTransaction('procurement', id);
         }
 
         await logSanityInteraction(
             'update',
-            `Updated goods receipt: ${id}`,
+            `Updated goods receipt: ${existingReceipt.receiptNumber || id}`,
             'GoodsReceipt',
             id,
             session.user.email || 'system',
