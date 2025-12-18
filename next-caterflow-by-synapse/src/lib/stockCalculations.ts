@@ -2848,3 +2848,13 @@ export const auditStockCalculations = async (
     issues
   };
 };
+
+
+
+
+
+
+
+
+// Add to exports section at the bottom or near other export functions:
+export const getStockTransactionHistory = auditStockCalculations;

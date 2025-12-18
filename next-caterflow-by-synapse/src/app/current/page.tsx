@@ -41,11 +41,15 @@ import {
     Select,
 } from '@chakra-ui/react';
 import { useSession } from 'next-auth/react';
-import { FiArrowLeft, FiArrowRight, FiSearch, FiRefreshCw, FiFileText, FiInfo, FiTrendingUp, FiTrendingDown } from 'react-icons/fi';
+import { FiEye, FiArrowLeft, FiArrowRight, FiSearch, FiRefreshCw, FiFileText, FiInfo, FiTrendingUp, FiTrendingDown } from 'react-icons/fi';
 import { MdOutlineSort } from 'react-icons/md';
 import DataTable, { Column } from './DataTable';
 import { Site, StockItem } from '@/lib/sanityTypes';
 import { calculateBulkStock, emergencyRecalculateAllStock } from '@/lib/stockCalculations';
+
+import { useDisclosure } from '@chakra-ui/react';
+import CalculationsModal from '@/components/CalculationsModal';
+
 
 interface CurrentStockItem extends StockItem {
     currentStock: number;
@@ -85,6 +89,12 @@ export default function CurrentStockPage() {
     });
     const toast = useToast();
     const sitesContainerRef = useRef<HTMLDivElement>(null);
+
+    // In your CurrentStockPage component, add state:
+    const { isOpen, onOpen, onClose } = useDisclosure();
+    const [selectedItem, setSelectedItem] = useState<CurrentStockItem | null>(null);
+    const [transactionHistory, setTransactionHistory] = useState<any>(null);
+    const [isLoadingHistory, setIsLoadingHistory] = useState(false);
 
     // Theming props
     const bgPrimary = useColorModeValue('neutral.light.bg-primary', 'neutral.dark.bg-primary');
@@ -555,7 +565,102 @@ export default function CurrentStockPage() {
         }));
     };
 
+
+    // Add this function to fetch transaction history
+    const fetchTransactionHistory = async (itemId: string, binId: string) => {
+        setIsLoadingHistory(true);
+        try {
+            // Extract original ID if needed
+            const originalItemId = itemId.includes('-') ? itemId.split('-')[0] : itemId;
+
+            // For "B-WELL Tangy Mayo", we need to find which bin it's actually in
+            // Based on logs, it's in "main" bin with ID "bin-main" or similar
+
+            // First, let's get the actual bin ID for this item
+            const binResponse = await fetch(`/api/stock/item-bins?stockItemId=${originalItemId}`);
+            if (binResponse.ok) {
+                const binData = await binResponse.json();
+                console.log('📦 Available bins for item:', binData);
+
+                // If we have a specific binId, use it, otherwise use the first available
+                const targetBinId = binId || (binData.bins && binData.bins.length > 0 ? binData.bins[0]._id : '');
+
+                if (!targetBinId) {
+                    throw new Error('No bin found for this item');
+                }
+
+                // Now fetch transaction history for this specific item-bin combination
+                const response = await fetch(`/api/stock/transaction-history?stockItemId=${originalItemId}&binId=${targetBinId}`);
+
+                if (!response.ok) {
+                    throw new Error('Failed to fetch transaction history');
+                }
+
+                const data = await response.json();
+                console.log('📊 Transaction history data:', data);
+
+                if (data.success) {
+                    setTransactionHistory(data);
+                } else {
+                    throw new Error(data.error || 'Failed to load transaction history');
+                }
+            } else {
+                throw new Error('Failed to fetch bin information');
+            }
+        } catch (error) {
+            console.error('Error fetching transaction history:', error);
+            toast({
+                title: 'Error',
+                description: error instanceof Error ? error.message : 'Failed to load transaction history',
+                status: 'error',
+                duration: 3000,
+                isClosable: true,
+            });
+            setTransactionHistory(null);
+        } finally {
+            setIsLoadingHistory(false);
+        }
+    };
+
+    // Add a handler for opening the calculations modal
+    const handleOpenCalculations = (item: CurrentStockItem) => {
+        // The item._id is in format "itemId-binId" for items with stock
+        // For B-WELL Tangy Mayo, we need to find which bin it's in
+        const itemId = item._id.includes('-') ? item._id.split('-')[0] : item._id;
+
+        // Try to extract bin ID from the item's binName
+        // From logs: B-WELL Tangy Mayo is in "main" and "fridge" bins
+        const binName = item.binName;
+
+        setSelectedItem(item);
+
+        // Fetch available bins for this item first
+        fetchTransactionHistory(itemId, binName); // Pass binName to help identify the bin
+        onOpen();
+    };
+
+    /**
+     * {
+    accessorKey: 'calculations',
+    header: 'Calculations',
+    isSortable: false,
+    cell: (row: CurrentStockItem) => (
+        <Tooltip label="View calculation details">
+            <IconButton
+                aria-label="View calculations"
+                icon={<FiEye />}
+                size="sm"
+                variant="ghost"
+                colorScheme="brand"
+                onClick={() => handleOpenCalculations(row)}
+            />
+        </Tooltip>
+    ),
+},
+     */
+
     const columns: Column[] = [
+
         {
             accessorKey: 'name',
             header: (
@@ -1267,6 +1372,19 @@ export default function CurrentStockPage() {
                     </Card>
                 )}
             </VStack>
+
+            <CalculationsModal
+                isOpen={isOpen}
+                onClose={onClose}
+                stockItemId={selectedItem?._id || ''}
+                stockItemName={selectedItem?.name || ''}
+                binId={selectedItem?.binName || ''}
+                binName={selectedItem?.binName || ''}
+                siteName={selectedItem?.siteName || ''}
+                currentStock={selectedItem?.currentStock || 0}
+                isLoading={isLoadingHistory}
+                transactionHistory={transactionHistory}
+            />
         </Box>
     );
 }
