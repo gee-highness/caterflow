@@ -376,12 +376,12 @@ const calculateStockFromTransactions = async (
         }
       });
 
-      // Process dispatches
+      /* Process dispatches
       event.dispatchedItems?.forEach((item: any) => {
         if (item.itemId === stockItemId) {
           stock = Decimal.max(0, stock.minus(item.quantity || 0));
         }
-      });
+      });*/
 
       // Process transfers
       event.transferredItems?.forEach((item: any) => {
