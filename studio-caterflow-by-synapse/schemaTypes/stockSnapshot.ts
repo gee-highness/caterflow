@@ -12,14 +12,14 @@ export default defineType({
             name: 'stockItem',
             title: 'Stock Item',
             type: 'reference',
-            to: [{ type: 'stockItem' }],
+            to: [{ type: 'StockItem' }],
             validation: Rule => Rule.required()
         },
         {
             name: 'bin',
             title: 'Bin',
             type: 'reference',
-            to: [{ type: 'bin' }],
+            to: [{ type: 'Bin' }],
             validation: Rule => Rule.required()
         },
         {
@@ -39,10 +39,10 @@ export default defineType({
             title: 'Last Transaction',
             type: 'reference',
             to: [
-                { type: 'goodsReceipt' },
-                { type: 'dispatchLog' },
-                { type: 'internalTransfer' },
-                { type: 'inventoryCount' }
+                { type: 'GoodsReceipt' },
+                { type: 'DispatchLog' },
+                { type: 'InternalTransfer' },
+                { type: 'InventoryCount' }
             ]
         },
         {

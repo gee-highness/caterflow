@@ -100,6 +100,7 @@ export default defineConfig({
                   .items([
                     S.documentTypeListItem('AppUser').title('App Users'),
                     S.documentTypeListItem('NotificationPreference').title('Notification Preferences'),
+                    S.documentTypeListItem('stockSnapshot').title('Stock Snapshot'),
                   ])
               ),
           ])

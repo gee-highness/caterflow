@@ -22,6 +22,7 @@ import dispatchedItem from './dispatchedItem';
 import adjustedItem from './adjustedItem'; // Add this
 import countedItem from './countedItem';
 import transferredItem from './transferredItem'; // Add this
+import stockSnapshot from './stockSnapshot';
 
 export const schemaTypes = [
     // Document types
@@ -48,4 +49,5 @@ export const schemaTypes = [
     transferredItem, // Add this
     adjustedItem, // Add this
     countedItem,
+    stockSnapshot
 ];

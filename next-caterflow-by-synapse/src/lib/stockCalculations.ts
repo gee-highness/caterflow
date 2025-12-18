@@ -425,7 +425,7 @@ const calculateStockFromTransactions = async (
       }
     }
 
-    return Math.max(0, stock.toNumber());
+    return stock.toNumber();
 
   } catch (error) {
     console.error('Error calculating stock from transactions:', error);
@@ -642,23 +642,6 @@ const calculateStockForBin = async (
       });
     });
 
-    // Process dispatches
-    data.dispatches?.forEach((dispatch: any) => {
-      dispatch.dispatchedItems?.forEach((item: any) => {
-        if (item.itemId && itemIds.includes(item.itemId)) {
-          const key = `${item.itemId}-${binId}`;
-          const dispatchQty = new Decimal(item.dispatchedQuantity || 0);
-
-          // **CRITICAL FIX**: ALWAYS subtract dispatches
-          // Don't check if we have enough - that's handled in chronological processing
-          // Just subtract now, negative prevention happens in chronological phase
-          results[key] = results[key].minus(dispatchQty);
-
-          updateProgress();
-        }
-      });
-    });
-
     // Process transfers out
     data.transfersOut?.forEach((transfer: any) => {
       transfer.transferredItems?.forEach((item: any) => {
@@ -690,6 +673,7 @@ const calculateStockForBin = async (
     // **CRITICAL FIX: Process ALL transactions chronologically for each item**
     // This ensures inventory counts work correctly AND items not in counts keep their value
 
+    // **FIXED: Process ALL transactions chronologically with proper inventory count logic**
     itemIds.forEach(itemId => {
       const key = `${itemId}-${binId}`;
 
@@ -768,32 +752,50 @@ const calculateStockForBin = async (
       // Sort ALL transactions chronologically
       itemTransactions.sort((a, b) => a.date.getTime() - b.date.getTime());
 
-      // Process in chronological order
+      // Process in chronological order with FIXED inventory count logic
       let currentStock = new Decimal(0);
-      let lastCountDate: Date | null = null;
+      const countTimeline: Array<{ date: Date; quantity: Decimal }> = [];
 
+      // First pass: collect all inventory counts
       itemTransactions.forEach(tx => {
-        // **CRITICAL: If we have a count AFTER this transaction, skip processing it**
-        // This is correct - counts reset everything that came before
-        if (lastCountDate && tx.date < lastCountDate) {
-          return;
+        if (tx.type === 'count') {
+          countTimeline.push({ date: tx.date, quantity: tx.quantity });
+        }
+      });
+
+      // Find the most recent count before each transaction
+      itemTransactions.forEach(tx => {
+        // Find the most recent count that happened ON or BEFORE this transaction
+        let applicableCount: Decimal | null = null;
+        let applicableCountDate: Date | null = null;
+
+        for (let i = countTimeline.length - 1; i >= 0; i--) {
+          if (countTimeline[i].date <= tx.date) {
+            applicableCount = countTimeline[i].quantity;
+            applicableCountDate = countTimeline[i].date;
+            break;
+          }
         }
 
-        switch (tx.type) {
-          case 'receipt':
-          case 'transferIn':
-            currentStock = currentStock.plus(tx.quantity);
-            break;
-          case 'dispatch':
-          case 'transferOut':
-            currentStock = currentStock.minus(tx.quantity);
-            break;
-          case 'count':
-            // **FIX: Inventory count SETS the absolute stock**
-            currentStock = tx.quantity;
-            lastCountDate = tx.date; // Update last count date
-            break;
+        // If this transaction is a count, it becomes the new baseline
+        if (tx.type === 'count') {
+          currentStock = tx.quantity;
         }
+        // Only process regular transactions if they happen AFTER the most recent count
+        else if (applicableCountDate === null || tx.date > applicableCountDate) {
+          switch (tx.type) {
+            case 'receipt':
+            case 'transferIn':
+              currentStock = currentStock.plus(tx.quantity);
+              break;
+            case 'dispatch':
+            case 'transferOut':
+              currentStock = currentStock.minus(tx.quantity); // ALLOW NEGATIVE
+              break;
+          }
+        }
+        // If transaction happened BEFORE the most recent count, skip it
+        // (it's already accounted for in the count)
       });
 
       results[key] = currentStock;
@@ -1360,11 +1362,7 @@ export const calculateBulkStockFromTransactions = async (
           break;
         case 'dispatch':
         case 'transferOut':
-          if (results[key].toNumber() >= tx.quantity) {
-            results[key] = results[key].minus(tx.quantity);
-          } else {
-            results[key] = new Decimal(0);
-          }
+          results[key] = results[key].minus(tx.quantity); // ALLOW NEGATIVE
           break;
         case 'inventoryCount':
           // Inventory count SETS the absolute value
@@ -1377,7 +1375,7 @@ export const calculateBulkStockFromTransactions = async (
     // Convert to final results
     const finalResults: { [key: string]: number } = {};
     for (const key in results) {
-      finalResults[key] = Math.max(0, results[key].toNumber());
+      finalResults[key] = results[key].toNumber();
     }
 
     console.log('✅ calculateBulkStockFromTransactions complete');
@@ -1540,7 +1538,7 @@ export async function updateStockForTransaction(
           let newStock;
           if (transactionType === 'inventoryCount') {
             // Inventory counts set the absolute quantity
-            newStock = Math.max(0, item.quantity);
+            newStock = item.quantity;
           } else {
             // Other transactions adjust the quantity
             newStock = currentStock + item.quantity;
@@ -1548,7 +1546,8 @@ export async function updateStockForTransaction(
             // Validate no negative stock (except for special cases)
             if (newStock < 0) {
               console.warn(`⚠️ Negative stock detected for ${item.stockItemId} in ${item.binId}: ${newStock}. Setting to 0.`);
-              newStock = 0;
+              // DON'T set to 0 - keep negative for analysis
+              // newStock = 0;
             }
           }
 
@@ -1814,7 +1813,7 @@ export const getStockAsOfDate = async (
 
           dispatch.dispatchedItems?.forEach((item: any) => {
             if (item.itemId === itemId) {
-              stock = Math.max(0, stock - (item.dispatchedQuantity || 0));
+              stock = stock - (item.dispatchedQuantity || 0);
             }
           });
         });
@@ -1827,7 +1826,7 @@ export const getStockAsOfDate = async (
 
           transfer.transferredItems?.forEach((item: any) => {
             if (item.itemId === itemId) {
-              stock = Math.max(0, stock - (item.transferredQuantity || 0));
+              stock = stock - (item.transferredQuantity || 0);
             }
           });
         });
@@ -2257,7 +2256,7 @@ export const getStockHistory = async (
         if (event.type === 'inventoryCount') {
           currentStock = event.quantity;
         } else {
-          currentStock = Math.max(0, currentStock + event.quantity);
+          currentStock = currentStock + event.quantity;
         }
 
         dayEvents.push({
@@ -2384,152 +2383,6 @@ const atomicCacheUpdate = async (key: string, quantity: number, metadata?: any):
 
 
 
-/* Add this emergency fix function at the end of your file:
-export const emergencyRecalculateAllStock = async (): Promise<void> => {
-  console.log('🚨 EMERGENCY: Recalculating ALL stock snapshots with corrected logic...');
-
-  // Get all bins
-  const bins = await client.fetch(groq`*[_type == "Bin"] { _id, name }`);
-
-  // Get all stock items
-  const items = await client.fetch(groq`*[_type == "StockItem"] { _id, name }`);
-
-  let fixed = 0;
-  let errors = 0;
-
-  for (const bin of bins) {
-    console.log(`📦 Processing bin: ${bin.name}`);
-
-    for (const item of items) {
-      try {
-        // Use the CORRECTED calculation
-        const stock = await calculateStockFromTransactionsFixed(item._id, bin._id, false);
-
-        // Update snapshot
-        await updateStockSnapshot(
-          item._id,
-          bin._id,
-          stock,
-          'emergency_recalculation',
-          null
-        );
-
-        fixed++;
-
-        if (fixed % 100 === 0) {
-          console.log(`  Fixed ${fixed} items...`);
-        }
-
-      } catch (error) {
-        errors++;
-        console.error(`❌ Error fixing ${item.name} in ${bin.name}:`, error);
-      }
-    }
-  }
-
-  console.log(`✅ Emergency recalculation complete: ${fixed} fixed, ${errors} errors`);
-};
-
-// Temporary corrected version of calculateStockFromTransactions
-const calculateStockFromTransactionsFixed = async (
-  stockItemId: string,
-  binId: string,
-  verbose: boolean = true
-): Promise<number> => {
-  try {
-    // Simplified query to get all transactions
-    const query = groq`{
-      "events": *[_type in ["GoodsReceipt", "DispatchLog", "InternalTransfer", "InventoryCount"] && 
-        ((_type == "GoodsReceipt" && receivingBin._ref == $binId) ||
-         (_type == "DispatchLog" && sourceBin._ref == $binId) ||
-         (_type == "InternalTransfer" && (fromBin._ref == $binId || toBin._ref == $binId)) ||
-         (_type == "InventoryCount" && bin._ref == $binId))
-      ] | order(date asc) {
-        _type,
-        "date": coalesce(receiptDate, dispatchDate, transferDate, countDate),
-        receivedItems[] {
-          "itemId": stockItem._ref,
-          "quantity": receivedQuantity
-        },
-        dispatchedItems[] {
-          "itemId": stockItem._ref,
-          "quantity": dispatchedQuantity
-        },
-        transferredItems[] {
-          "itemId": stockItem._ref,
-          "quantity": transferredQuantity,
-          "fromBinId": ^.fromBin._ref,
-          "toBinId": ^.toBin._ref
-        },
-        countedItems[] {
-          "itemId": stockItem._ref,
-          "quantity": countedQuantity
-        }
-      }
-    }`;
-
-    const data = await client.fetch(query, { binId, stockItemId });
-
-    let stock = 0;
-    let lastCountDate: Date | null = null;
-
-    // Process in order
-    data.events?.forEach((event: any) => {
-      const eventDate = new Date(event.date);
-
-      // Skip if before last inventory count
-      if (lastCountDate && eventDate < lastCountDate) {
-        return;
-      }
-
-      // Process receipts
-      event.receivedItems?.forEach((item: any) => {
-        if (item.itemId === stockItemId) {
-          stock += item.quantity || 0;
-        }
-      });
-
-      // Process dispatches
-      event.dispatchedItems?.forEach((item: any) => {
-        if (item.itemId === stockItemId) {
-          stock = Math.max(0, stock - (item.quantity || 0));
-        }
-      });
-
-      // Process transfers
-      event.transferredItems?.forEach((item: any) => {
-        if (item.itemId === stockItemId) {
-          if (event.fromBinId === binId) {
-            stock = Math.max(0, stock - (item.quantity || 0));
-          }
-          if (event.toBinId === binId) {
-            stock += item.quantity || 0;
-          }
-        }
-      });
-
-      // Process inventory counts - RESETS everything
-      event.countedItems?.forEach((item: any) => {
-        if (item.itemId === stockItemId) {
-          stock = item.quantity || 0;
-          lastCountDate = eventDate; // Update last count date
-        }
-      });
-    });
-
-    if (verbose) {
-      console.log(`✅ Fixed calculation for ${stockItemId} in ${binId}: ${stock}`);
-    }
-
-    return stock;
-
-  } catch (error) {
-    console.error('Error in fixed calculation:', error);
-    return 0;
-  }
-};*/
-
-
 // Emergency verification and fix function
 export const verifyAndFixStock = async (
   stockItemId: string,
@@ -2643,11 +2496,7 @@ const calculateStockFromTransactionsFixed = async (
         if (item.itemId === stockItemId) {
           // Prevent negative stock
           const dispatchQty = new Decimal(item.quantity || 0);
-          if (stock.greaterThanOrEqualTo(dispatchQty)) {
-            stock = stock.minus(dispatchQty);
-          } else {
-            stock = new Decimal(0);
-          }
+          stock = stock.minus(dispatchQty);
         }
       });
 
@@ -2657,11 +2506,7 @@ const calculateStockFromTransactionsFixed = async (
           // Transfer OUT from this bin
           if (event.fromBinId === binId) {
             const transferQty = new Decimal(item.quantity || 0);
-            if (stock.greaterThanOrEqualTo(transferQty)) {
-              stock = stock.minus(transferQty);
-            } else {
-              stock = new Decimal(0);
-            }
+            stock = stock.minus(transferQty);
           }
           // Transfer IN to this bin
           if (event.toBinId === binId) {
@@ -2680,7 +2525,7 @@ const calculateStockFromTransactionsFixed = async (
       });
     });
 
-    const finalStock = Math.max(0, stock.toNumber());
+    const finalStock = stock.toNumber();
 
     if (verbose) {
       console.log(`✅ Fixed calculation: ${finalStock}`);
@@ -2751,4 +2596,255 @@ export const emergencyRecalculateAllStock = async (): Promise<void> => {
   }
 
   console.log(`✅ Emergency fix complete: ${fixed} fixed, ${errors} errors`);
+};
+
+
+
+// 18. Diagnostic tool for stock calculation analysis
+export const auditStockCalculations = async (
+  stockItemId: string,
+  binId: string
+): Promise<{
+  rawTransactions: any[];
+  chronologicalCalculation: number;
+  snapshotCalculation: number;
+  differences: Array<{
+    date: string;
+    transaction: string;
+    impact: number;
+    cumulative: number;
+    notes?: string;
+  }>;
+  issues: string[];
+}> => {
+  console.log(`🔍 Auditing ${stockItemId} in ${binId} (ALLOWING NEGATIVES)`);
+
+  const issues: string[] = [];
+
+  // 1. Get raw transaction data
+  const rawData = await client.fetch(groq`{
+    "goodsReceipts": *[_type == "GoodsReceipt" && receivingBin._ref == $binId] | order(receiptDate asc) {
+      _id,
+      receiptDate,
+      receiptNumber,
+      status,
+      receivedItems[] {
+        "itemId": stockItem._ref,
+        receivedQuantity
+      }
+    },
+    "dispatches": *[_type == "DispatchLog" && sourceBin._ref == $binId] | order(dispatchDate asc) {
+      _id,
+      dispatchDate,
+      dispatchNumber,
+      evidenceStatus,
+      status,
+      dispatchedItems[] {
+        "itemId": stockItem._ref,
+        dispatchedQuantity
+      }
+    },
+    "transfers": *[_type == "InternalTransfer" && (fromBin._ref == $binId || toBin._ref == $binId)] | order(transferDate asc) {
+      _id,
+      transferDate,
+      transferNumber,
+      status,
+      "fromBinId": fromBin._ref,
+      "toBinId": toBin._ref,
+      transferredItems[] {
+        "itemId": stockItem._ref,
+        transferredQuantity
+      }
+    },
+    "counts": *[_type == "InventoryCount" && bin._ref == $binId] | order(countDate asc) {
+      _id,
+      countDate,
+      countNumber,
+      status,
+      countedItems[] {
+        "itemId": stockItem._ref,
+        countedQuantity
+      }
+    }
+  }`, { binId, stockItemId });
+
+  // 2. Flatten and sort all transactions
+  const allTransactions: Array<{
+    date: Date;
+    type: 'receipt' | 'dispatch' | 'transferOut' | 'transferIn' | 'count';
+    documentId: string;
+    documentNumber: string;
+    quantity: number;
+    status: string;
+  }> = [];
+
+  // Process goods receipts
+  rawData.goodsReceipts?.forEach((receipt: any) => {
+    receipt.receivedItems?.forEach((item: any) => {
+      if (item.itemId === stockItemId) {
+        allTransactions.push({
+          date: new Date(receipt.receiptDate),
+          type: 'receipt',
+          documentId: receipt._id,
+          documentNumber: receipt.receiptNumber,
+          quantity: item.receivedQuantity || 0,
+          status: receipt.status
+        });
+      }
+    });
+  });
+
+  // Process dispatches
+  rawData.dispatches?.forEach((dispatch: any) => {
+    dispatch.dispatchedItems?.forEach((item: any) => {
+      if (item.itemId === stockItemId) {
+        allTransactions.push({
+          date: new Date(dispatch.dispatchDate),
+          type: 'dispatch',
+          documentId: dispatch._id,
+          documentNumber: dispatch.dispatchNumber,
+          quantity: -(item.dispatchedQuantity || 0),
+          status: dispatch.evidenceStatus || dispatch.status
+        });
+      }
+    });
+  });
+
+  // Process transfers
+  rawData.transfers?.forEach((transfer: any) => {
+    transfer.transferredItems?.forEach((item: any) => {
+      if (item.itemId === stockItemId) {
+        // Transfer OUT from this bin
+        if (transfer.fromBinId === binId) {
+          allTransactions.push({
+            date: new Date(transfer.transferDate),
+            type: 'transferOut',
+            documentId: transfer._id,
+            documentNumber: transfer.transferNumber,
+            quantity: -(item.transferredQuantity || 0),
+            status: transfer.status
+          });
+        }
+        // Transfer IN to this bin
+        if (transfer.toBinId === binId) {
+          allTransactions.push({
+            date: new Date(transfer.transferDate),
+            type: 'transferIn',
+            documentId: transfer._id,
+            documentNumber: transfer.transferNumber,
+            quantity: item.transferredQuantity || 0,
+            status: transfer.status
+          });
+        }
+      }
+    });
+  });
+
+  // Process inventory counts
+  rawData.counts?.forEach((count: any) => {
+    count.countedItems?.forEach((item: any) => {
+      if (item.itemId === stockItemId) {
+        allTransactions.push({
+          date: new Date(count.countDate),
+          type: 'count',
+          documentId: count._id,
+          documentNumber: count.countNumber,
+          quantity: item.countedQuantity || 0,
+          status: count.status
+        });
+      }
+    });
+  });
+
+  // Sort by date
+  allTransactions.sort((a, b) => a.date.getTime() - b.date.getTime());
+
+  // 3. Calculate chronologically (with proper inventory count logic)
+  let chronologicalStock = 0;
+  const differences: { date: string; transaction: string; impact: number; cumulative: number; notes: string | undefined; }[] = [];
+  const countTimeline: Array<{ date: Date; quantity: number }> = [];
+
+  // First pass: collect inventory counts
+  allTransactions.forEach(tx => {
+    if (tx.type === 'count') {
+      countTimeline.push({ date: tx.date, quantity: tx.quantity });
+    }
+  });
+
+  // Second pass: process all transactions
+  allTransactions.forEach((tx) => {
+    const stockBefore = chronologicalStock;
+
+    // Find the most recent count that happened ON or BEFORE this transaction
+    let applicableCount: number | null = null;
+    let applicableCountDate: Date | null = null;
+
+    for (let i = countTimeline.length - 1; i >= 0; i--) {
+      if (countTimeline[i].date <= tx.date) {
+        applicableCount = countTimeline[i].quantity;
+        applicableCountDate = countTimeline[i].date;
+        break;
+      }
+    }
+
+    if (tx.type === 'count') {
+      // Count sets the absolute stock
+      chronologicalStock = tx.quantity;
+      differences.push({
+        date: tx.date.toISOString(),
+        transaction: `${tx.type} #${tx.documentNumber}`,
+        impact: tx.quantity - stockBefore,
+        cumulative: chronologicalStock,
+        notes: `RESET: Count sets stock to ${tx.quantity}`
+      });
+    } else if (applicableCountDate === null || tx.date > applicableCountDate) {
+      // Transaction happens AFTER the most recent count (or no count yet)
+      chronologicalStock += tx.quantity;
+      differences.push({
+        date: tx.date.toISOString(),
+        transaction: `${tx.type} #${tx.documentNumber}`,
+        impact: tx.quantity,
+        cumulative: chronologicalStock,
+        notes: tx.quantity < 0 ? `Negative allowed for analysis` : undefined
+      });
+    } else {
+      // Transaction happened BEFORE the most recent count - should be ignored
+      differences.push({
+        date: tx.date.toISOString(),
+        transaction: `${tx.type} #${tx.documentNumber}`,
+        impact: tx.quantity,
+        cumulative: chronologicalStock,
+        notes: `IGNORED: Happened before count on ${applicableCountDate.toISOString().split('T')[0]}`
+      });
+    }
+
+    // Check for data quality issues
+    if (tx.status && !['completed', 'complete', 'processed'].includes(tx.status)) {
+      issues.push(`Transaction ${tx.type} #${tx.documentNumber} has status "${tx.status}" - might be excluded from calculations`);
+    }
+  });
+
+  // 4. Get current snapshot calculation for comparison
+  const snapshotResult = await calculateStock(stockItemId, binId);
+
+  // 5. Identify discrepancies
+  if (Math.abs(chronologicalStock - snapshotResult.quantity) > 0.01) {
+    issues.push(`CALCULATION MISMATCH: Chronological=${chronologicalStock}, Snapshot=${snapshotResult.quantity}, Difference=${chronologicalStock - snapshotResult.quantity}`);
+  }
+
+  // 6. Check for negative stock patterns
+  if (chronologicalStock < 0) {
+    const negativeTransactions = differences.filter(d => d.cumulative < 0);
+    if (negativeTransactions.length > 0) {
+      issues.push(`NEGATIVE STOCK DETECTED: ${chronologicalStock} units missing. Check transactions around ${negativeTransactions[0].date}`);
+    }
+  }
+
+  return {
+    rawTransactions: allTransactions,
+    chronologicalCalculation: chronologicalStock,
+    snapshotCalculation: snapshotResult.quantity,
+    differences,
+    issues
+  };
 };
