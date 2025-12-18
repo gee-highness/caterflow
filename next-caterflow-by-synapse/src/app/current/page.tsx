@@ -1373,7 +1373,7 @@ export default function CurrentStockPage() {
                 )}
             </VStack>
 
-            <CalculationsModal
+            {/*<CalculationsModal
                 isOpen={isOpen}
                 onClose={onClose}
                 stockItemId={selectedItem?._id || ''}
@@ -1384,7 +1384,7 @@ export default function CurrentStockPage() {
                 currentStock={selectedItem?.currentStock || 0}
                 isLoading={isLoadingHistory}
                 transactionHistory={transactionHistory}
-            />
+            />*/}
         </Box>
     );
 }

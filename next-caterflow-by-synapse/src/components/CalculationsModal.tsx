@@ -507,7 +507,7 @@ export default function CalculationsModal({
 																		</Td>
 																		<Td>
 																			<HStack spacing={2}>
-																				<Icon as={getTransactionTypeIcon(tx.type)} />
+																				{/*<Icon as={getTransactionTypeIcon(tx.type)} />*/}
 																				<Badge
 																					colorScheme={getTransactionTypeColor(tx.type)}
 																					variant="subtle"
