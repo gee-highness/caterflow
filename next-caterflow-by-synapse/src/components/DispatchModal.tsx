@@ -183,18 +183,25 @@ export default function DispatchModal({
     const existingItemIds = dispatchedItems.filter(item => item.stockItem).map(item => item.stockItem._id);
 
     // Safe number conversion helper function
+    // Safe number conversion helper function with 3 decimal place support
     const safeNumber = (value: string | number): number => {
-        if (typeof value === 'number') return isNaN(value) ? 0 : value;
+        if (typeof value === 'number') {
+            return isNaN(value) ? 0 : parseFloat(value.toFixed(3));
+        }
         const num = parseFloat(value);
-        return isNaN(num) ? 0 : num;
+        return isNaN(num) ? 0 : parseFloat(num.toFixed(3));
     };
 
-    // Safe number input handler
+    // Safe number input handler with 3 decimal place support
     const handleNumberInput = (value: string): number => {
         // Allow empty string, but convert to 0 for calculations
         if (value === '' || value === '-') return 0;
+
+        // Parse as float
         const num = parseFloat(value);
-        return isNaN(num) ? 0 : num;
+
+        // Return 0 if NaN, otherwise round to 3 decimal places
+        return isNaN(num) ? 0 : parseFloat(num.toFixed(3));
     };
 
     // load dispatch types and bins when modal opens
@@ -363,28 +370,36 @@ export default function DispatchModal({
     };
 
     const handleQuantityChange = (key: string, value: string) => {
-        const currentItem = dispatchedItems.find(item => item._key === key);
-        const currentValue = currentItem?.dispatchedQuantity || 0;
-
-        // If current value is 0 and user starts typing a new number
-        if (currentValue === 0 && value !== '0' && value !== '' && !value.includes('.')) {
-            const valueAsNumber = handleNumberInput(value);
+        // Allow empty string for user typing
+        if (value === '' || value === '-') {
             setDispatchedItems(prevItems =>
                 prevItems.map(item => {
                     if (item._key === key) {
                         const unitPrice = item.unitPrice || 0;
-                        const totalCost = unitPrice * valueAsNumber;
                         return {
                             ...item,
-                            dispatchedQuantity: valueAsNumber,
-                            totalCost
+                            dispatchedQuantity: 0,
+                            totalCost: 0
                         };
                     }
                     return item;
                 })
             );
-        } else {
-            const valueAsNumber = handleNumberInput(value);
+            return;
+        }
+
+        // Check if the value has more than 3 decimal places
+        const decimalParts = value.split('.');
+        if (decimalParts.length === 2 && decimalParts[1].length > 3) {
+            // Truncate to 3 decimal places
+            value = decimalParts[0] + '.' + decimalParts[1].slice(0, 3);
+        }
+
+        // Parse the value as a float
+        const valueAsNumber = parseFloat(value);
+
+        // Only proceed if it's a valid number
+        if (!isNaN(valueAsNumber) && valueAsNumber >= 0) {
             setDispatchedItems(prevItems =>
                 prevItems.map(item => {
                     if (item._key === key) {
@@ -393,7 +408,7 @@ export default function DispatchModal({
                         return {
                             ...item,
                             dispatchedQuantity: valueAsNumber,
-                            totalCost
+                            totalCost: parseFloat(totalCost.toFixed(2)) // Round to 2 decimal places for currency
                         };
                     }
                     return item;
@@ -401,6 +416,7 @@ export default function DispatchModal({
             );
         }
     };
+
     // Updated people fed handler with decimal support and NaN protection
     const handlePeopleFedChange = (valueAsString: string) => {
         const valueAsNumber = handleNumberInput(valueAsString);
@@ -843,7 +859,7 @@ export default function DispatchModal({
                 ${dispatchedItems.map(item => `
                     <tr>
                         <td><strong>${item.stockItem.name}</strong></td>
-                        <td>${item.dispatchedQuantity}</td>
+                        <td>${item.dispatchedQuantity.toFixed(3)}</td>
                         <td>E ${(item.unitPrice || 0).toFixed(2)}</td>
                         <td>E ${(item.totalCost || 0).toFixed(2)}</td>
                         <td>${item.stockItem.unitOfMeasure}</td>
@@ -1146,16 +1162,22 @@ export default function DispatchModal({
                                                                 </Td>
 
                                                                 <Td borderColor={tableBorderColor}>
-                                                                    <Input
+                                                                    <NumberInput
                                                                         value={item.dispatchedQuantity}
-                                                                        onChange={(e) => handleQuantityChange(item._key, e.target.value)}
-                                                                        type="number"
-                                                                        step="0.1"
-                                                                        min="0"
+                                                                        onChange={(valueString) => handleQuantityChange(item._key, valueString)}
+                                                                        min={0}
+                                                                        step={0.001}
+                                                                        precision={3}
                                                                         size="sm"
                                                                         width="100px"
                                                                         isDisabled={!isEditable}
-                                                                    />
+                                                                    >
+                                                                        <NumberInputField />
+                                                                        <NumberInputStepper>
+                                                                            <NumberIncrementStepper />
+                                                                            <NumberDecrementStepper />
+                                                                        </NumberInputStepper>
+                                                                    </NumberInput>
                                                                 </Td>
                                                                 <Td borderColor={tableBorderColor}>
                                                                     <Text fontWeight="medium">

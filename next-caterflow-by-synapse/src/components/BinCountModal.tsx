@@ -969,7 +969,7 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
                                                                         {item.variance?.toFixed(2) || 0}
                                                                     </Badge>
                                                                     <Text fontSize="xs" color="neutral.light.text-secondary">
-                                                                        {item.varianceCost ? `$${Math.abs(item.varianceCost).toFixed(2)}` : '$0.00'}
+                                                                        {item.varianceCost ? `E ${Math.abs(item.varianceCost).toFixed(2)}` : 'E 0.00'}
                                                                     </Text>
                                                                 </VStack>
                                                             </Td>
@@ -1051,7 +1051,7 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
                                                                             {item.variance?.toFixed(2) || 0}
                                                                         </Badge>
                                                                         <Text fontSize="xs" color="gray.500">
-                                                                            {item.varianceCost ? `$${Math.abs(item.varianceCost).toFixed(2)}` : '$0.00'}
+                                                                            {item.varianceCost ? `E ${Math.abs(item.varianceCost).toFixed(2)}` : 'E 0.00'}
                                                                         </Text>
                                                                     </VStack>
                                                                 </HStack>
