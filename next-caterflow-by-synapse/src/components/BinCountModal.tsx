@@ -49,11 +49,14 @@ interface CountedItem {
     stockItem: {
         _id: string;
         name: string;
-        sku: string
+        sku: string;
+        unitPrice?: number; // ADD THIS
     };
     countedQuantity: number;
     systemQuantityAtCountTime?: number;
     variance?: number;
+    varianceCost?: number; // ADD THIS
+    unitPrice?: number; // ADD THIS
     _key?: string;
 }
 
@@ -63,6 +66,7 @@ interface StockItemForSelector {
     sku: string;
     itemType: 'food' | 'nonFood';
     unitOfMeasure: string;
+    unitPrice?: number; // ADD THIS
     description?: string;
     category?: {
         _id: string;
@@ -300,12 +304,12 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
     }, [isOpen]);
 
     const loadAllStockItems = useCallback(async () => {
-        if (!selectedBin || binCount) return; // Only for new counts with selected bin
+        if (!selectedBin || binCount) return;
 
         setLoading(true);
         try {
-            // Fetch all stock items
-            const response = await fetch('/api/stock-items');
+            // Fetch all stock items WITH unitPrice
+            const response = await fetch('/api/procurement/stock-items'); // Updated path based on your structure
             if (!response.ok) throw new Error('Failed to fetch stock items');
 
             const allStockItems: StockItemForSelector[] = await response.json();
@@ -329,16 +333,21 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
 
             const itemsWithQuantities = allStockItems.map((item) => {
                 const systemQuantity = bulkResults[item._id] || 0;
+                const unitPrice = item.unitPrice || 0;
 
                 return {
                     _key: nanoid(),
                     stockItem: {
                         _id: item._id,
                         name: item.name,
-                        sku: item.sku || 'N/A'
+                        sku: item.sku || 'N/A',
+                        unitPrice: unitPrice,
                     },
                     countedQuantity: 0,
                     systemQuantityAtCountTime: systemQuantity,
+                    variance: 0 - systemQuantity, // Initial variance (0 counted - system qty)
+                    varianceCost: (0 - systemQuantity) * unitPrice, // Initial variance cost
+                    unitPrice: unitPrice,
                 };
             });
 
@@ -378,6 +387,34 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
             return () => clearTimeout(timer);
         }
     }, [selectedBin, binCount, loadAllStockItems]);
+
+    // Add this useEffect after the other useEffects in BinCountModal.tsx
+    useEffect(() => {
+        // Update variance and varianceCost when countedItems change
+        const updatedItems = countedItems.map(item => {
+            const counted = item.countedQuantity || 0;
+            const system = item.systemQuantityAtCountTime || 0;
+            const unitPrice = item.unitPrice || item.stockItem.unitPrice || 0;
+            const variance = counted - system;
+            const varianceCost = variance * unitPrice;
+
+            return {
+                ...item,
+                variance: variance,
+                varianceCost: varianceCost,
+            };
+        });
+
+        // Only update if there are changes
+        const hasChanges = updatedItems.some((item, index) =>
+            item.variance !== countedItems[index]?.variance ||
+            item.varianceCost !== countedItems[index]?.varianceCost
+        );
+
+        if (hasChanges) {
+            setCountedItems(updatedItems);
+        }
+    }, [countedItems]);
 
     const fixBrokenBinCount = async (countId: string) => {
         if (isProcessing) return;
@@ -505,16 +542,21 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
 
             const itemsWithQuantities = newItems.map((item) => {
                 const systemQuantity = bulkResults[item._id] || 0;
+                const unitPrice = item.unitPrice || 0;
 
                 return {
                     _key: nanoid(),
                     stockItem: {
                         _id: item._id,
                         name: item.name,
-                        sku: item.sku || 'N/A'
+                        sku: item.sku || 'N/A',
+                        unitPrice: unitPrice,
                     },
                     countedQuantity: 0,
                     systemQuantityAtCountTime: systemQuantity,
+                    variance: 0 - systemQuantity, // Initial variance
+                    varianceCost: (0 - systemQuantity) * unitPrice, // Initial variance cost
+                    unitPrice: unitPrice,
                 };
             });
 
@@ -574,10 +616,16 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
 
             const updatedItems = countedItems.map((item) => {
                 const systemQuantity = bulkResults[item.stockItem._id] || 0;
+                const counted = item.countedQuantity || 0;
+                const unitPrice = item.unitPrice || item.stockItem.unitPrice || 0;
+                const variance = counted - systemQuantity;
+                const varianceCost = variance * unitPrice;
+
                 return {
                     ...item,
                     systemQuantityAtCountTime: systemQuantity,
-                    variance: item.countedQuantity - systemQuantity
+                    variance: variance,
+                    varianceCost: varianceCost
                 };
             });
 
@@ -624,6 +672,20 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
             const counted = item.countedQuantity || 0;
             const system = item.systemQuantityAtCountTime || 0;
             return sum + (counted - system);
+        }, 0);
+    }, [countedItems]);
+
+    const totalVarianceCost = useMemo(() => {
+        return countedItems.reduce((sum, item) => {
+            // Calculate variance for this item
+            const counted = item.countedQuantity || 0;
+            const system = item.systemQuantityAtCountTime || 0;
+            const variance = counted - system;
+
+            // Get unit price - prefer item.unitPrice, fall back to stockItem.unitPrice
+            const unitPrice = item.unitPrice || item.stockItem?.unitPrice || 0;
+
+            return sum + (variance * unitPrice);
         }, 0);
     }, [countedItems]);
 
@@ -675,12 +737,18 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
 
         // Build items with proper structure
         const itemsWithVariance = validCountedItems.map((item, index) => {
+            const variance = item.variance || 0;
+            const unitPrice = item.unitPrice || item.stockItem.unitPrice || 0;
+            const varianceCost = item.varianceCost || variance * unitPrice;
+
             return {
                 _key: item._key || `item-${index}-${Date.now()}`,
                 stockItem: item.stockItem._id, // Just the ID string
                 countedQuantity: item.countedQuantity || 0,
                 systemQuantityAtCountTime: item.systemQuantityAtCountTime || 0,
                 variance: (item.countedQuantity || 0) - (item.systemQuantityAtCountTime || 0),
+                varianceCost: varianceCost, // ADD THIS
+                unitPrice: unitPrice
             };
         });
 
@@ -695,12 +763,18 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
         }
 
         // Build payload
+        const totalVarianceCost = itemsWithVariance.reduce((sum, item) => sum + (item.varianceCost || 0), 0);
+        const totalVariance = itemsWithVariance.reduce((sum, item) => sum + (item.variance || 0), 0);
+
+        // Update the payload
         const payload: any = {
             countDate: new Date(countDate).toISOString(),
             bin: selectedBin._id,
             notes: notes || "",
             countedItems: itemsWithVariance,
             status: status,
+            totalVariance: totalVariance,
+            totalVarianceCost: totalVarianceCost, // ADD THIS
         };
 
         // Add countedBy if we have a user
@@ -858,7 +932,7 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
                                                         <Th color={tableHeaderText}>Item</Th>
                                                         <Th color={tableHeaderText}>System Qty</Th>
                                                         <Th isNumeric color={tableHeaderText}>Counted Qty</Th>
-                                                        <Th isNumeric color={tableHeaderText}>Variance</Th>
+                                                        <Th isNumeric color={tableHeaderText}>Variance (Cost)</Th>
                                                         {!isViewMode && <Th color={tableHeaderText}>Actions</Th>}
                                                     </Tr>
                                                 </Thead>
@@ -888,12 +962,16 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
                                                                 )}
                                                             </Td>
                                                             <Td isNumeric>
-                                                                <Badge
-                                                                    colorScheme={(item.countedQuantity - (item.systemQuantityAtCountTime || 0)) === 0 ? 'green' : 'red'}
-                                                                >
-                                                                    {(item.countedQuantity - (item.systemQuantityAtCountTime || 0)).toFixed(2)} {/* Add .toFixed(2) */}
-                                                                </Badge>
-
+                                                                <VStack align="flex-end" spacing={1}>
+                                                                    <Badge
+                                                                        colorScheme={item.variance === 0 ? 'green' : 'red'}
+                                                                    >
+                                                                        {item.variance?.toFixed(2) || 0}
+                                                                    </Badge>
+                                                                    <Text fontSize="xs" color="neutral.light.text-secondary">
+                                                                        {item.varianceCost ? `$${Math.abs(item.varianceCost).toFixed(2)}` : '$0.00'}
+                                                                    </Text>
+                                                                </VStack>
                                                             </Td>
                                                             {!isViewMode && (
                                                                 <Td>
@@ -966,11 +1044,16 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
                                                                 </HStack>
                                                                 <HStack justifyContent="space-between">
                                                                     <Text fontSize="sm" fontWeight="medium">Variance:</Text>
-                                                                    <Badge
-                                                                        colorScheme={(item.countedQuantity - (item.systemQuantityAtCountTime || 0)) === 0 ? 'green' : 'red'}
-                                                                    >
-                                                                        {(item.countedQuantity - (item.systemQuantityAtCountTime || 0)).toFixed(2)} {/* Add .toFixed(2) */}
-                                                                    </Badge>
+                                                                    <VStack align="flex-end" spacing={0}>
+                                                                        <Badge
+                                                                            colorScheme={item.variance === 0 ? 'green' : 'red'}
+                                                                        >
+                                                                            {item.variance?.toFixed(2) || 0}
+                                                                        </Badge>
+                                                                        <Text fontSize="xs" color="gray.500">
+                                                                            {item.varianceCost ? `$${Math.abs(item.varianceCost).toFixed(2)}` : '$0.00'}
+                                                                        </Text>
+                                                                    </VStack>
                                                                 </HStack>
                                                             </VStack>
                                                         </CardBody>
@@ -1021,9 +1104,20 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
                                         </Button>
                                     </HStack>
 
-                                    <Text fontWeight="bold">
-                                        Total Variance: <Badge colorScheme={totalVariance !== 0 ? 'red' : 'green'}>{totalVariance.toFixed(2)}</Badge>
-                                    </Text>
+                                    <VStack align="flex-end" spacing={1}>
+                                        <Text fontWeight="bold">
+                                            Total Variance (Qty): <Badge colorScheme={totalVariance !== 0 ? 'red' : 'green'}>{totalVariance.toFixed(2)}</Badge>
+                                        </Text>
+                                        <Text fontWeight="bold">
+                                            Total Variance (Cost): <Badge colorScheme={totalVarianceCost !== 0 ? (totalVarianceCost > 0 ? 'orange' : 'green') : 'gray'}>
+                                                {new Intl.NumberFormat('en-US', {
+                                                    style: 'currency',
+                                                    currency: 'USD',
+                                                }).format(Math.abs(totalVarianceCost))}
+                                                {totalVarianceCost > 0 ? ' (Over)' : totalVarianceCost < 0 ? ' (Under)' : ''}
+                                            </Badge>
+                                        </Text>
+                                    </VStack>
                                 </HStack>
                             )}
                         </VStack>

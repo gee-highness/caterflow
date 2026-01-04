@@ -32,6 +32,8 @@ export async function GET() {
             countDate,
             status,
             notes,
+            totalVariance,
+            totalVarianceCost,
             "bin": bin->{
                 _id,
                 name,
@@ -67,13 +69,31 @@ export async function GET() {
         const binCounts = await client.fetch(query);
         console.log('✅ Found bin counts:', binCounts?.length || 0);
 
+        // Update the countsWithTotals calculation:
         const countsWithTotals = binCounts.map((count: any) => {
             const totalItems = count.countedItems?.length || 0;
-            const totalVariance = count.countedItems?.reduce((sum: number, item: any) => sum + (item.variance || 0), 0) || 0;
+
+            // Use stored totals if available, otherwise calculate
+            const totalVariance = count.totalVariance !== undefined ? count.totalVariance :
+                count.countedItems?.reduce((sum: number, item: any) => sum + (item.variance || 0), 0) || 0;
+
+            const totalVarianceCost = count.totalVarianceCost !== undefined ? count.totalVarianceCost :
+                count.countedItems?.reduce((sum: number, item: any) => {
+                    // Use stored varianceCost if available
+                    if (item.varianceCost !== undefined) {
+                        return sum + (item.varianceCost || 0);
+                    }
+                    // Calculate from variance and unitPrice
+                    const variance = item.variance || 0;
+                    const unitPrice = item.unitPrice || item.stockItem?.unitPrice || 0;
+                    return sum + (variance * unitPrice);
+                }, 0) || 0;
+
             return {
                 ...count,
                 totalItems,
-                totalVariance
+                totalVariance,
+                totalVarianceCost
             };
         });
 
@@ -171,6 +191,7 @@ export async function PUT(request: Request) {
             );
         }
 
+        // In the PUT function, update the countedItems processing:
         let countedItems;
         if (updateData.countedItems) {
             countedItems = updateData.countedItems.map((item: any) => {
@@ -180,20 +201,24 @@ export async function PUT(request: Request) {
                     _key: item._key,
                     stockItem: {
                         _type: 'reference',
-                        _ref: item.stockItem, // This should be the stock item ID
+                        _ref: item.stockItem,
                     },
                     countedQuantity: item.countedQuantity,
                     systemQuantityAtCountTime: item.systemQuantityAtCountTime,
                     variance: item.variance || 0,
+                    varianceCost: item.varianceCost || 0, // ADD THIS
+                    unitPrice: item.unitPrice || 0, // ADD THIS
                 };
             });
             delete updateData.countedItems;
         }
 
-        // Start with the basic update data
+        // Also include totalVarianceCost in the patch
         let patch = writeClient.patch(_id).set({
             ...updateData,
             ...(countedItems && { countedItems }),
+            totalVariance: updateData.totalVariance || 0,
+            totalVarianceCost: updateData.totalVarianceCost || 0, // ADD THIS
         });
 
         // Always set the bin reference
@@ -277,6 +302,7 @@ export async function POST(request: Request) {
         }
 
         // Process countedItems correctly
+        // In the POST function, update the countedItems processing:
         const countedItems = newBinCount.countedItems?.map((item: any, index: number) => {
             console.log(`📊 Processing counted item ${index + 1}:`, item);
 
@@ -291,20 +317,21 @@ export async function POST(request: Request) {
                 _key: item._key || `item-${index}`,
                 stockItem: {
                     _type: 'reference',
-                    _ref: item.stockItem, // This should be the stock item ID
+                    _ref: item.stockItem,
                 },
                 countedQuantity: item.countedQuantity || 0,
                 systemQuantityAtCountTime: item.systemQuantityAtCountTime || 0,
                 variance: item.variance || 0,
+                varianceCost: item.varianceCost || 0, // ADD THIS
+                unitPrice: item.unitPrice || 0, // ADD THIS
             };
         }) || [];
 
-        console.log(`✅ Processed ${countedItems.length} counted items`);
-
+        // Create the document with totalVarianceCost
         const doc = {
             _type: 'InventoryCount',
             ...newBinCount,
-            countNumber, // Use the generated count number
+            countNumber,
             status: newBinCount.status || 'draft',
             countDate: newBinCount.countDate || new Date().toISOString(),
             bin: {
@@ -318,7 +345,11 @@ export async function POST(request: Request) {
                 },
             }),
             countedItems: countedItems,
+            totalVariance: newBinCount.totalVariance || 0,
+            totalVarianceCost: newBinCount.totalVarianceCost || 0, // ADD THIS
         };
+
+        console.log(`✅ Processed ${countedItems.length} counted items`);
 
         console.log('📄 Creating document:', JSON.stringify(doc, null, 2));
 

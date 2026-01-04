@@ -56,9 +56,10 @@ interface BinCount {
         _id: string;
         name: string;
     };
-    countedItems: CountedItem[];
+    countedItems: any[]; // Updated to any to include varianceCost
     totalItems: number;
     totalVariance?: number;
+    totalVarianceCost?: number; // ADD THIS
 }
 
 export default function BinCountsPage() {
