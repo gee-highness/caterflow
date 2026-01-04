@@ -38,7 +38,7 @@ import {
     useColorModeValue,
     Divider,
 } from '@chakra-ui/react';
-import { FiPlus, FiTrash2, FiSearch, FiCheck, FiSave } from 'react-icons/fi';
+import { FiPlus, FiTrash2, FiSearch, FiCheck, FiSave, FiRefreshCw } from 'react-icons/fi';
 import BinSelectorModal from './BinSelectorModal';
 import StockItemSelectorModal from './StockItemSelectorModal';
 import { useSession } from 'next-auth/react';
@@ -171,11 +171,15 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
 
                                 try {
                                     const systemQuantityRes = await fetch(
-                                        `/api/stock-items/${item.stockItem._id}/in-bin/${selectedBin._id}`
+                                        `/api/stock/transaction-history?stockItemId=${item.stockItem._id}&binId=${selectedBin._id}`
                                     );
                                     if (systemQuantityRes.ok) {
-                                        const { inStock } = await systemQuantityRes.json();
-                                        return { ...item, systemQuantityAtCountTime: inStock || 0 };
+                                        const data = await systemQuantityRes.json();
+                                        if (data.success && data.transactions && data.transactions.length > 0) {
+                                            // The first transaction has the current running total
+                                            const currentStock = data.transactions[0].runningTotal || 0;
+                                            return { ...item, systemQuantityAtCountTime: currentStock };
+                                        }
                                     }
                                 } catch (error) {
                                     console.error(`Error fetching quantity for ${item.stockItem.name}:`, error);
@@ -256,11 +260,13 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
                     let systemQuantity = 0;
                     try {
                         const systemQuantityRes = await fetch(
-                            `/api/stock-items/${item._id}/in-bin/${selectedBin._id}`
+                            `/api/stock/transaction-history?stockItemId=${item._id}&binId=${selectedBin._id}`
                         );
                         if (systemQuantityRes.ok) {
-                            const { inStock } = await systemQuantityRes.json();
-                            systemQuantity = inStock || 0;
+                            const data = await systemQuantityRes.json();
+                            if (data.success && data.transactions && data.transactions.length > 0) {
+                                systemQuantity = data.transactions[0].runningTotal || 0;
+                            }
                         }
                     } catch (error) {
                         console.warn(`Could not fetch system quantity for ${item.name}:`, error);
@@ -441,11 +447,13 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
                     let systemQuantity = 0;
                     try {
                         const systemQuantityRes = await fetch(
-                            `/api/stock-items/${item._id}/in-bin/${selectedBin._id}`
+                            `/api/stock/transaction-history?stockItemId=${item._id}&binId=${selectedBin._id}`
                         );
                         if (systemQuantityRes.ok) {
-                            const { inStock } = await systemQuantityRes.json();
-                            systemQuantity = inStock || 0;
+                            const data = await systemQuantityRes.json();
+                            if (data.success && data.transactions && data.transactions.length > 0) {
+                                systemQuantity = data.transactions[0].runningTotal || 0;
+                            }
                         }
                     } catch (error) {
                         console.warn(`Could not fetch system quantity for ${item.name}:`, error);
@@ -498,6 +506,69 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
         }
     };
 
+    const refreshSystemQuantities = async () => {
+        if (!selectedBin || countedItems.length === 0) {
+            toast({
+                title: 'Cannot Refresh',
+                description: 'Please select a bin and add items first',
+                status: 'warning',
+                duration: 3000,
+                isClosable: true,
+            });
+            return;
+        }
+
+        setLoading(true);
+        try {
+            const updatedItems = await Promise.all(
+                countedItems.map(async (item) => {
+                    try {
+                        const response = await fetch(
+                            `/api/stock/transaction-history?stockItemId=${item.stockItem._id}&binId=${selectedBin._id}`
+                        );
+                        if (response.ok) {
+                            const data = await response.json();
+                            if (data.success && data.transactions && data.transactions.length > 0) {
+                                const systemQuantity = data.transactions[0].runningTotal || 0;
+                                return {
+                                    ...item,
+                                    systemQuantityAtCountTime: systemQuantity,
+                                    // Optionally auto-update variance
+                                    variance: item.countedQuantity - systemQuantity
+                                };
+                            }
+                        }
+                    } catch (error) {
+                        console.error(`Failed to refresh quantity for ${item.stockItem.name}:`, error);
+                    }
+                    return item; // Return unchanged if fetch fails
+                })
+            );
+
+            setCountedItems(updatedItems);
+
+            toast({
+                title: 'System Quantities Refreshed',
+                description: 'Current stock levels have been updated',
+                status: 'success',
+                duration: 3000,
+                isClosable: true,
+            });
+
+        } catch (error) {
+            console.error('Error refreshing system quantities:', error);
+            toast({
+                title: 'Error',
+                description: 'Failed to refresh system quantities',
+                status: 'error',
+                duration: 3000,
+                isClosable: true,
+            });
+        } finally {
+            setLoading(false);
+        }
+    };
+
     const handleCountedQuantityChange = (key: string, value: string) => {
         const valueAsNumber = value === '' ? 0 : parseFloat(value);
         setCountedItems(prev => prev.map(item =>
@@ -524,14 +595,12 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
     const handleSave = async (isFinalize: boolean = false) => {
         if (isProcessing) return;
 
-        // Your existing validation code...
-
         const itemsWithVariance = countedItems.map(item => {
             return {
                 _key: item._key,
                 stockItem: item.stockItem._id,
                 countedQuantity: item.countedQuantity || 0,
-                systemQuantityAtCountTime: item.systemQuantityAtCountTime || 0,
+                systemQuantityAtCountTime: item.systemQuantityAtCountTime || 0, // Ensure this is included
                 variance: (item.countedQuantity || 0) - (item.systemQuantityAtCountTime || 0),
             };
         });
@@ -717,8 +786,9 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
                                                                 <Badge
                                                                     colorScheme={(item.countedQuantity - (item.systemQuantityAtCountTime || 0)) === 0 ? 'green' : 'red'}
                                                                 >
-                                                                    {(item.countedQuantity - (item.systemQuantityAtCountTime || 0)).toFixed(2)}
+                                                                    {(item.countedQuantity - (item.systemQuantityAtCountTime || 0)).toFixed(2)} {/* Add .toFixed(2) */}
                                                                 </Badge>
+
                                                             </Td>
                                                             {!isViewMode && (
                                                                 <Td>
@@ -794,7 +864,7 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
                                                                     <Badge
                                                                         colorScheme={(item.countedQuantity - (item.systemQuantityAtCountTime || 0)) === 0 ? 'green' : 'red'}
                                                                     >
-                                                                        {item.countedQuantity - (item.systemQuantityAtCountTime || 0)}
+                                                                        {(item.countedQuantity - (item.systemQuantityAtCountTime || 0)).toFixed(2)} {/* Add .toFixed(2) */}
                                                                     </Badge>
                                                                 </HStack>
                                                             </VStack>
@@ -811,29 +881,43 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
 
                             {!isViewMode && (
                                 <HStack w="100%" justifyContent="space-between" mt={4} flexDirection={{ base: 'column', md: 'row' }} spacing={{ base: 4, md: 0 }}>
-                                    <Button
-                                        leftIcon={<FiPlus />}
-                                        onClick={() => {
-                                            if (!selectedBin) {
-                                                toast({
-                                                    title: "Bin Required",
-                                                    description: "Please select a bin before adding items.",
-                                                    status: "warning",
-                                                    duration: 3000,
-                                                    isClosable: true,
-                                                });
-                                                return;
-                                            }
-                                            setIsStockItemModalOpen(true);
-                                        }}
-                                        isDisabled={isViewMode}
-                                        colorScheme="brand"
-                                    >
-                                        Add Item
-                                    </Button>
+                                    <HStack spacing={2}>
+                                        <Button
+                                            leftIcon={<FiPlus />}
+                                            onClick={() => {
+                                                if (!selectedBin) {
+                                                    toast({
+                                                        title: "Bin Required",
+                                                        description: "Please select a bin before adding items.",
+                                                        status: "warning",
+                                                        duration: 3000,
+                                                        isClosable: true,
+                                                    });
+                                                    return;
+                                                }
+                                                setIsStockItemModalOpen(true);
+                                            }}
+                                            isDisabled={isViewMode}
+                                            colorScheme="brand"
+                                        >
+                                            Add Item
+                                        </Button>
+
+                                        <Button
+                                            leftIcon={<FiRefreshCw />}
+                                            onClick={refreshSystemQuantities}
+                                            variant="outline"
+                                            colorScheme="blue"
+                                            isLoading={loading}
+                                            isDisabled={!selectedBin || countedItems.length === 0 || isViewMode}
+                                            size="sm"
+                                        >
+                                            Refresh System Qty
+                                        </Button>
+                                    </HStack>
 
                                     <Text fontWeight="bold">
-                                        Total Variance: <Badge colorScheme={totalVariance !== 0 ? 'red' : 'green'}>{totalVariance}</Badge>
+                                        Total Variance: <Badge colorScheme={totalVariance !== 0 ? 'red' : 'green'}>{totalVariance.toFixed(2)}</Badge>
                                     </Text>
                                 </HStack>
                             )}

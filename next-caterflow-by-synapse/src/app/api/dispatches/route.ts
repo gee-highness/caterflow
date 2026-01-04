@@ -284,8 +284,10 @@ export async function POST(request: Request) {
             dispatchNumber: result.dispatchNumber
         });
 
-        // Update stock calculations
-        await updateStockForTransaction('dispatch', result._id);
+        // Only update stock if dispatch is being completed
+        if (createData.evidenceStatus === 'complete' || createData.status === 'completed') {
+            await updateStockForTransaction('dispatch', result._id);
+        }
 
         console.log('📝 Logging interaction...');
         await logSanityInteraction(
@@ -434,8 +436,14 @@ export async function PATCH(request: Request) {
 
         const result = await patch.commit();
 
-        // Update stock calculations after patch
-        await updateStockForTransaction('dispatch', result._id);
+        // Check if we're moving to complete status
+        const wasCompleted = existingDispatch?.evidenceStatus === 'complete';
+        const willBeCompleted = updateData.evidenceStatus === 'complete' ||
+            (!updateData.evidenceStatus && wasCompleted);
+
+        if (willBeCompleted && !wasCompleted) {
+            await updateStockForTransaction('dispatch', result._id);
+        }
 
         await logSanityInteraction(
             'update',

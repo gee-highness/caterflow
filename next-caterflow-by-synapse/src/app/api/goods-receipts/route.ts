@@ -171,7 +171,7 @@ export async function POST(request: Request) {
         const result = await writeClient.create(newDoc);
 
         // ✅ FIX: Update stock if receipt is created as 'completed'
-        if (result.status === 'completed') {
+        if (result.status === 'Completed') {
             console.log('📦 Updating stock for newly created completed goods receipt:', result.receiptNumber);
             await updateStockForTransaction('procurement', result._id);
         }

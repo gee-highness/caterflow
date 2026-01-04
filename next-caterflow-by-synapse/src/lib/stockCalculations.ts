@@ -303,6 +303,9 @@ const getStockSnapshot = async (stockItemId: string, binId: string): Promise<num
 // Calculate stock from transactions (for initial snapshot or validation)
 // Calculate stock from transactions (for initial snapshot or validation)
 // Calculate stock from transactions (for initial snapshot or validation)
+// In the calculateStockFromTransactions function, update the dispatch processing:
+// In the calculateStockFromTransactions function, update the dispatch processing:
+
 const calculateStockFromTransactions = async (
   stockItemId: string,
   binId: string,
@@ -366,7 +369,7 @@ const calculateStockFromTransactions = async (
 
       // Check if we should skip this event
       if (lastCountDate && eventDate && eventDate < lastCountDate) {
-        return;
+        return; // Skip transactions that happened before the last count
       }
 
       // Process goods receipts
@@ -376,19 +379,34 @@ const calculateStockFromTransactions = async (
         }
       });
 
-      /* Process dispatches
+      // Process dispatches - ONLY if status is "completed" or "processed"
       event.dispatchedItems?.forEach((item: any) => {
         if (item.itemId === stockItemId) {
-          stock = Decimal.max(0, stock.minus(item.quantity || 0));
+          // Make sure we don't go negative
+          const dispatchQty = new Decimal(item.quantity || 0);
+          if (stock.greaterThanOrEqualTo(dispatchQty)) {
+            stock = stock.minus(dispatchQty);
+          } else {
+            // If dispatch quantity is more than available stock, set to 0
+            // This should be logged as an issue
+            console.warn(`⚠️ Dispatch would cause negative stock for ${stockItemId} in ${binId}. Available: ${stock.toNumber()}, Dispatch: ${dispatchQty.toNumber()}`);
+            stock = new Decimal(0);
+          }
         }
-      });*/
+      });
 
       // Process transfers
       event.transferredItems?.forEach((item: any) => {
         if (item.itemId === stockItemId) {
           // Transfer OUT from this bin
           if (event.fromBinId === binId) {
-            stock = Decimal.max(0, stock.minus(item.quantity || 0));
+            const transferQty = new Decimal(item.quantity || 0);
+            if (stock.greaterThanOrEqualTo(transferQty)) {
+              stock = stock.minus(transferQty);
+            } else {
+              console.warn(`⚠️ Transfer out would cause negative stock for ${stockItemId} in ${binId}. Available: ${stock.toNumber()}, Transfer: ${transferQty.toNumber()}`);
+              stock = new Decimal(0);
+            }
           }
           // Transfer IN to this bin
           if (event.toBinId === binId) {
@@ -397,7 +415,7 @@ const calculateStockFromTransactions = async (
         }
       });
 
-      // Process inventory counts
+      // Process inventory counts - these SET the stock level
       event.countedItems?.forEach((item: any) => {
         if (item.itemId === stockItemId) {
           stock = new Decimal(item.quantity || 0);
@@ -410,15 +428,11 @@ const calculateStockFromTransactions = async (
 
     const duration = Date.now() - startTime;
 
-
     if (verbose) {
       console.log(`✅ Calculated stock for ${stockItemId} in ${binId}: ${stock.toNumber()} (${duration}ms)`);
 
-      // ✅ FIX: Use explicit null/undefined check and a local variable 
-      // to ensure the compiler treats it as a Date object.
       if (lastCountDate !== null && lastCountDate !== undefined) {
         const date: Date = lastCountDate;
-
         if (!isNaN(date.getTime())) {
           console.log(`   📅 Last inventory count: ${date.toISOString().split('T')[0]}`);
         }

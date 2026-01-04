@@ -4,7 +4,17 @@ import { client, writeClient } from '@/lib/sanity';
 import { groq } from 'next-sanity';
 import { logSanityInteraction } from '@/lib/sanityLogger';
 import { getUserSiteInfo, buildBinSiteFilter } from '@/lib/siteFiltering';
-import { updateStockForTransaction, revertPreviousStockChanges } from '@/lib/stockCalculations';
+import { updateStockForTransaction, revertPreviousStockChanges, calculateStock } from '@/lib/stockCalculations';
+
+const getCurrentStockForItem = async (stockItemId: string, binId: string): Promise<number> => {
+    try {
+        const stockResult = await calculateStock(stockItemId, binId);
+        return stockResult.quantity || 0;
+    } catch (error) {
+        console.error(`Error calculating stock for ${stockItemId} in ${binId}:`, error);
+        return 0;
+    }
+};
 
 export async function GET() {
     try {
