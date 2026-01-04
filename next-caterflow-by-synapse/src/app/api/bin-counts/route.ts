@@ -259,13 +259,17 @@ export async function PUT(request: Request) {
 
 export async function POST(request: Request) {
     try {
+        console.log('📝 Starting bin count creation...');
         const newBinCount = await request.json();
+        console.log('📦 Received payload:', JSON.stringify(newBinCount, null, 2));
 
         // Use the count number generator
         const countNumber = await getNextBinCountNumber();
+        console.log('🔢 Generated count number:', countNumber);
 
         // Validate that a bin is provided
         if (!newBinCount.bin) {
+            console.error('❌ Missing bin in payload');
             return NextResponse.json(
                 { error: 'Bin is required' },
                 { status: 400 }
@@ -273,21 +277,29 @@ export async function POST(request: Request) {
         }
 
         // Process countedItems correctly
-        const countedItems = newBinCount.countedItems?.map((item: any) => {
-            console.log('Processing counted item for POST:', item);
+        const countedItems = newBinCount.countedItems?.map((item: any, index: number) => {
+            console.log(`📊 Processing counted item ${index + 1}:`, item);
+
+            // Validate item structure
+            if (!item.stockItem) {
+                console.error(`❌ Missing stockItem in item ${index + 1}:`, item);
+                throw new Error(`Item ${index + 1} is missing stockItem`);
+            }
 
             return {
                 _type: 'CountedItem',
-                _key: item._key,
+                _key: item._key || `item-${index}`,
                 stockItem: {
                     _type: 'reference',
-                    _ref: item.stockItem,
+                    _ref: item.stockItem, // This should be the stock item ID
                 },
-                countedQuantity: item.countedQuantity,
-                systemQuantityAtCountTime: item.systemQuantityAtCountTime,
+                countedQuantity: item.countedQuantity || 0,
+                systemQuantityAtCountTime: item.systemQuantityAtCountTime || 0,
                 variance: item.variance || 0,
             };
-        });
+        }) || [];
+
+        console.log(`✅ Processed ${countedItems.length} counted items`);
 
         const doc = {
             _type: 'InventoryCount',
@@ -299,15 +311,23 @@ export async function POST(request: Request) {
                 _type: 'reference',
                 _ref: newBinCount.bin,
             },
-            countedItems: countedItems || [],
+            ...(newBinCount.countedBy && {
+                countedBy: {
+                    _type: 'reference',
+                    _ref: newBinCount.countedBy,
+                },
+            }),
+            countedItems: countedItems,
         };
 
-        console.log('Creating bin count document:', doc);
+        console.log('📄 Creating document:', JSON.stringify(doc, null, 2));
 
         const result = await writeClient.create(doc);
+        console.log('✅ Bin count created:', result._id);
 
         // Update stock calculations
         if (result.status === 'completed') {
+            console.log('📊 Updating stock for completed count...');
             await updateStockForTransaction('inventoryCount', result._id);
         }
 
@@ -320,11 +340,23 @@ export async function POST(request: Request) {
             true
         );
 
+        console.log('🎉 Bin count creation complete');
         return NextResponse.json(result);
-    } catch (error) {
-        console.error('Failed to create new bin count:', error);
+    } catch (error: any) {
+        console.error('❌ Failed to create new bin count:', error);
+        console.error('Error stack:', error.stack);
+        console.error('Error details:', {
+            message: error.message,
+            name: error.name,
+            cause: error.cause
+        });
+
         return NextResponse.json(
-            { error: 'Failed to create new bin count' },
+            {
+                error: 'Failed to create new bin count',
+                details: error.message,
+                stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+            },
             { status: 500 }
         );
     }

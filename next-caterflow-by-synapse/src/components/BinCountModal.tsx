@@ -125,6 +125,77 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
         return countedItems.map(item => item.stockItem._id);
     }, [countedItems]);
 
+    const fetchBulkCurrentStock = async (itemIds: string[], binId: string): Promise<Record<string, number>> => {
+        if (itemIds.length === 0 || !binId) return {};
+
+        try {
+            // For small numbers of items, we could use individual requests as fallback
+            const response = await fetch('/api/stock/bulk-current', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    stockItems: itemIds,
+                    binId
+                }),
+            });
+
+            if (!response.ok) {
+                throw new Error(`API responded with status ${response.status}`);
+            }
+
+            const data = await response.json();
+
+            if (data.success && data.results) {
+                console.log(`✅ Batch fetch successful: ${Object.keys(data.results).length} items`);
+                return data.results;
+            } else {
+                console.warn('Bulk fetch returned unsuccessful:', data);
+                throw new Error(data.error || 'Bulk fetch failed');
+            }
+        } catch (error) {
+            console.error('❌ Error in bulk current stock fetch:', error);
+
+            // Fallback to individual requests
+            console.log('🔄 Falling back to individual requests...');
+            return await fetchIndividualCurrentStock(itemIds, binId);
+        }
+    };
+
+    // Fallback function for individual requests
+    const fetchIndividualCurrentStock = async (itemIds: string[], binId: string): Promise<Record<string, number>> => {
+        const results: Record<string, number> = {};
+
+        // Process items in batches to avoid too many concurrent requests
+        const batchSize = 5;
+        for (let i = 0; i < itemIds.length; i += batchSize) {
+            const batch = itemIds.slice(i, i + batchSize);
+
+            const batchPromises = batch.map(async (itemId) => {
+                try {
+                    const response = await fetch(`/api/stock/current?stockItemId=${itemId}&binId=${binId}`);
+                    if (response.ok) {
+                        const data = await response.json();
+                        if (data.success) {
+                            return { itemId, quantity: data.currentStock || 0 };
+                        }
+                    }
+                    return { itemId, quantity: 0 };
+                } catch (error) {
+                    console.error(`Failed to fetch individual stock for ${itemId}:`, error);
+                    return { itemId, quantity: 0 };
+                }
+            });
+
+            const batchResults = await Promise.all(batchPromises);
+            batchResults.forEach(({ itemId, quantity }) => {
+                results[itemId] = quantity;
+            });
+        }
+
+        console.log(`✅ Fallback individual fetch complete: ${Object.keys(results).length} items`);
+        return results;
+    };
+
     // Single optimized useEffect for initial setup
     useEffect(() => {
         if (!isOpen) return; // Only run when modal is open
@@ -155,47 +226,44 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
         }
     }, [isOpen, binCount, isViewMode]);
 
-    // Optimized system quantities useEffect
+    // Optimized system quantities useEffect - BATCH VERSION
     useEffect(() => {
         const fetchSystemQuantities = async () => {
             // Only fetch for draft counts with items and selected bin
             if (binCount && !isViewMode && selectedBin && countedItems.length > 0) {
                 setLoading(true);
                 try {
-                    const updatedItems = await Promise.all(
-                        countedItems.map(async (item) => {
-                            // Only fetch if systemQuantityAtCountTime is missing AND we have valid IDs
-                            if ((typeof item.systemQuantityAtCountTime === 'undefined' ||
-                                item.systemQuantityAtCountTime === null) &&
-                                item.stockItem._id && selectedBin._id) {
+                    // Collect item IDs that need fetching
+                    const itemsToFetch = countedItems.filter(item =>
+                        (typeof item.systemQuantityAtCountTime === 'undefined' ||
+                            item.systemQuantityAtCountTime === null) &&
+                        item.stockItem._id && selectedBin._id
+                    );
 
-                                try {
-                                    const systemQuantityRes = await fetch(
-                                        `/api/stock/transaction-history?stockItemId=${item.stockItem._id}&binId=${selectedBin._id}`
-                                    );
-                                    if (systemQuantityRes.ok) {
-                                        const data = await systemQuantityRes.json();
-                                        if (data.success && data.transactions && data.transactions.length > 0) {
-                                            // The first transaction has the current running total
-                                            const currentStock = data.transactions[0].runningTotal || 0;
-                                            return { ...item, systemQuantityAtCountTime: currentStock };
-                                        }
-                                    }
-                                } catch (error) {
-                                    console.error(`Error fetching quantity for ${item.stockItem.name}:`, error);
-                                }
+                    if (itemsToFetch.length > 0) {
+                        // Use batch fetch
+                        const itemIds = itemsToFetch.map(item => item.stockItem._id);
+                        const bulkResults = await fetchBulkCurrentStock(itemIds, selectedBin._id);
+
+                        // Update items with fetched quantities
+                        const updatedItems = countedItems.map(item => {
+                            if (bulkResults[item.stockItem._id] !== undefined) {
+                                return {
+                                    ...item,
+                                    systemQuantityAtCountTime: bulkResults[item.stockItem._id]
+                                };
                             }
-                            return item; // Return unchanged if no fetch needed
-                        })
-                    );
+                            return item;
+                        });
 
-                    // Only update if items actually changed
-                    const hasChanges = updatedItems.some((newItem, index) =>
-                        newItem.systemQuantityAtCountTime !== countedItems[index]?.systemQuantityAtCountTime
-                    );
+                        // Only update if items actually changed
+                        const hasChanges = updatedItems.some((newItem, index) =>
+                            newItem.systemQuantityAtCountTime !== countedItems[index]?.systemQuantityAtCountTime
+                        );
 
-                    if (hasChanges) {
-                        setCountedItems(updatedItems);
+                        if (hasChanges) {
+                            setCountedItems(updatedItems);
+                        }
                     }
                 } catch (error) {
                     console.error("Error fetching system quantities:", error);
@@ -215,7 +283,7 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
         // Add a small delay to prevent rapid successive calls
         const timer = setTimeout(fetchSystemQuantities, 100);
         return () => clearTimeout(timer);
-    }, [binCount, isViewMode, selectedBin, countedItems, toast]); // ADD countedItems and toast to dependencies
+    }, [binCount, isViewMode, selectedBin, countedItems, toast]);
 
     // Cleanup effect
     useEffect(() => {
@@ -231,7 +299,6 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
         };
     }, [isOpen]);
 
-    // Add this function inside the BinCountModal component
     const loadAllStockItems = useCallback(async () => {
         if (!selectedBin || binCount) return; // Only for new counts with selected bin
 
@@ -254,36 +321,26 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
                 return;
             }
 
-            // Fetch system quantities for all items in parallel
-            const itemsWithQuantities = await Promise.all(
-                allStockItems.map(async (item) => {
-                    let systemQuantity = 0;
-                    try {
-                        const systemQuantityRes = await fetch(
-                            `/api/stock/transaction-history?stockItemId=${item._id}&binId=${selectedBin._id}`
-                        );
-                        if (systemQuantityRes.ok) {
-                            const data = await systemQuantityRes.json();
-                            if (data.success && data.transactions && data.transactions.length > 0) {
-                                systemQuantity = data.transactions[0].runningTotal || 0;
-                            }
-                        }
-                    } catch (error) {
-                        console.warn(`Could not fetch system quantity for ${item.name}:`, error);
-                    }
+            // Get all item IDs
+            const itemIds = allStockItems.map(item => item._id);
 
-                    return {
-                        _key: nanoid(),
-                        stockItem: {
-                            _id: item._id,
-                            name: item.name,
-                            sku: item.sku || 'N/A'
-                        },
-                        countedQuantity: 0,
-                        systemQuantityAtCountTime: systemQuantity,
-                    };
-                })
-            );
+            // Use batch fetch for all items
+            const bulkResults = await fetchBulkCurrentStock(itemIds, selectedBin._id);
+
+            const itemsWithQuantities = allStockItems.map((item) => {
+                const systemQuantity = bulkResults[item._id] || 0;
+
+                return {
+                    _key: nanoid(),
+                    stockItem: {
+                        _id: item._id,
+                        name: item.name,
+                        sku: item.sku || 'N/A'
+                    },
+                    countedQuantity: 0,
+                    systemQuantityAtCountTime: systemQuantity,
+                };
+            });
 
             setCountedItems(itemsWithQuantities);
 
@@ -408,7 +465,6 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
         }
     };
 
-    // In BinCountModal.tsx - Update the handleStockItemsSelect function
     const handleStockItemsSelect = async (items: StockItemForSelector[]) => {
         setIsStockItemModalOpen(false);
 
@@ -441,36 +497,26 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
         setLoading(true);
 
         try {
-            // Fetch system quantities for all new items in parallel
-            const itemsWithQuantities = await Promise.all(
-                newItems.map(async (item) => {
-                    let systemQuantity = 0;
-                    try {
-                        const systemQuantityRes = await fetch(
-                            `/api/stock/transaction-history?stockItemId=${item._id}&binId=${selectedBin._id}`
-                        );
-                        if (systemQuantityRes.ok) {
-                            const data = await systemQuantityRes.json();
-                            if (data.success && data.transactions && data.transactions.length > 0) {
-                                systemQuantity = data.transactions[0].runningTotal || 0;
-                            }
-                        }
-                    } catch (error) {
-                        console.warn(`Could not fetch system quantity for ${item.name}:`, error);
-                    }
+            // Get item IDs for batch fetch
+            const newItemIds = newItems.map(item => item._id);
 
-                    return {
-                        _key: nanoid(),
-                        stockItem: {
-                            _id: item._id,
-                            name: item.name,
-                            sku: item.sku || 'N/A'
-                        },
-                        countedQuantity: 0,
-                        systemQuantityAtCountTime: systemQuantity,
-                    };
-                })
-            );
+            // Use batch fetch for new items
+            const bulkResults = await fetchBulkCurrentStock(newItemIds, selectedBin._id);
+
+            const itemsWithQuantities = newItems.map((item) => {
+                const systemQuantity = bulkResults[item._id] || 0;
+
+                return {
+                    _key: nanoid(),
+                    stockItem: {
+                        _id: item._id,
+                        name: item.name,
+                        sku: item.sku || 'N/A'
+                    },
+                    countedQuantity: 0,
+                    systemQuantityAtCountTime: systemQuantity,
+                };
+            });
 
             setCountedItems(prev => [...prev, ...itemsWithQuantities]);
 
@@ -520,30 +566,20 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
 
         setLoading(true);
         try {
-            const updatedItems = await Promise.all(
-                countedItems.map(async (item) => {
-                    try {
-                        const response = await fetch(
-                            `/api/stock/transaction-history?stockItemId=${item.stockItem._id}&binId=${selectedBin._id}`
-                        );
-                        if (response.ok) {
-                            const data = await response.json();
-                            if (data.success && data.transactions && data.transactions.length > 0) {
-                                const systemQuantity = data.transactions[0].runningTotal || 0;
-                                return {
-                                    ...item,
-                                    systemQuantityAtCountTime: systemQuantity,
-                                    // Optionally auto-update variance
-                                    variance: item.countedQuantity - systemQuantity
-                                };
-                            }
-                        }
-                    } catch (error) {
-                        console.error(`Failed to refresh quantity for ${item.stockItem.name}:`, error);
-                    }
-                    return item; // Return unchanged if fetch fails
-                })
-            );
+            // Get all item IDs for batch fetch
+            const itemIds = countedItems.map(item => item.stockItem._id);
+
+            // Use batch fetch for all items
+            const bulkResults = await fetchBulkCurrentStock(itemIds, selectedBin._id);
+
+            const updatedItems = countedItems.map((item) => {
+                const systemQuantity = bulkResults[item.stockItem._id] || 0;
+                return {
+                    ...item,
+                    systemQuantityAtCountTime: systemQuantity,
+                    variance: item.countedQuantity - systemQuantity
+                };
+            });
 
             setCountedItems(updatedItems);
 
@@ -591,19 +627,64 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
         }, 0);
     }, [countedItems]);
 
-    // In the handleSave function, update the payload creation:
     const handleSave = async (isFinalize: boolean = false) => {
         if (isProcessing) return;
 
-        const itemsWithVariance = countedItems.map(item => {
+        // Validate we have items to save
+        if (countedItems.length === 0) {
+            toast({
+                title: 'No Items',
+                description: 'Please add at least one item to the count.',
+                status: 'warning',
+                duration: 3000,
+                isClosable: true,
+            });
+            return;
+        }
+
+        // Validate we have a bin selected
+        if (!selectedBin) {
+            toast({
+                title: 'No Bin Selected',
+                description: 'Please select a bin before saving.',
+                status: 'warning',
+                duration: 3000,
+                isClosable: true,
+            });
+            return;
+        }
+
+        // Filter out invalid items
+        const validCountedItems = countedItems.filter(item =>
+            item.stockItem &&
+            item.stockItem._id &&
+            typeof item.countedQuantity === 'number'
+        );
+
+        if (validCountedItems.length !== countedItems.length) {
+            console.warn(`Filtered out ${countedItems.length - validCountedItems.length} invalid items`);
+
+            toast({
+                title: 'Some items filtered',
+                description: `${countedItems.length - validCountedItems.length} items were invalid and removed.`,
+                status: 'warning',
+                duration: 3000,
+                isClosable: true,
+            });
+        }
+
+        // Build items with proper structure
+        const itemsWithVariance = validCountedItems.map((item, index) => {
             return {
-                _key: item._key,
-                stockItem: item.stockItem._id,
+                _key: item._key || `item-${index}-${Date.now()}`,
+                stockItem: item.stockItem._id, // Just the ID string
                 countedQuantity: item.countedQuantity || 0,
-                systemQuantityAtCountTime: item.systemQuantityAtCountTime || 0, // Ensure this is included
+                systemQuantityAtCountTime: item.systemQuantityAtCountTime || 0,
                 variance: (item.countedQuantity || 0) - (item.systemQuantityAtCountTime || 0),
             };
         });
+
+        console.log(`📦 Processing ${itemsWithVariance.length} valid items`);
 
         // Determine status
         let status;
@@ -613,22 +694,27 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
             status = binCount?.status || 'draft';
         }
 
-        // Build payload - for new counts, let the API generate the countNumber
-        const payload = {
+        // Build payload
+        const payload: any = {
             countDate: new Date(countDate).toISOString(),
-            bin: selectedBin?._id || "",
-            countedBy: session?.user?.id,
-            notes,
+            bin: selectedBin._id,
+            notes: notes || "",
             countedItems: itemsWithVariance,
             status: status,
-            // Don't include countNumber for new counts - let API generate it
-            ...(binCount && {
-                _id: binCount._id,
-                countNumber: binCount.countNumber // Only include for updates
-            }),
         };
 
-        console.log('Saving with payload:', payload);
+        // Add countedBy if we have a user
+        if (session?.user?.id) {
+            payload.countedBy = session.user.id;
+        }
+
+        // For updates, include the ID
+        if (binCount) {
+            payload._id = binCount._id;
+        }
+
+        console.log('📤 Sending payload with', itemsWithVariance.length, 'items');
+        console.log('Sample item:', itemsWithVariance[0]);
 
         try {
             const method = binCount ? 'PUT' : 'POST';
@@ -637,16 +723,35 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
             const response = await fetch(url, {
                 method,
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(binCount ? payload : { ...payload }), // For new counts, don't include countNumber
+                body: JSON.stringify(payload),
             });
 
+            console.log('📥 Response status:', response.status);
+
             if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.error || 'Failed to save bin count');
+                let errorData;
+                try {
+                    errorData = await response.json();
+                    console.error('❌ API error:', errorData);
+                } catch (jsonError) {
+                    const text = await response.text();
+                    console.error('❌ Raw error response:', text);
+                    errorData = { error: `HTTP ${response.status}: ${response.statusText}` };
+                }
+
+                // Provide more specific error messages
+                let errorMessage = 'Failed to save bin count';
+                if (errorData?.details) {
+                    errorMessage = errorData.details;
+                } else if (errorData?.error) {
+                    errorMessage = errorData.error;
+                }
+
+                throw new Error(errorMessage);
             }
 
             const result = await response.json();
-            console.log('Save result:', result);
+            console.log('✅ Save successful:', result);
 
             toast({
                 title: `Count ${isFinalize ? 'Finalized' : 'Saved'}`,
@@ -659,7 +764,7 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
             onClose();
             onSave();
         } catch (error: any) {
-            console.error('Error saving bin count:', error);
+            console.error('❌ Error saving bin count:', error);
             toast({
                 title: 'Error',
                 description: error.message || 'An unexpected error occurred.',
