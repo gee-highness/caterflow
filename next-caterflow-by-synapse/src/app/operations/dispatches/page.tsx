@@ -59,6 +59,14 @@ interface DispatchRecord {
         location?: string;
         code?: string;
     };
+    sourceBin?: {
+        _id: string;
+        name: string;
+        site?: {
+            _id: string;
+            name: string;
+        };
+    };
     dispatchedBy?: {
         _id: string;
         name: string;
@@ -153,6 +161,7 @@ export default function DispatchesPage() {
         }
     }, [fetchDispatches, status]);
 
+    // Update the search filtering to handle both:
     useEffect(() => {
         const filtered = searchTerm
             ? dispatches.filter(dispatch => {
@@ -160,8 +169,11 @@ export default function DispatchesPage() {
                 const dispatchNumberMatch = (dispatch.dispatchNumber || '').toLowerCase().includes(term);
                 const dispatchTypeMatch = (dispatch.dispatchType?.name || '').toLowerCase().includes(term);
                 const sourceSiteMatch = (dispatch.sourceSite?.name || '').toLowerCase().includes(term);
+                const sourceBinSiteMatch = (dispatch.sourceBin?.site?.name || '').toLowerCase().includes(term);
+                const sourceBinNameMatch = (dispatch.sourceBin?.name || '').toLowerCase().includes(term);
                 const dispatchedByMatch = (dispatch.dispatchedBy?.name || '').toLowerCase().includes(term);
-                return dispatchNumberMatch || dispatchTypeMatch || sourceSiteMatch || dispatchedByMatch;
+                return dispatchNumberMatch || dispatchTypeMatch || sourceSiteMatch ||
+                    sourceBinSiteMatch || sourceBinNameMatch || dispatchedByMatch;
             })
             : dispatches;
 
@@ -296,7 +308,15 @@ export default function DispatchesPage() {
             isSortable: true,
             cell: (row: any) => {
                 const d: DispatchRecord = row?.original ?? row;
-                return d?.sourceSite?.name || '-';
+                // Show sourceSite if available, otherwise show sourceBin's site
+                if (d?.sourceSite?.name) {
+                    return d.sourceSite.name;
+                } else if (d?.sourceBin?.site?.name) {
+                    return d.sourceBin.site.name;
+                } else if (d?.sourceBin?.name) {
+                    return d.sourceBin.name;
+                }
+                return '-';
             },
         },
         {

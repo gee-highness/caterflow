@@ -89,7 +89,7 @@ const getSellingPriceForSite = async (dispatchTypeId: string, siteId: string): P
     }
 };
 
-// --- GET all dispatches ---
+// In the GET function, update the query to handle both old and new structures:
 export async function GET() {
     try {
         const userSiteInfo = await getUserSiteInfo();
@@ -121,12 +121,18 @@ export async function GET() {
                     price
                 }
             },
-            "sourceSite": sourceSite->{
+            // Handle both old (sourceBin) and new (sourceSite) structures
+            "sourceSite": coalesce(sourceSite->{
                 _id,
                 name,
                 location,
                 code
-            },
+            }, sourceBin->site->{
+                _id,
+                name,
+                location,
+                code
+            }),
             "dispatchedBy": dispatchedBy->{
                 _id,
                 name,
@@ -143,14 +149,25 @@ export async function GET() {
                 unitPrice,
                 totalCost,
                 notes,
-                "sourceBin": sourceBin->{
-                    _id,
-                    name,
-                    "site": site->{
+                // Handle both old (no sourceBin) and new (sourceBin) structures
+                "sourceBin": coalesce(
+                    sourceBin->{
                         _id,
-                        name
+                        name,
+                        "site": site->{
+                            _id,
+                            name
+                        }
+                    },
+                    ^.sourceBin->{
+                        _id,
+                        name,
+                        "site": site->{
+                            _id,
+                            name
+                        }
                     }
-                },
+                ),
                 "stockItem": stockItem->{
                     _id,
                     name,
@@ -188,7 +205,28 @@ export async function GET() {
             dispatch.dispatchType !== null
         );
 
-        return NextResponse.json(validDispatches);
+        // Transform old dispatches to new structure for UI consistency
+        const transformedDispatches = validDispatches.map((dispatch: any) => {
+            // For old dispatches with sourceBin but no sourceSite, move bin to item level
+            if (dispatch.sourceSite?._id && dispatch.sourceSite?._id.startsWith('drafts.')) {
+                // This is an old dispatch with only sourceBin at the document level
+                const oldSourceBin = dispatch.sourceSite;
+
+                // Create a new structure with sourceSite from bin's site
+                return {
+                    ...dispatch,
+                    sourceSite: oldSourceBin.site || { _id: '', name: 'Unknown Site' },
+                    dispatchedItems: (dispatch.dispatchedItems || []).map((item: any) => ({
+                        ...item,
+                        sourceBin: item.sourceBin || oldSourceBin
+                    }))
+                };
+            }
+
+            return dispatch;
+        });
+
+        return NextResponse.json(transformedDispatches);
     } catch (error) {
         console.error('Failed to fetch dispatches:', error);
         return NextResponse.json({ error: 'Failed to fetch dispatches' }, { status: 500 });

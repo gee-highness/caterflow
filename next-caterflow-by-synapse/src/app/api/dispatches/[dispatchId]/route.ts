@@ -46,7 +46,7 @@ const getSellingPriceForSite = async (dispatchTypeId: string, siteId: string): P
     }
 };
 
-// --- GET single dispatch ---
+// In the GET function, update the query:
 export async function GET(request: Request, { params }: { params: Promise<{ dispatchId: string }> }) {
     try {
         const { dispatchId } = await params;
@@ -83,11 +83,25 @@ export async function GET(request: Request, { params }: { params: Promise<{ disp
                     price
                 }
             },
-            "sourceSite": sourceSite->{
+            // Handle both old and new structures
+            "sourceSite": coalesce(sourceSite->{
                 _id,
                 name,
                 location,
                 code
+            }, sourceBin->site->{
+                _id,
+                name,
+                location,
+                code
+            }),
+            "sourceBin": sourceBin->{
+                _id,
+                name,
+                "site": site->{
+                    _id,
+                    name
+                }
             },
             "dispatchedBy": dispatchedBy->{
                 _id,
@@ -105,20 +119,31 @@ export async function GET(request: Request, { params }: { params: Promise<{ disp
                 unitPrice,
                 totalCost,
                 notes,
-                "sourceBin": sourceBin->{
-                    _id,
-                    name,
-                    "site": site->{
+                // Handle both old and new structures
+                "sourceBin": coalesce(
+                    sourceBin->{
                         _id,
-                        name
+                        name,
+                        "site": site->{
+                            _id,
+                            name
+                        }
+                    },
+                    ^.sourceBin->{
+                        _id,
+                        name,
+                        "site": site->{
+                            _id,
+                            name
+                        }
                     }
-                },
+                ),
                 "stockItem": stockItem->{
                     _id,
                     name,
                     sku,
                     unitOfMeasure,
-                    "currentStock": *[_type == "StockSnapshot" && stockItem._ref == ^._id && bin._ref == ^.sourceBin._ref][0]{
+                    "currentStock": *[_type == "StockSnapshot" && stockItem._ref == ^._id && bin._ref == coalesce(^.sourceBin._ref, ^.sourceBin._ref)][0]{
                         quantity
                     }.quantity,
                     "category": category->{
@@ -149,6 +174,15 @@ export async function GET(request: Request, { params }: { params: Promise<{ disp
 
         if (!dispatch) {
             return NextResponse.json({ error: 'Dispatch not found' }, { status: 404 });
+        }
+
+        // Transform old dispatches to new structure
+        if (dispatch.sourceBin && !dispatch.dispatchedItems?.every((item: any) => item.sourceBin)) {
+            // This is an old dispatch with sourceBin at document level but not at item level
+            dispatch.dispatchedItems = (dispatch.dispatchedItems || []).map((item: any) => ({
+                ...item,
+                sourceBin: item.sourceBin || dispatch.sourceBin
+            }));
         }
 
         return NextResponse.json(dispatch);
