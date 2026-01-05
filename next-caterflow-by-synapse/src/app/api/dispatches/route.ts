@@ -1,4 +1,4 @@
-// src/app/api/dispatches/route.ts
+// src/app/api/dispatches/route.ts (REPLACE ENTIRE FILE)
 import { NextResponse } from 'next/server';
 import { client, writeClient } from '@/lib/sanity';
 import { groq } from 'next-sanity';
@@ -62,6 +62,33 @@ const getNextDispatchNumber = async (): Promise<string> => {
     }
 };
 
+// Get selling price for dispatch type and site
+const getSellingPriceForSite = async (dispatchTypeId: string, siteId: string): Promise<number> => {
+    try {
+        const query = groq`*[_type == "DispatchType" && _id == $dispatchTypeId][0] {
+            sellingPrice,
+            sitePrices[]{
+                site->{_id},
+                price
+            }
+        }`;
+
+        const dispatchType = await client.fetch(query, { dispatchTypeId });
+
+        if (!dispatchType) return 0;
+
+        // Check for site-specific price
+        const sitePrice = dispatchType.sitePrices?.find(
+            (sp: any) => sp.site?._id === siteId
+        );
+
+        return sitePrice ? sitePrice.price : dispatchType.sellingPrice;
+    } catch (error) {
+        console.error('Error getting selling price:', error);
+        return 0;
+    }
+};
+
 // --- GET all dispatches ---
 export async function GET() {
     try {
@@ -77,24 +104,28 @@ export async function GET() {
             notes,
             totalCost,
             costPerPerson,
-            sellingPrice, // ADDED
-            totalSales, // ADDED
+            sellingPrice,
+            totalSales,
             "dispatchType": dispatchType->{
                 _id,
                 name,
                 description,
                 defaultTime,
-                sellingPrice // ADDED
+                sellingPrice,
+                sitePrices[]{
+                    _key,
+                    "site": site->{
+                        _id,
+                        name
+                    },
+                    price
+                }
             },
-            "sourceBin": sourceBin->{
+            "sourceSite": sourceSite->{
                 _id,
                 name,
-                "site": site->{
-                    _id,
-                    name,
-                    location,
-                    code
-                }
+                location,
+                code
             },
             "dispatchedBy": dispatchedBy->{
                 _id,
@@ -112,12 +143,19 @@ export async function GET() {
                 unitPrice,
                 totalCost,
                 notes,
+                "sourceBin": sourceBin->{
+                    _id,
+                    name,
+                    "site": site->{
+                        _id,
+                        name
+                    }
+                },
                 "stockItem": stockItem->{
                     _id,
                     name,
                     sku,
                     unitOfMeasure,
-                    currentStock,
                     "category": category->{
                         _id,
                         title
@@ -146,7 +184,7 @@ export async function GET() {
 
         // Filter out incomplete dispatches (missing required refs)
         const validDispatches = dispatches.filter((dispatch: any) =>
-            dispatch.sourceBin !== null &&
+            dispatch.sourceSite !== null &&
             dispatch.dispatchType !== null
         );
 
@@ -173,7 +211,7 @@ export async function POST(request: Request) {
         const body = await request.json();
         console.log('📦 Request body received:', {
             hasDispatchType: !!body.dispatchType,
-            hasSourceBin: !!body.sourceBin,
+            hasSourceSite: !!body.sourceSite,
             hasDispatchDate: !!body.dispatchDate,
             dispatchedItemsCount: body.dispatchedItems?.length || 0,
             peopleFed: body.peopleFed
@@ -181,30 +219,29 @@ export async function POST(request: Request) {
 
         const { _id, ...createData } = body;
 
-        if (!createData.dispatchType || !createData.sourceBin || !createData.dispatchDate) {
+        if (!createData.dispatchType || !createData.sourceSite || !createData.dispatchDate) {
             console.log('❌ Missing required fields:', {
                 dispatchType: !!createData.dispatchType,
-                sourceBin: !!createData.sourceBin,
+                sourceSite: !!createData.sourceSite,
                 dispatchDate: !!createData.dispatchDate
             });
-            return NextResponse.json({ error: 'Missing required fields (dispatchType, sourceBin, dispatchDate)' }, { status: 400 });
+            return NextResponse.json({ error: 'Missing required fields (dispatchType, sourceSite, dispatchDate)' }, { status: 400 });
         }
 
         console.log('✅ Required fields present');
 
-        // normalize references
-        const dispatchTypeRef = resolveRef(createData.dispatchType);
-        const sourceBinRef = resolveRef(createData.sourceBin);
-        const dispatchedByRef = resolveRef(createData.dispatchedBy) || session.user.id;
+        // Get selling price for this dispatch type and site
+        const dispatchTypeId = resolveRef(createData.dispatchType);
+        const siteId = resolveRef(createData.sourceSite);
 
-        console.log('🔗 Normalized references:', {
-            dispatchTypeRef,
-            sourceBinRef,
-            dispatchedByRef,
-            userId: session.user.id
-        });
+        if (!dispatchTypeId || !siteId) {
+            return NextResponse.json({ error: 'Invalid dispatch type or site reference' }, { status: 400 });
+        }
 
-        // Process dispatched items with unit prices and total cost
+        const sellingPrice = await getSellingPriceForSite(dispatchTypeId, siteId);
+        console.log('💰 Selling price:', sellingPrice);
+
+        // Process dispatched items with sourceBin
         console.log('📋 Processing dispatched items...');
         const dispatchedItems = (createData.dispatchedItems || []).map((item: any, index: number) => {
             // Explicitly convert to Number for safe calculation
@@ -214,6 +251,7 @@ export async function POST(request: Request) {
 
             console.log(`   Item ${index + 1}:`, {
                 stockItem: resolveRef(item.stockItem),
+                sourceBin: resolveRef(item.sourceBin),
                 quantity: dispatchedQuantity,
                 unitPrice,
                 totalCost
@@ -226,6 +264,10 @@ export async function POST(request: Request) {
                     _type: 'reference',
                     _ref: resolveRef(item.stockItem) || resolveRef(item.stockItem?._id) || null,
                 },
+                sourceBin: item.sourceBin ? {
+                    _type: 'reference',
+                    _ref: resolveRef(item.sourceBin) || resolveRef(item.sourceBin?._id) || null,
+                } : undefined,
                 dispatchedQuantity: dispatchedQuantity,
                 unitPrice: unitPrice,
                 totalCost: totalCost,
@@ -233,17 +275,18 @@ export async function POST(request: Request) {
             };
         });
 
-        // Calculate grand total cost and cost per person
+        // Calculate totals
         const totalCost = dispatchedItems.reduce((sum: number, item: any) => sum + (item.totalCost || 0), 0);
-        // Explicitly convert peopleFed to Number for safe calculation
         const peopleFed = Number(createData.peopleFed) || 0;
         const costPerPerson = peopleFed > 0 ? totalCost / peopleFed : 0;
+        const totalSales = peopleFed > 0 ? peopleFed * (sellingPrice || 0) : 0;
 
-        console.log('💰 Cost calculations:', {
+        console.log('💰 Calculations:', {
             totalCost,
             peopleFed,
             costPerPerson,
-            itemsCount: dispatchedItems.length
+            sellingPrice,
+            totalSales
         });
 
         // Generate dispatch number
@@ -252,20 +295,25 @@ export async function POST(request: Request) {
         console.log('✅ Dispatch number generated:', dispatchNumber);
 
         const newDoc: any = {
-            ...createData,
             _type: 'DispatchLog',
             dispatchNumber,
             _id: uuidv4(),
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
-            evidenceStatus: 'pending',
+            dispatchDate: createData.dispatchDate,
+            evidenceStatus: createData.evidenceStatus || 'pending',
+            status: createData.status || 'draft',
             peopleFed: peopleFed,
             totalCost: totalCost,
             costPerPerson: costPerPerson,
-            dispatchType: dispatchTypeRef ? { _type: 'reference', _ref: dispatchTypeRef } : undefined,
-            sourceBin: sourceBinRef ? { _type: 'reference', _ref: sourceBinRef } : undefined,
-            dispatchedBy: dispatchedByRef ? { _type: 'reference', _ref: dispatchedByRef } : undefined,
+            sellingPrice: sellingPrice,
+            totalSales: totalSales,
+            notes: createData.notes || '',
+            dispatchType: { _type: 'reference', _ref: dispatchTypeId },
+            sourceSite: { _type: 'reference', _ref: siteId },
+            dispatchedBy: { _type: 'reference', _ref: resolveRef(createData.dispatchedBy) || session.user.id },
             dispatchedItems,
+            attachments: createData.attachments || [],
         };
 
         console.log('📄 Document to create:', {
@@ -273,8 +321,8 @@ export async function POST(request: Request) {
             dispatchNumber: newDoc.dispatchNumber,
             evidenceStatus: newDoc.evidenceStatus,
             hasDispatchType: !!newDoc.dispatchType,
-            hasSourceBin: !!newDoc.sourceBin,
-            hasDispatchedBy: !!newDoc.dispatchedBy
+            hasSourceSite: !!newDoc.sourceSite,
+            sellingPrice: newDoc.sellingPrice
         });
 
         console.log('💾 Creating document in Sanity...');
@@ -292,7 +340,7 @@ export async function POST(request: Request) {
         console.log('📝 Logging interaction...');
         await logSanityInteraction(
             'create',
-            `Created new dispatch: ${newDoc.dispatchNumber} with total cost: E {(totalCost}`,
+            `Created new dispatch: ${newDoc.dispatchNumber} with total cost: E ${totalCost.toFixed(2)}`,
             'DispatchLog',
             result._id,
             session.user.id,
@@ -343,12 +391,11 @@ export async function PATCH(request: Request) {
             return NextResponse.json({ error: 'Dispatch ID is required' }, { status: 400 });
         }
 
-        // REMOVED: Site permission check for PATCH
-
         // Fetch existing doc to check evidenceStatus
         const existingDispatch = await client.fetch(
             groq`*[_type == "DispatchLog" && _id == $id][0] { 
-                evidenceStatus 
+                evidenceStatus,
+                sourceSite
             }`,
             { id: _id }
         );
@@ -364,19 +411,22 @@ export async function PATCH(request: Request) {
 
         let patch = writeClient.patch(_id).set({ updatedAt: new Date().toISOString() });
 
+        // Basic fields
         if (updateData.dispatchDate) patch = patch.set({ dispatchDate: updateData.dispatchDate });
         if (updateData.evidenceStatus) patch = patch.set({ evidenceStatus: updateData.evidenceStatus });
         if (updateData.hasOwnProperty('peopleFed')) patch = patch.set({ peopleFed: updateData.peopleFed });
         if (updateData.notes) patch = patch.set({ notes: updateData.notes });
+        if (updateData.status) patch = patch.set({ status: updateData.status });
 
+        // References
         if (updateData.dispatchType) {
             const ref = resolveRef(updateData.dispatchType);
             if (ref) patch = patch.set({ dispatchType: { _type: 'reference', _ref: ref } });
         }
 
-        if (updateData.sourceBin) {
-            const ref = resolveRef(updateData.sourceBin);
-            if (ref) patch = patch.set({ sourceBin: { _type: 'reference', _ref: ref } });
+        if (updateData.sourceSite) {
+            const ref = resolveRef(updateData.sourceSite);
+            if (ref) patch = patch.set({ sourceSite: { _type: 'reference', _ref: ref } });
         }
 
         if (updateData.dispatchedBy) {
@@ -386,14 +436,15 @@ export async function PATCH(request: Request) {
             patch = patch.set({ dispatchedBy: { _type: 'reference', _ref: session.user.id } });
         }
 
+        // Dispatched items - recalculate totals
         if (updateData.dispatchedItems) {
             const normalizedItems = (updateData.dispatchedItems || []).map((item: any) => {
                 const stockRef = resolveRef(item.stockItem) || resolveRef(item.stockItem?._id) || resolveRef(item.stockItem?._ref);
-                const unitPrice = item.unitPrice || 0;
-                const dispatchedQuantity = item.dispatchedQuantity || 0;
+                const unitPrice = Number(item.unitPrice) || 0;
+                const dispatchedQuantity = Number(item.dispatchedQuantity) || 0;
                 const totalCost = unitPrice * dispatchedQuantity;
 
-                return {
+                const itemData: any = {
                     _type: 'DispatchedItem',
                     _key: item._key || uuidv4(),
                     stockItem: {
@@ -405,6 +456,19 @@ export async function PATCH(request: Request) {
                     totalCost: totalCost,
                     notes: item.notes || '',
                 };
+
+                // Add sourceBin if provided
+                if (item.sourceBin) {
+                    const binRef = resolveRef(item.sourceBin);
+                    if (binRef) {
+                        itemData.sourceBin = {
+                            _type: 'reference',
+                            _ref: binRef
+                        };
+                    }
+                }
+
+                return itemData;
             });
             patch = patch.set({ dispatchedItems: normalizedItems });
 
@@ -415,23 +479,30 @@ export async function PATCH(request: Request) {
 
             patch = patch.set({ totalCost: totalCost });
             patch = patch.set({ costPerPerson: costPerPerson });
+
+            // Recalculate selling price and total sales if dispatch type or site changed
+            if (updateData.dispatchType || updateData.sourceSite) {
+                const dispatchTypeId = resolveRef(updateData.dispatchType) || existingDispatch.dispatchType?._ref;
+                const siteId = resolveRef(updateData.sourceSite) || existingDispatch.sourceSite?._ref;
+
+                if (dispatchTypeId && siteId) {
+                    const sellingPrice = await getSellingPriceForSite(dispatchTypeId, siteId);
+                    const totalSales = peopleFed > 0 ? peopleFed * sellingPrice : 0;
+
+                    patch = patch.set({ sellingPrice: sellingPrice });
+                    patch = patch.set({ totalSales: totalSales });
+                }
+            }
         }
 
-        // If caller provided attachments array, set it (replace); caller should pass properly shaped refs.
+        // Attachments
         if (updateData.attachments) {
             patch = patch.set({ attachments: updateData.attachments });
         }
 
-        // Allow setting status fields (e.g., status:'completed') — caller is responsible for using this safely.
-        if (updateData.status) {
-            patch = patch.set({ status: updateData.status });
-        }
+        // Completion fields
         if (updateData.completedAt) {
             patch = patch.set({ completedAt: updateData.completedAt });
-        }
-        if (updateData.completedBy) {
-            const cbRef = resolveRef(updateData.completedBy) || updateData.completedBy;
-            if (cbRef) patch = patch.set({ completedBy: { _type: 'reference', _ref: cbRef } });
         }
 
         const result = await patch.commit();
@@ -439,7 +510,7 @@ export async function PATCH(request: Request) {
         // Check if we're moving to complete status
         const wasCompleted = existingDispatch?.evidenceStatus === 'complete';
         const willBeCompleted = updateData.evidenceStatus === 'complete' ||
-            (!updateData.evidenceStatus && wasCompleted);
+            (updateData.status === 'completed' && !wasCompleted);
 
         if (willBeCompleted && !wasCompleted) {
             await updateStockForTransaction('dispatch', result._id);
@@ -447,7 +518,7 @@ export async function PATCH(request: Request) {
 
         await logSanityInteraction(
             'update',
-            `Updated dispatch: ${updateData.dispatchNumber || _id}`,
+            `Updated dispatch: ${result.dispatchNumber || _id}`,
             'DispatchLog',
             _id,
             session.user.id,
@@ -475,8 +546,6 @@ export async function DELETE(request: Request) {
         if (!id) {
             return NextResponse.json({ error: 'Dispatch ID is required' }, { status: 400 });
         }
-
-        // REMOVED: Site permission check for DELETE
 
         // Fetch existing doc to check evidenceStatus
         const existingDispatch = await client.fetch(

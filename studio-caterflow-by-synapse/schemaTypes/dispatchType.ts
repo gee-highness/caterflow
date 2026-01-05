@@ -1,4 +1,4 @@
-// schemas/dispatchType.ts
+// schemas/dispatchType.ts (REPLACE ENTIRE FILE)
 import { defineType, defineField } from 'sanity';
 
 export default defineType({
@@ -33,10 +33,46 @@ export default defineType({
         }),
         defineField({
             name: 'sellingPrice',
-            title: 'Selling Price',
+            title: 'Default Selling Price',
             type: 'number',
-            description: 'Price per person for this dispatch type',
+            description: 'Default price per person for this dispatch type (used if no site-specific price is set)',
             validation: (Rule) => Rule.min(0),
+        }),
+        defineField({
+            name: 'sitePrices',
+            title: 'Site-Specific Prices',
+            type: 'array',
+            of: [{
+                type: 'object',
+                fields: [
+                    {
+                        name: 'site',
+                        title: 'Site',
+                        type: 'reference',
+                        to: [{ type: 'Site' }],
+                        validation: (Rule) => Rule.required()
+                    },
+                    {
+                        name: 'price',
+                        title: 'Price per Person',
+                        type: 'number',
+                        validation: (Rule) => Rule.required().min(0)
+                    }
+                ],
+                preview: {
+                    select: {
+                        title: 'site.name',
+                        price: 'price'
+                    },
+                    prepare({ title, price }) {
+                        return {
+                            title: title,
+                            subtitle: `E ${price} per person`
+                        };
+                    }
+                }
+            }],
+            description: 'Site-specific pricing overrides. Leave empty to use default price for all sites.',
         }),
     ],
     preview: {

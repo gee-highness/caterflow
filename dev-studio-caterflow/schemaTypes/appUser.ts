@@ -73,8 +73,8 @@ export default defineType({
                     { title: 'Admin', value: 'admin' },
                     { title: 'Site Manager', value: 'siteManager' },
                     { title: 'Stock Controller', value: 'stockController' },
+                    { title: 'Dispatch Staff', value: 'dispatchStaff' },
                     { title: 'Auditor', value: 'auditor' },
-                    { title: 'Procurer', value: 'procurer' }
                 ],
             },
             validation: (Rule) => Rule.required(),

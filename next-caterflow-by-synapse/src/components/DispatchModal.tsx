@@ -1,4 +1,4 @@
-// src/components/DispatchModal.tsx
+// src/components/DispatchModal.tsx (REPLACE ENTIRE FILE)
 'use client';
 
 import React, { useState, useEffect } from 'react';
@@ -39,9 +39,9 @@ import {
     Td,
     TableContainer,
     useColorModeValue,
-    Icon, Image, SimpleGrid, Badge
+    Icon, Image, SimpleGrid, Badge, Heading, Tabs, TabList, TabPanels, Tab, TabPanel, Tag, TagLabel, TagCloseButton
 } from '@chakra-ui/react';
-import { FiFileText, FiPlus, FiTrash2, FiChevronUp, FiChevronDown } from 'react-icons/fi';
+import { FiFileText, FiPlus, FiTrash2, FiChevronUp, FiChevronDown, FiPackage } from 'react-icons/fi';
 import StockItemSelectorModal from './StockItemSelectorModal';
 import FileUploadModal from './FileUploadModal';
 import { nanoid } from 'nanoid';
@@ -59,6 +59,11 @@ interface DispatchedItem {
         currentStock?: number;
         unitPrice?: number;
     };
+    sourceBin?: {
+        _id: string;
+        name: string;
+        site: Site;
+    };
     dispatchedQuantity: number;
     unitPrice?: number;
     totalCost?: number;
@@ -74,6 +79,7 @@ interface Bin {
     _id: string;
     name: string;
     site: Site;
+    binType: string;
 }
 
 interface DispatchType {
@@ -81,7 +87,12 @@ interface DispatchType {
     name: string;
     description?: string;
     defaultTime: string;
-    sellingPrice: number; // ADDED
+    sellingPrice: number;
+    sitePrices?: Array<{
+        _key: string;
+        site: Site;
+        price: number;
+    }>;
 }
 
 interface User {
@@ -100,9 +111,15 @@ interface Dispatch {
     dispatchType: {
         _id: string;
         name: string;
+        sellingPrice: number;
+        sitePrices?: Array<{
+            _key: string;
+            site: Site;
+            price: number;
+        }>;
     };
+    sourceSite: Site;
     dispatchedItems: DispatchedItem[];
-    sourceBin: Bin;
     dispatchedBy: User;
     peopleFed?: number;
     evidenceStatus?: 'pending' | 'partial' | 'complete';
@@ -123,6 +140,8 @@ interface Dispatch {
             };
         };
     }[];
+    sellingPrice?: number;
+    totalSales?: number;
 }
 
 interface DispatchModalProps {
@@ -145,7 +164,9 @@ export default function DispatchModal({
     const [loading, setLoading] = useState(false);
     const [dispatchTypes, setDispatchTypes] = useState<DispatchType[]>([]);
     const [allBins, setAllBins] = useState<Bin[]>([]);
-    const [sourceBin, setSourceBin] = useState<Bin | null>(null);
+    const [sites, setSites] = useState<Site[]>([]);
+    const [sourceSite, setSourceSite] = useState<Site | null>(null);
+    const [selectedBins, setSelectedBins] = useState<Bin[]>([]);
     const [dispatchDate, setDispatchDate] = useState('');
     const [dispatchType, setDispatchType] = useState('');
     const [dispatchedItems, setDispatchedItems] = useState<DispatchedItem[]>([]);
@@ -154,11 +175,13 @@ export default function DispatchModal({
     const [isStockItemModalOpen, setIsStockItemModalOpen] = useState(false);
     const [editingIndex, setEditingIndex] = useState<number | null>(null);
     const [itemsLoading, setItemsLoading] = useState(false);
+    const [selectedBinForItems, setSelectedBinForItems] = useState<Bin | null>(null);
+    const [activeTab, setActiveTab] = useState(0);
 
     const [isSaving, setIsSaving] = useState(false);
     const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
     const [savedDispatchId, setSavedDispatchId] = useState<string>('');
-    const [selectedDispatchType, setSelectedDispatchType] = useState<DispatchType | null>(null); // ADDED
+    const [selectedDispatchType, setSelectedDispatchType] = useState<DispatchType | null>(null);
     const [isExporting, setIsExporting] = useState(false);
 
     const toast = useToast();
@@ -173,7 +196,6 @@ export default function DispatchModal({
     const textSecondaryColor = useColorModeValue('neutral.light.text-secondary', 'neutral.dark.text-secondary');
     const tableBoxShadow = useColorModeValue('md', 'dark-md');
 
-    // Add these right after your existing useColorModeValue hooks (around line 85)
     const evidenceButtonBg = useColorModeValue('gray.50', 'gray.700');
     const evidenceButtonHoverBg = useColorModeValue('gray.100', 'gray.600');
     const evidenceSectionBg = useColorModeValue('gray.50', 'gray.800');
@@ -182,7 +204,6 @@ export default function DispatchModal({
 
     const existingItemIds = dispatchedItems.filter(item => item.stockItem).map(item => item.stockItem._id);
 
-    // Safe number conversion helper function
     // Safe number conversion helper function with 3 decimal place support
     const safeNumber = (value: string | number): number => {
         if (typeof value === 'number') {
@@ -194,36 +215,35 @@ export default function DispatchModal({
 
     // Safe number input handler with 3 decimal place support
     const handleNumberInput = (value: string): number => {
-        // Allow empty string, but convert to 0 for calculations
         if (value === '' || value === '-') return 0;
-
-        // Parse as float
         const num = parseFloat(value);
-
-        // Return 0 if NaN, otherwise round to 3 decimal places
         return isNaN(num) ? 0 : parseFloat(num.toFixed(3));
     };
 
-    // load dispatch types and bins when modal opens
+    // Load dispatch types, bins, and sites when modal opens
     useEffect(() => {
         const fetchData = async () => {
             setLoading(true);
             try {
-                const [dispatchTypesRes, binsRes] = await Promise.all([
+                const [dispatchTypesRes, binsRes, sitesRes] = await Promise.all([
                     fetch('/api/dispatch-types'),
-                    fetch('/api/bins')
+                    fetch('/api/bins'),
+                    fetch('/api/sites')
                 ]);
 
                 if (!dispatchTypesRes.ok) throw new Error('Failed to fetch dispatch types');
                 if (!binsRes.ok) throw new Error('Failed to fetch bins');
+                if (!sitesRes.ok) throw new Error('Failed to fetch sites');
 
                 const dispatchTypesData = await dispatchTypesRes.json();
                 const binsData = await binsRes.json();
+                const sitesData = await sitesRes.json();
 
                 setDispatchTypes(dispatchTypesData);
                 setAllBins(binsData);
+                setSites(sitesData);
 
-                // ADDED: Set selected dispatch type if editing
+                // Set selected dispatch type if editing
                 if (dispatch?.dispatchType?._id) {
                     const currentType = dispatchTypesData.find((type: DispatchType) => type._id === dispatch.dispatchType._id);
                     setSelectedDispatchType(currentType || null);
@@ -245,37 +265,34 @@ export default function DispatchModal({
         if (isOpen) {
             fetchData();
         }
-    }, [isOpen, toast, dispatch?.dispatchType?._id]); // ADDED dependency
+    }, [isOpen, toast, dispatch?.dispatchType?._id]);
 
-    // ADDED: Handler for dispatch type change
-    const handleDispatchTypeChange = (typeId: string) => {
-        setDispatchType(typeId);
-        const selectedType = dispatchTypes.find(type => type._id === typeId);
-        setSelectedDispatchType(selectedType || null);
-    };
-
-    // ADDED: Calculate total sales
-    const calculateTotalSales = (): number => {
-        if (!selectedDispatchType || !peopleFed) return 0;
-        return peopleFed * selectedDispatchType.sellingPrice;
-    };
-
-
-    // initialize form from dispatch prop (edit) or defaults (new)
+    // Initialize form from dispatch prop (edit) or defaults (new)
     useEffect(() => {
         if (dispatch) {
             setDispatchDate(dispatch.dispatchDate ? dispatch.dispatchDate.split('T')[0] : '');
             setDispatchType(dispatch.dispatchType?._id || '');
-            setSourceBin(dispatch.sourceBin || null);
+            setSourceSite(dispatch.sourceSite || null);
             setDispatchedItems(dispatch.dispatchedItems || []);
             setNotes(dispatch.notes || '');
             setPeopleFed(dispatch.peopleFed);
             setSavedDispatchId(dispatch._id || '');
+
+            // Extract unique bins from dispatched items
+            const binsFromItems = dispatch.dispatchedItems
+                .filter(item => item.sourceBin)
+                .map(item => item.sourceBin)
+                .filter((bin, index, self) =>
+                    index === self.findIndex(b => b?._id === bin?._id)
+                )
+                .filter(Boolean) as Bin[];
+            setSelectedBins(binsFromItems);
         } else {
             const today = new Date().toISOString().split('T')[0];
             setDispatchDate(today);
             setDispatchType('');
-            setSourceBin(null);
+            setSourceSite(null);
+            setSelectedBins([]);
             setDispatchedItems([]);
             setNotes('');
             setPeopleFed(undefined);
@@ -284,56 +301,149 @@ export default function DispatchModal({
         }
     }, [dispatch, isOpen]);
 
+    // Set default site for new dispatches
     useEffect(() => {
         let mounted = true;
         const controller = new AbortController();
 
-        const fetchDefaultBin = async () => {
+        const fetchDefaultSite = async () => {
             if (!dispatch && sessionStatus === 'authenticated' && user?.associatedSite?._id) {
                 setLoading(true);
                 try {
-                    const binRes = await fetch(
-                        `/api/sites/${encodeURIComponent(user.associatedSite._id)}/main-bin`,
-                        { signal: controller.signal }
-                    );
-                    if (!binRes.ok) throw new Error('Failed to fetch main bin');
-                    const mainBin = await binRes.json();
-
-                    if (mounted) {
-                        setSourceBin(mainBin);
+                    const siteId = user.associatedSite._id;
+                    const site = sites.find(s => s._id === siteId);
+                    if (site && mounted) {
+                        setSourceSite(site);
                     }
                 } catch (error: any) {
                     if (error.name === 'AbortError') return;
-                    console.log('Error fetching main bin:', error);
-                    if (mounted) {
-                        console.log('Error Setting Default Bin - ', error);
-                    }
+                    console.log('Error setting default site:', error);
                 } finally {
                     if (mounted) setLoading(false);
                 }
             }
         };
 
-        fetchDefaultBin();
+        if (sites.length > 0) {
+            fetchDefaultSite();
+        }
 
         return () => {
             mounted = false;
             controller.abort();
         };
-    }, [dispatch, sessionStatus, user?.associatedSite?._id, toast]);
+    }, [dispatch, sessionStatus, user?.associatedSite?._id, sites, toast]);
 
     const isNew = !dispatch || dispatch._id?.startsWith?.('temp-');
     const isEditable = !(dispatch?.evidenceStatus === 'complete' || dispatch?.status === 'completed');
 
-    // Update the handler functions:
+    // Handler for dispatch type change
+    const handleDispatchTypeChange = (typeId: string) => {
+        setDispatchType(typeId);
+        const selectedType = dispatchTypes.find(type => type._id === typeId);
+        setSelectedDispatchType(selectedType || null);
+    };
+
+    // Handler for site change
+    const handleSiteChange = (siteId: string) => {
+        const selectedSite = sites.find(site => site._id === siteId);
+        setSourceSite(selectedSite || null);
+        setSelectedBins([]);
+        setDispatchedItems([]);
+        setSelectedBinForItems(null);
+    };
+
+    // Update the getSellingPrice function:
+    const getSellingPrice = (): number => {
+        if (!selectedDispatchType || !sourceSite) return 0;
+
+        // Check for site-specific price
+        const sitePrice = selectedDispatchType.sitePrices?.find(
+            sp => sp.site._id === sourceSite._id
+        );
+
+        return sitePrice ? sitePrice.price : selectedDispatchType.sellingPrice;
+    };
+
+    // Calculate total sales
+    const calculateTotalSales = (): number => {
+        const sellingPrice = getSellingPrice();
+        if (!peopleFed || sellingPrice === 0) return 0;
+        return peopleFed * sellingPrice;
+    };
+
+    // Stock item selection - updated to include sourceBin
+    const handleStockItemSelect = (items: any[]) => {
+        if (!selectedBinForItems) {
+            toast({
+                title: 'Error',
+                description: 'No bin selected for adding items.',
+                status: 'error',
+                duration: 3000,
+                isClosable: true,
+            });
+            return;
+        }
+
+        const newItems: DispatchedItem[] = items.map(item => {
+            const unitPrice = safeNumber(item.unitPrice || 0);
+            return {
+                _key: nanoid(),
+                stockItem: {
+                    _id: item._id,
+                    name: item.name,
+                    sku: item.sku,
+                    unitOfMeasure: item.unitOfMeasure,
+                    currentStock: item.currentStock,
+                    unitPrice: unitPrice,
+                },
+                sourceBin: {
+                    _id: selectedBinForItems._id,
+                    name: selectedBinForItems.name,
+                    site: selectedBinForItems.site
+                },
+                dispatchedQuantity: 1,
+                unitPrice: unitPrice,
+                totalCost: unitPrice * 1,
+                notes: '',
+            };
+        });
+
+        setDispatchedItems(prevItems => {
+            const updatedItems = [...prevItems];
+            if (editingIndex !== null) {
+                updatedItems[editingIndex] = newItems[0];
+                setEditingIndex(null);
+            } else {
+                updatedItems.push(...newItems);
+            }
+            return updatedItems;
+        });
+
+        // Add bin to selected bins if not already there
+        if (!selectedBins.find(bin => bin._id === selectedBinForItems._id)) {
+            setSelectedBins(prev => [...prev, selectedBinForItems]);
+        }
+
+        setIsStockItemModalOpen(false);
+        setSelectedBinForItems(null);
+
+        if (items.length > 1) {
+            toast({
+                title: 'Items added',
+                description: `${items.length} items added to dispatch`,
+                status: 'success',
+                duration: 2000,
+                isClosable: true,
+            });
+        }
+    };
+
     const handleUnitPriceChange = (key: string, value: string) => {
-        // If current value is 0 and user starts typing, replace the 0
         const currentItem = dispatchedItems.find(item => item._key === key);
         const currentValue = currentItem?.unitPrice || 0;
 
-        // If current value is 0 and user types a new digit, replace the 0
         if (currentValue === 0 && value !== '0' && value !== '' && !value.includes('.')) {
-            // User is typing a new number, use the new value directly
             const valueAsNumber = handleNumberInput(value);
             setDispatchedItems(prevItems =>
                 prevItems.map(item => {
@@ -350,7 +460,6 @@ export default function DispatchModal({
                 })
             );
         } else {
-            // Normal handling for other cases
             const valueAsNumber = handleNumberInput(value);
             setDispatchedItems(prevItems =>
                 prevItems.map(item => {
@@ -370,7 +479,6 @@ export default function DispatchModal({
     };
 
     const handleQuantityChange = (key: string, value: string) => {
-        // Allow empty string for user typing
         if (value === '' || value === '-') {
             setDispatchedItems(prevItems =>
                 prevItems.map(item => {
@@ -388,17 +496,13 @@ export default function DispatchModal({
             return;
         }
 
-        // Check if the value has more than 3 decimal places
         const decimalParts = value.split('.');
         if (decimalParts.length === 2 && decimalParts[1].length > 3) {
-            // Truncate to 3 decimal places
             value = decimalParts[0] + '.' + decimalParts[1].slice(0, 3);
         }
 
-        // Parse the value as a float
         const valueAsNumber = parseFloat(value);
 
-        // Only proceed if it's a valid number
         if (!isNaN(valueAsNumber) && valueAsNumber >= 0) {
             setDispatchedItems(prevItems =>
                 prevItems.map(item => {
@@ -408,7 +512,7 @@ export default function DispatchModal({
                         return {
                             ...item,
                             dispatchedQuantity: valueAsNumber,
-                            totalCost: parseFloat(totalCost.toFixed(2)) // Round to 2 decimal places for currency
+                            totalCost: parseFloat(totalCost.toFixed(2))
                         };
                     }
                     return item;
@@ -417,7 +521,6 @@ export default function DispatchModal({
         }
     };
 
-    // Updated people fed handler with decimal support and NaN protection
     const handlePeopleFedChange = (valueAsString: string) => {
         const valueAsNumber = handleNumberInput(valueAsString);
         setPeopleFed(valueAsNumber);
@@ -434,54 +537,25 @@ export default function DispatchModal({
         return peopleFed && peopleFed > 0 ? grandTotal / peopleFed : 0;
     };
 
-    // Stock item selection
-    // In DispatchModal.tsx - Update the handleStockItemSelect function
-    const handleStockItemSelect = (items: any[]) => {
-        const newItems: DispatchedItem[] = items.map(item => {
-            const unitPrice = safeNumber(item.unitPrice || 0);
-            return {
-                _key: nanoid(),
-                stockItem: {
-                    _id: item._id,
-                    name: item.name,
-                    sku: item.sku,
-                    unitOfMeasure: item.unitOfMeasure,
-                    currentStock: item.currentStock,
-                    unitPrice: unitPrice,
-                },
-                dispatchedQuantity: 1,
-                unitPrice: unitPrice,
-                totalCost: unitPrice * 1,
-                notes: '',
-            };
-        });
+    const handleRemoveItem = (key: string) => {
+        const itemToRemove = dispatchedItems.find(item => item._key === key);
+        setDispatchedItems(prevItems => prevItems.filter(item => item._key !== key));
 
-        setDispatchedItems(prevItems => {
-            const updatedItems = [...prevItems];
-            if (editingIndex !== null) {
-                updatedItems[editingIndex] = newItems[0]; // For edit mode, use first item
-                setEditingIndex(null);
-            } else {
-                updatedItems.push(...newItems);
+        // Check if we need to remove the bin from selected bins
+        if (itemToRemove?.sourceBin) {
+            const itemsFromSameBin = dispatchedItems.filter(item =>
+                item.sourceBin?._id === itemToRemove.sourceBin?._id && item._key !== key
+            );
+            if (itemsFromSameBin.length === 0) {
+                setSelectedBins(prev => prev.filter(bin => bin._id !== itemToRemove.sourceBin?._id));
             }
-            return updatedItems;
-        });
-
-        setIsStockItemModalOpen(false);
-
-        if (items.length > 1) {
-            toast({
-                title: 'Items added',
-                description: `${items.length} items added to dispatch`,
-                status: 'success',
-                duration: 2000,
-                isClosable: true,
-            });
         }
     };
 
-    const handleRemoveItem = (key: string) => {
-        setDispatchedItems(prevItems => prevItems.filter(item => item._key !== key));
+    const handleRemoveBin = (binId: string) => {
+        // Remove all items from this bin
+        setDispatchedItems(prev => prev.filter(item => item.sourceBin?._id !== binId));
+        setSelectedBins(prev => prev.filter(bin => bin._id !== binId));
     };
 
     const handleNotesChange = (key: string, value: string) => {
@@ -492,32 +566,39 @@ export default function DispatchModal({
         );
     };
 
-    const handleEditItem = (index: number) => {
+    /*const handleEditItem = (index: number) => {
+        const item = dispatchedItems[index];
+        if (item.sourceBin) {
+            setSelectedBinForItems(item.sourceBin);
+        }
         setEditingIndex(index);
         setIsStockItemModalOpen(true);
-    };
+    };*/
 
-    const isSubmitDisabled = !dispatchDate || !dispatchType || !sourceBin || dispatchedItems.length === 0 || !isEditable;
+    const isSubmitDisabled = !dispatchDate || !dispatchType || !sourceSite || dispatchedItems.length === 0 || !isEditable;
 
     // Save dispatch (create or update)
     const saveDispatch = async (status: string = 'draft') => {
         setIsSaving(true);
         try {
-            if (!dispatchType || !sourceBin) {
+            if (!dispatchType || !sourceSite) {
                 toast({
                     title: 'Missing Information',
-                    description: 'Please select a dispatch type and source bin.',
+                    description: 'Please select a dispatch type and source site.',
                     status: 'warning',
                     duration: 5000,
                     isClosable: true,
                 });
-                throw new Error('Missing dispatch type or source bin');
+                throw new Error('Missing dispatch type or source site');
             }
+
+            const sellingPrice = getSellingPrice();
+            const totalSales = calculateTotalSales();
 
             const payload: any = {
                 dispatchDate: new Date(dispatchDate).toISOString(),
                 dispatchType: { _type: 'reference', _ref: dispatchType },
-                sourceBin: { _type: 'reference', _ref: sourceBin?._id },
+                sourceSite: { _type: 'reference', _ref: sourceSite._id },
                 dispatchedItems: dispatchedItems.map(item => ({
                     _type: 'DispatchedItem',
                     _key: item._key || nanoid(),
@@ -525,6 +606,10 @@ export default function DispatchModal({
                         _type: 'reference',
                         _ref: item.stockItem._id
                     },
+                    sourceBin: item.sourceBin ? {
+                        _type: 'reference',
+                        _ref: item.sourceBin._id
+                    } : undefined,
                     dispatchedQuantity: safeNumber(item.dispatchedQuantity),
                     unitPrice: safeNumber(item.unitPrice || 0),
                     totalCost: safeNumber(item.totalCost || 0),
@@ -535,8 +620,8 @@ export default function DispatchModal({
                 evidenceStatus: dispatch?.evidenceStatus || 'pending',
                 status,
                 dispatchedBy: { _type: 'reference', _ref: (session?.user as any)?.id || (session?.user as any)?._id || undefined },
-                sellingPrice: selectedDispatchType?.sellingPrice || 0, // ADDED
-                totalSales: calculateTotalSales(), // ADDED
+                sellingPrice,
+                totalSales,
             };
 
             let url = '/api/dispatches';
@@ -590,7 +675,7 @@ export default function DispatchModal({
         event.preventDefault();
         try {
             const result = await saveDispatch('draft');
-            setSavedDispatchId(result._id || result.id); // Ensure ID is set
+            setSavedDispatchId(result._id || result.id);
             onSave();
             onClose();
         } catch {
@@ -598,11 +683,10 @@ export default function DispatchModal({
         }
     };
 
-    // Check all items dispatched (used to enable complete action)
-    // Replace the existing isFullyDispatched function with:
+    // Check all items dispatched
     const isFullyDispatched = dispatchedItems.length > 0 &&
         dispatchedItems.every(item => item.dispatchedQuantity > 0) &&
-        (peopleFed || 0) > 0; // ADD THIS LINE
+        (peopleFed || 0) > 0;
 
     // Trigger the complete flow: ensure saved, then open upload modal
     const handleCompleteDispatch = async () => {
@@ -617,7 +701,6 @@ export default function DispatchModal({
             return;
         }
 
-        // This is the new validation for people fed
         if (!peopleFed || peopleFed <= 0) {
             toast({
                 title: 'People fed required',
@@ -700,6 +783,34 @@ export default function DispatchModal({
         } finally {
             setIsSaving(false);
         }
+    };
+
+    // Filter bins by selected site
+    const binsForSelectedSite = sourceSite
+        ? allBins.filter(bin => bin.site._id === sourceSite._id)
+        : [];
+
+    // Group dispatched items by bin for UI display
+    const itemsByBin: Record<string, DispatchedItem[]> = {};
+    dispatchedItems.forEach(item => {
+        const binId = item.sourceBin?._id || 'unspecified';
+        if (!itemsByBin[binId]) {
+            itemsByBin[binId] = [];
+        }
+        itemsByBin[binId].push(item);
+    });
+
+    // Get bin name by ID
+    const getBinName = (binId: string): string => {
+        if (binId === 'unspecified') return 'Unassigned Bin';
+        const bin = binsForSelectedSite.find(b => b._id === binId);
+        return bin ? bin.name : 'Unknown Bin';
+    };
+
+    // Get bin by ID
+    const getBin = (binId: string): Bin | null => {
+        if (binId === 'unspecified') return null;
+        return binsForSelectedSite.find(b => b._id === binId) || null;
     };
 
     const exportDispatchPDF = () => {
@@ -828,8 +939,8 @@ export default function DispatchModal({
                         <span> ${dispatchTypes.find(t => t._id === dispatchType)?.name || 'N/A'}</span>
                     </div>
                     <div class="info-item">
-                        <span class="info-label">Source Bin:</span>
-                        <span> ${sourceBin?.name || 'N/A'} (${sourceBin?.site?.name || 'N/A'})</span>
+                        <span class="info-label">Source Site:</span>
+                        <span> ${sourceSite?.name || 'N/A'}</span>
                     </div>
                 </div>
                 <div>
@@ -845,28 +956,31 @@ export default function DispatchModal({
             </div>
         </div>
     
-        <table class="table">
-            <thead>
-                <tr>
-                    <th>Item</th>
-                    <th>Quantity</th>
-                    <th>Unit Price</th>
-                    <th>Total Cost</th>
-                    <th>Unit</th>
-                </tr>
-            </thead>
-            <tbody>
-                ${dispatchedItems.map(item => `
+        ${Object.entries(itemsByBin).map(([binId, items]) => `
+            <h3 style="margin: 20px 0 10px 0; color: #2D3748;">Items from ${getBinName(binId)}</h3>
+            <table class="table">
+                <thead>
                     <tr>
-                        <td><strong>${item.stockItem.name}</strong></td>
-                        <td>${item.dispatchedQuantity.toFixed(3)}</td>
-                        <td>E ${(item.unitPrice || 0).toFixed(2)}</td>
-                        <td>E ${(item.totalCost || 0).toFixed(2)}</td>
-                        <td>${item.stockItem.unitOfMeasure}</td>
+                        <th>Item</th>
+                        <th>Quantity</th>
+                        <th>Unit Price</th>
+                        <th>Total Cost</th>
+                        <th>Unit</th>
                     </tr>
-                `).join('')}
-            </tbody>
-        </table>
+                </thead>
+                <tbody>
+                    ${items.map(item => `
+                        <tr>
+                            <td><strong>${item.stockItem.name}</strong></td>
+                            <td>${item.dispatchedQuantity.toFixed(3)}</td>
+                            <td>E ${(item.unitPrice || 0).toFixed(2)}</td>
+                            <td>E ${(item.totalCost || 0).toFixed(2)}</td>
+                            <td>${item.stockItem.unitOfMeasure}</td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        `).join('')}
     
         <div class="summary-section">
             <h3 style="margin: 0 0 15px 0; color: #22543D;">Cost Summary</h3>
@@ -882,6 +996,10 @@ export default function DispatchModal({
                     <div>E ${calculateCostPerPerson().toFixed(2)}</div>
                     <div>People Fed:</div>
                     <div>${peopleFed}</div>
+                    <div>Selling Price per Person:</div>
+                    <div>E ${getSellingPrice().toFixed(2)}</div>
+                    <div>Total Sales:</div>
+                    <div>E ${calculateTotalSales().toFixed(2)}</div>
                 ` : ''}
             </div>
         </div>
@@ -916,8 +1034,6 @@ export default function DispatchModal({
                 exportWindow.document.write(htmlContent);
                 exportWindow.document.close();
                 exportWindow.document.title = `Dispatch - ${dispatch?.dispatchNumber || 'New Dispatch'}`;
-
-                // Reset exporting state after a short delay
                 setTimeout(() => setIsExporting(false), 1000);
             } else {
                 setIsExporting(false);
@@ -929,21 +1045,12 @@ export default function DispatchModal({
     };
 
     const getAttachmentUrl = (attachment: any): string | undefined => {
-        console.log('Attachment data:', attachment);
-
-        // If it's a Sanity file reference with asset
         if (attachment.file?.asset) {
             try {
-                console.log('Asset found:', attachment.file.asset);
-
-                // Check if it's an image asset
                 if (attachment.file.asset._type === 'sanity.imageAsset') {
                     const url = urlFor(attachment.file.asset).url();
-                    console.log('Generated image URL:', url);
                     return url;
                 } else if (attachment.file.asset.url) {
-                    // Use direct URL if available
-                    console.log('Using asset URL:', attachment.file.asset.url);
                     return attachment.file.asset.url;
                 }
             } catch (error) {
@@ -951,27 +1058,22 @@ export default function DispatchModal({
             }
         }
 
-        // Fallback to direct URL if available
         if (attachment.url) {
-            console.log('Using direct URL:', attachment.url);
             return attachment.url;
         }
 
-        console.log('No URL found for attachment');
         return undefined;
     };
 
-
     const filteredBins = userRole === 'admin'
-        ? allBins
-        : allBins.filter(bin => bin.site._id === userSite?._id);
+        ? binsForSelectedSite
+        : binsForSelectedSite.filter(bin => bin.site._id === userSite?._id);
 
     return (
         <>
             <Modal
                 isOpen={isOpen}
                 onClose={() => {
-                    // Refresh if a draft was saved during this session
                     if (savedDispatchId) {
                         onSave();
                     }
@@ -1003,71 +1105,46 @@ export default function DispatchModal({
                                 px={4}
                             >
                                 <VStack spacing={4} align="stretch">
-                                    <Grid templateColumns={{ base: '1fr', md: 'repeat(2, 1fr)' }} gap={4}>
-                                        <GridItem>
-                                            <FormControl isRequired>
-                                                <FormLabel>Dispatch Type</FormLabel>
-                                                <Select
-                                                    placeholder="Select dispatch type"
-                                                    value={dispatchType}
-                                                    onChange={(e) => handleDispatchTypeChange(e.target.value)}
-                                                    isDisabled={!isEditable || loading}
-                                                >
-                                                    {dispatchTypes.map((type) => (
-                                                        <option key={type._id} value={type._id}>
-                                                            {type.name} (E{type.sellingPrice}/person)
-                                                        </option>
-                                                    ))}
-                                                </Select>
-                                            </FormControl>
-                                        </GridItem>
-                                        <GridItem>
-                                            <FormControl isRequired>
-                                                <FormLabel>Source Bin</FormLabel>
-                                                <Select
-                                                    placeholder={filteredBins.length === 0 ? "No bins available" : "Select source bin"}
-                                                    value={sourceBin?._id || ''}
-                                                    onChange={(e) => {
-                                                        const selectedBin = filteredBins.find(bin => bin._id === e.target.value);
-                                                        if (selectedBin) {
-                                                            setSourceBin(selectedBin);
-                                                        }
-                                                    }}
-                                                    isDisabled={!isEditable || loading || filteredBins.length === 0 || !!dispatch}
-                                                >
-                                                    {filteredBins.map((bin) => (
-                                                        <option key={bin._id} value={bin._id}>
-                                                            {bin.name} ({bin.site.name})
-                                                        </option>
-                                                    ))}
-                                                </Select>
-                                                {dispatch ? (
-                                                    <Text fontSize="sm" color={textSecondaryColor} mt={1}>
-                                                        Source bin cannot be changed for existing dispatches
-                                                    </Text>
-                                                ) : (
-                                                    <>
-                                                        {userSite && userRole !== 'admin' && (
-                                                            <Text fontSize="sm" color={textSecondaryColor} mt={1}>
-                                                                Your site: {userSite.name}
-                                                            </Text>
-                                                        )}
-                                                        {userRole === 'admin' && (
-                                                            <Text fontSize="sm" color={textSecondaryColor} mt={1}>
-                                                                Admin: All bins available
-                                                            </Text>
-                                                        )}
-                                                        {filteredBins.length === 0 && (
-                                                            <Text fontSize="sm" color="red.500" mt={1}>
-                                                                No bins available for your site
-                                                            </Text>
-                                                        )}
-                                                    </>
-                                                )}
-                                            </FormControl>
-                                        </GridItem>
-                                    </Grid>
+                                    {/* Site Selection */}
+                                    <FormControl isRequired>
+                                        <FormLabel>Source Site</FormLabel>
+                                        <Select
+                                            placeholder="Select site"
+                                            value={sourceSite?._id || ''}
+                                            onChange={(e) => handleSiteChange(e.target.value)}
+                                            isDisabled={!isEditable || loading || !!dispatch}
+                                        >
+                                            {sites.map((site) => (
+                                                <option key={site._id} value={site._id}>
+                                                    {site.name}
+                                                </option>
+                                            ))}
+                                        </Select>
+                                        {dispatch && (
+                                            <Text fontSize="sm" color={textSecondaryColor} mt={1}>
+                                                Source site cannot be changed for existing dispatches
+                                            </Text>
+                                        )}
+                                    </FormControl>
 
+                                    {/* Dispatch Type Selection */}
+                                    <FormControl isRequired>
+                                        <FormLabel>Dispatch Type</FormLabel>
+                                        <Select
+                                            placeholder="Select dispatch type"
+                                            value={dispatchType}
+                                            onChange={(e) => handleDispatchTypeChange(e.target.value)}
+                                            isDisabled={!isEditable || loading}
+                                        >
+                                            {dispatchTypes.map((type) => (
+                                                <option key={type._id} value={type._id}>
+                                                    {type.name} {sourceSite && `(E${getSellingPrice()}/person)`}
+                                                </option>
+                                            ))}
+                                        </Select>
+                                    </FormControl>
+
+                                    {/* Date and People Fed */}
                                     <Grid templateColumns={{ base: '1fr', md: 'repeat(2, 1fr)' }} gap={4}>
                                         <GridItem>
                                             <FormControl isRequired>
@@ -1113,99 +1190,191 @@ export default function DispatchModal({
 
                                     <Divider />
 
+                                    {/* Selected Bins Display */}
+                                    {selectedBins.length > 0 && (
+                                        <Box>
+                                            <HStack justify="space-between" mb={2}>
+                                                <FormLabel mb={0}>Selected Bins:</FormLabel>
+                                                <Text fontSize="sm" color={textSecondaryColor}>
+                                                    {selectedBins.length} bin(s) selected
+                                                </Text>
+                                            </HStack>
+                                            <HStack spacing={2} flexWrap="wrap">
+                                                {selectedBins.map((bin) => (
+                                                    <Tag
+                                                        key={bin._id}
+                                                        size="lg"
+                                                        borderRadius="full"
+                                                        variant="solid"
+                                                        colorScheme="blue"
+                                                    >
+                                                        <TagLabel>{bin.name}</TagLabel>
+                                                        {isEditable && (
+                                                            <TagCloseButton
+                                                                onClick={() => handleRemoveBin(bin._id)}
+                                                            />
+                                                        )}
+                                                    </Tag>
+                                                ))}
+                                            </HStack>
+                                        </Box>
+                                    )}
+
+                                    {/* Items Display */}
                                     <VStack spacing={4} align="stretch">
                                         <HStack justify="space-between" align="center">
                                             <FormLabel mb={0}>Dispatched Items</FormLabel>
-                                            {itemsLoading && (
-                                                <Spinner size="sm" />
-                                            )}
+                                            <Text fontSize="sm" color={textSecondaryColor}>
+                                                {dispatchedItems.length} item(s) across {selectedBins.length} bin(s)
+                                            </Text>
                                         </HStack>
 
                                         {dispatchedItems.length === 0 ? (
                                             <Box textAlign="center" py={4} color={textSecondaryColor}>
-                                                No items added yet
+                                                No items added yet. Select a bin below to add items.
                                             </Box>
                                         ) : (
-                                            <TableContainer
-                                                bg={tableBg}
-                                                borderRadius="lg"
-                                                boxShadow={tableBoxShadow}
-                                                border="1px solid"
-                                                borderColor={tableBorderColor}
-                                            >
-                                                <Table variant="simple" size="sm">
-                                                    <Thead>
-                                                        <Tr>
-                                                            <Th color={tableHeaderColor} borderColor={tableBorderColor}>Item</Th>
-                                                            <Th color={tableHeaderColor} borderColor={tableBorderColor}>Unit Price</Th>
-                                                            <Th color={tableHeaderColor} borderColor={tableBorderColor}>Quantity</Th>
-                                                            <Th color={tableHeaderColor} borderColor={tableBorderColor}>Total Cost</Th>
-                                                            <Th color={tableHeaderColor} borderColor={tableBorderColor}>Unit</Th>
-                                                            <Th color={tableHeaderColor} borderColor={tableBorderColor}> </Th>
-                                                        </Tr>
-                                                    </Thead>
-                                                    <Tbody>
-                                                        {dispatchedItems.map((item, index) => (
-                                                            <Tr key={item._key}>
-                                                                <Td borderColor={tableBorderColor}>{item.stockItem.name}</Td>
-                                                                <Td borderColor={tableBorderColor}>
-                                                                    <Input
-                                                                        value={item.unitPrice || 0}
-                                                                        onChange={(e) => handleUnitPriceChange(item._key, e.target.value)}
-                                                                        type="number"
-                                                                        step="0.01"
-                                                                        min="0"
-                                                                        size="sm"
-                                                                        width="100px"
-                                                                        isDisabled={true}
-                                                                    />
-                                                                </Td>
+                                            <Tabs variant="enclosed" colorScheme="blue" index={activeTab} onChange={setActiveTab}>
+                                                <TabList overflowX="auto">
+                                                    {Object.keys(itemsByBin).map((binId, index) => (
+                                                        <Tab key={binId}>
+                                                            {getBinName(binId)} ({itemsByBin[binId].length})
+                                                        </Tab>
+                                                    ))}
+                                                </TabList>
+                                                <TabPanels>
+                                                    {Object.entries(itemsByBin).map(([binId, items]) => (
+                                                        <TabPanel key={binId} p={0} mt={4}>
+                                                            <TableContainer
+                                                                bg={tableBg}
+                                                                borderRadius="lg"
+                                                                boxShadow={tableBoxShadow}
+                                                                border="1px solid"
+                                                                borderColor={tableBorderColor}
+                                                            >
+                                                                <Table variant="simple" size="sm">
+                                                                    <Thead>
+                                                                        <Tr>
+                                                                            <Th color={tableHeaderColor} borderColor={tableBorderColor}>Item</Th>
+                                                                            <Th color={tableHeaderColor} borderColor={tableBorderColor}>Unit Price</Th>
+                                                                            <Th color={tableHeaderColor} borderColor={tableBorderColor}>Quantity</Th>
+                                                                            <Th color={tableHeaderColor} borderColor={tableBorderColor}>Total Cost</Th>
+                                                                            <Th color={tableHeaderColor} borderColor={tableBorderColor}>Unit</Th>
+                                                                            <Th color={tableHeaderColor} borderColor={tableBorderColor}> </Th>
+                                                                        </Tr>
+                                                                    </Thead>
+                                                                    <Tbody>
+                                                                        {items.map((item) => (
+                                                                            <Tr key={item._key}>
+                                                                                <Td borderColor={tableBorderColor}>{item.stockItem.name}</Td>
+                                                                                <Td borderColor={tableBorderColor}>
+                                                                                    <Input
+                                                                                        value={item.unitPrice || 0}
+                                                                                        onChange={(e) => handleUnitPriceChange(item._key, e.target.value)}
+                                                                                        type="number"
+                                                                                        step="0.01"
+                                                                                        min="0"
+                                                                                        size="sm"
+                                                                                        width="100px"
+                                                                                        isDisabled={true}
+                                                                                    />
+                                                                                </Td>
+                                                                                <Td borderColor={tableBorderColor}>
+                                                                                    <NumberInput
+                                                                                        value={item.dispatchedQuantity}
+                                                                                        onChange={(valueString) => handleQuantityChange(item._key, valueString)}
+                                                                                        min={0}
+                                                                                        step={0.001}
+                                                                                        precision={3}
+                                                                                        size="sm"
+                                                                                        width="100px"
+                                                                                        isDisabled={!isEditable}
+                                                                                    >
+                                                                                        <NumberInputField />
+                                                                                        <NumberInputStepper>
+                                                                                            <NumberIncrementStepper />
+                                                                                            <NumberDecrementStepper />
+                                                                                        </NumberInputStepper>
+                                                                                    </NumberInput>
+                                                                                </Td>
+                                                                                <Td borderColor={tableBorderColor}>
+                                                                                    <Text fontWeight="medium">
+                                                                                        E {(item.totalCost || 0).toFixed(2)}
+                                                                                    </Text>
+                                                                                </Td>
+                                                                                <Td borderColor={tableBorderColor}>{item.stockItem.unitOfMeasure}</Td>
+                                                                                <Td borderColor={tableBorderColor}>
+                                                                                    <HStack>
+                                                                                        <IconButton
+                                                                                            aria-label="Remove item"
+                                                                                            icon={<FiTrash2 />}
+                                                                                            size="sm"
+                                                                                            onClick={() => handleRemoveItem(item._key)}
+                                                                                            isDisabled={!isEditable}
+                                                                                        />
+                                                                                    </HStack>
+                                                                                </Td>
+                                                                            </Tr>
+                                                                        ))}
+                                                                    </Tbody>
+                                                                </Table>
+                                                            </TableContainer>
+                                                            {isEditable && (
+                                                                <Button
+                                                                    leftIcon={<FiPlus />}
+                                                                    onClick={() => {
+                                                                        const bin = getBin(binId);
+                                                                        if (bin) {
+                                                                            setSelectedBinForItems(bin);
+                                                                            setIsStockItemModalOpen(true);
+                                                                        }
+                                                                    }}
+                                                                    variant="outline"
+                                                                    size="sm"
+                                                                    mt={2}
+                                                                >
+                                                                    Add more items to {getBinName(binId)}
+                                                                </Button>
+                                                            )}
+                                                        </TabPanel>
+                                                    ))}
+                                                </TabPanels>
+                                            </Tabs>
+                                        )}
 
-                                                                <Td borderColor={tableBorderColor}>
-                                                                    <NumberInput
-                                                                        value={item.dispatchedQuantity}
-                                                                        onChange={(valueString) => handleQuantityChange(item._key, valueString)}
-                                                                        min={0}
-                                                                        step={0.001}
-                                                                        precision={3}
-                                                                        size="sm"
-                                                                        width="100px"
-                                                                        isDisabled={!isEditable}
-                                                                    >
-                                                                        <NumberInputField />
-                                                                        <NumberInputStepper>
-                                                                            <NumberIncrementStepper />
-                                                                            <NumberDecrementStepper />
-                                                                        </NumberInputStepper>
-                                                                    </NumberInput>
-                                                                </Td>
-                                                                <Td borderColor={tableBorderColor}>
-                                                                    <Text fontWeight="medium">
-                                                                        E {(item.totalCost || 0).toFixed(2)}
-                                                                    </Text>
-                                                                </Td>
-                                                                <Td borderColor={tableBorderColor}>{item.stockItem.unitOfMeasure}</Td>
-                                                                <Td borderColor={tableBorderColor}>
-                                                                    <HStack>
-                                                                        <IconButton
-                                                                            aria-label="Remove item"
-                                                                            icon={<FiTrash2 />}
-                                                                            size="sm"
-                                                                            onClick={() => handleRemoveItem(item._key)}
-                                                                            isDisabled={!isEditable}
-                                                                        />
-                                                                    </HStack>
-                                                                </Td>
-                                                            </Tr>
-                                                        ))}
-                                                    </Tbody>
-                                                </Table>
-                                            </TableContainer>
+                                        {/* Bin Selection for Adding Items */}
+                                        {sourceSite && (
+                                            <Box mt={4}>
+                                                <Text mb={2} fontWeight="medium">Add items from bin:</Text>
+                                                <HStack spacing={2} wrap="wrap">
+                                                    {filteredBins.map((bin) => (
+                                                        <Button
+                                                            key={bin._id}
+                                                            leftIcon={<FiPackage />}
+                                                            onClick={() => {
+                                                                setSelectedBinForItems(bin);
+                                                                setIsStockItemModalOpen(true);
+                                                            }}
+                                                            variant="outline"
+                                                            size="sm"
+                                                            isDisabled={!isEditable}
+                                                        >
+                                                            {bin.name}
+                                                        </Button>
+                                                    ))}
+                                                    {filteredBins.length === 0 && (
+                                                        <Text color={textSecondaryColor} fontSize="sm">
+                                                            No bins available for this site
+                                                        </Text>
+                                                    )}
+                                                </HStack>
+                                            </Box>
                                         )}
 
                                         {/* Cost Summary Section */}
                                         {dispatchedItems.length > 0 && (
-                                            <VStack align="stretch" mt={4} p={4} borderRadius="md">
+                                            <VStack align="stretch" mt={4} p={4} borderRadius="md" borderWidth="1px">
+                                                <Heading size="sm" mb={2}>Cost Summary</Heading>
                                                 <HStack justify="space-between">
                                                     <Text fontWeight="bold">Grand Total Cost:</Text>
                                                     <Text fontWeight="bold" fontSize="lg">
@@ -1221,18 +1390,28 @@ export default function DispatchModal({
                                                                 E {calculateCostPerPerson().toFixed(2)}
                                                             </Text>
                                                         </HStack>
-                                                        <Text fontSize="sm" color="gray.600">
-                                                            Based on {peopleFed} people fed
-                                                        </Text>
+                                                        <HStack justify="space-between">
+                                                            <Text>Selling Price per Person:</Text>
+                                                            <Text fontWeight="medium">
+                                                                E {getSellingPrice().toFixed(2)}
+                                                            </Text>
+                                                        </HStack>
+                                                        <HStack justify="space-between">
+                                                            <Text fontWeight="bold" color="green.600">Total Sales:</Text>
+                                                            <Text fontWeight="bold" fontSize="lg" color="green.600">
+                                                                E {calculateTotalSales().toFixed(2)}
+                                                            </Text>
+                                                        </HStack>
                                                     </>
                                                 ) : (
                                                     <Text fontSize="sm" color="gray.600" fontStyle="italic">
-                                                        No people fed specified
+                                                        Enter number of people fed to see sales calculation
                                                     </Text>
                                                 )}
                                             </VStack>
                                         )}
 
+                                        {/* Evidence Section */}
                                         {dispatch?.attachments && dispatch.attachments.length > 0 && (
                                             <Box mt={4}>
                                                 <Button
@@ -1278,11 +1457,6 @@ export default function DispatchModal({
                                                                                 objectFit="cover"
                                                                                 width="100%"
                                                                                 height="200px"
-                                                                                onError={(e) => {
-                                                                                    console.error('Image failed to load:', imageUrl);
-                                                                                    e.currentTarget.style.display = 'none';
-                                                                                }}
-                                                                                onLoad={() => console.log('Image loaded successfully:', imageUrl)}
                                                                             />
                                                                         ) : (
                                                                             <Box
@@ -1319,36 +1493,6 @@ export default function DispatchModal({
                                                 )}
                                             </Box>
                                         )}
-
-                                        {selectedDispatchType && peopleFed && peopleFed > 0 && (
-                                            <VStack align="stretch" mt={4} p={4} borderRadius="md" bg="green.50" border="1px" borderColor="green.200">
-                                                <HStack justify="space-between">
-                                                    <Text fontWeight="bold" color="green.800">Estimated Sales:</Text>
-                                                    <Text fontWeight="bold" fontSize="lg" color="green.800">
-                                                        E{calculateTotalSales().toFixed(2)}
-                                                    </Text>
-                                                </HStack>
-                                                <HStack justify="space-between">
-                                                    <Text fontSize="sm" color="green.700">Selling Price:</Text>
-                                                    <Text fontSize="sm" color="green.700">E{selectedDispatchType.sellingPrice}/person</Text>
-                                                </HStack>
-                                                <HStack justify="space-between">
-                                                    <Text fontSize="sm" color="green.700">People Fed:</Text>
-                                                    <Text fontSize="sm" color="green.700">{peopleFed}</Text>
-                                                </HStack>
-                                            </VStack>
-                                        )}
-
-
-                                        <Button
-                                            leftIcon={<FiPlus />}
-                                            onClick={() => setIsStockItemModalOpen(true)}
-                                            variant="outline"
-                                            isDisabled={loading || !sourceBin || !isEditable}
-                                            alignSelf="flex-start"
-                                        >
-                                            Add Item
-                                        </Button>
                                     </VStack>
                                 </VStack>
                             </ModalBody>
@@ -1414,17 +1558,17 @@ export default function DispatchModal({
                 onClose={() => {
                     setIsStockItemModalOpen(false);
                     setEditingIndex(null);
+                    setSelectedBinForItems(null);
                 }}
                 onSelect={handleStockItemSelect}
                 existingItemIds={existingItemIds}
-                sourceBinId={sourceBin?._id}
+                sourceBinId={selectedBinForItems?._id}
             />
 
             <FileUploadModal
                 isOpen={isUploadModalOpen}
                 onClose={() => {
                     setIsUploadModalOpen(false);
-                    // Refresh and close main modal when upload is cancelled
                     onSave();
                     onClose();
                 }}

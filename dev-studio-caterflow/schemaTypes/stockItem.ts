@@ -40,15 +40,6 @@ export default defineType({
             name: 'sku',
             title: 'SKU (Stock Keeping Unit)',
             type: 'string',
-            validation: (Rule) =>
-                Rule.required().custom(async (sku, context) => {
-                    const isSkuUnique = await isUniqueSku(sku, context);
-
-                    if (!isSkuUnique) {
-                        return 'SKU already exists.';
-                    }
-                    return true;
-                }),
             readOnly: ({ document }) => !!document?.sku,
             description: 'A unique identifier for this stock item.',
             initialValue: async () => {
@@ -151,26 +142,6 @@ export default defineType({
             description: 'Suggested quantity to reorder when stock is low.',
             validation: (Rule) => Rule.min(0),
         }),
-        defineField({
-            name: 'primarySupplier',
-            title: 'Primary Supplier',
-            type: 'reference',
-            to: [{ type: 'Supplier' }],
-            description: 'The main supplier for this item.',
-            /*options: {
-                // This makes the primary supplier selection only show suppliers that are in the suppliers array
-                filter: ({ document }) => {
-                    if (!document?.suppliers) return {};
-                    
-                    return {
-                        filter: '_id in $supplierIds',
-                        params: {
-                            supplierIds: document.suppliers.map((supplier: any) => supplier._ref)
-                        }
-                    };
-                }
-            }*/
-        }),
     ],
     preview: {
         select: {
@@ -203,11 +174,6 @@ export default defineType({
             name: 'skuAsc',
             title: 'SKU (Ascending)',
             by: [{ field: 'sku', direction: 'asc' }],
-        },
-        {
-            name: 'minStockLevelAsc',
-            title: 'Min Stock Level (Low to High)',
-            by: [{ field: 'minimumStockLevel', direction: 'asc' }],
         },
         {
             name: 'minStockLevelAsc',

@@ -1,3 +1,4 @@
+// src/app/api/dispatch-types/[id]/route.ts (REPLACE ENTIRE FILE)
 import { NextResponse } from 'next/server';
 import { client, writeClient } from '@/lib/sanity';
 import { getServerSession } from 'next-auth';
@@ -30,6 +31,8 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     }
 }
 
+// src/app/api/dispatch-types/[id]/route.ts (UPDATE the PUT function)
+
 // PUT update dispatch type
 export async function PUT(request: Request, { params }: { params: Promise<{ id: string }> }) {
     try {
@@ -41,7 +44,7 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
 
         const { id } = await params;
         const body = await request.json();
-        const { name, description, defaultTime, sellingPrice, isActive } = body;
+        const { name, description, defaultTime, sellingPrice, sitePrices, isActive } = body;
 
         if (!name) {
             return NextResponse.json({ error: 'Name is required' }, { status: 400 });
@@ -53,7 +56,7 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
             return NextResponse.json({ error: 'Dispatch type not found' }, { status: 404 });
         }
 
-        // Handle null/undefined selling price - default to 0
+        // Handle null/undefined selling price
         const safeSellingPrice = sellingPrice !== null && sellingPrice !== undefined
             ? Number(sellingPrice)
             : existing.sellingPrice || 0;
@@ -62,12 +65,27 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
             return NextResponse.json({ error: 'Selling price cannot be negative' }, { status: 400 });
         }
 
+        // Prepare sitePrices array with proper structure
+        let formattedSitePrices: any[] = [];
+        if (sitePrices && Array.isArray(sitePrices)) {
+            formattedSitePrices = sitePrices.map((sp: any) => ({
+                _key: sp._key || `site-price-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+                _type: 'object',
+                site: {
+                    _type: 'reference',
+                    _ref: sp.site._id
+                },
+                price: Number(sp.price) || 0
+            }));
+        }
+
         const patch = writeClient.patch(id)
             .set({
                 name: name.trim(),
                 description: description?.trim() || '',
                 defaultTime: defaultTime || '',
                 sellingPrice: safeSellingPrice,
+                sitePrices: formattedSitePrices,
                 isActive: isActive !== undefined ? isActive : existing.isActive,
                 updatedAt: new Date().toISOString()
             });

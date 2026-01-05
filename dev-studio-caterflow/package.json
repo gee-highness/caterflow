@@ -15,13 +15,13 @@
     "sanity"
   ],
   "dependencies": {
-    "@sanity/vision": "^4.10.2",
+    "@sanity/vision": "^4.22.0",
     "esbuild": "^0.25.10",
     "next-sanity": "^11.4.2",
-    "react": "^19.1",
-    "react-dom": "^19.1",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
     "react-icons": "^5.5.0",
-    "sanity": "^4.10.2",
+    "sanity": "^4.22.0",
     "styled-components": "^6.1.18"
   },
   "devDependencies": {

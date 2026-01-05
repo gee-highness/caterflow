@@ -1,3 +1,4 @@
+// src/app/dispatch-types/page.tsx (REPLACE ENTIRE FILE)
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
@@ -41,9 +42,23 @@ import {
     NumberIncrementStepper,
     NumberDecrementStepper,
     Switch,
+    Tag,
+    TagLabel,
+    TagCloseButton,
+    Select,
+    SimpleGrid,
 } from '@chakra-ui/react';
-import { FiPlus, FiEdit, FiTrash2, FiSave, FiX } from 'react-icons/fi';
+import { FiPlus, FiEdit, FiTrash2, FiSave, FiX, FiDollarSign } from 'react-icons/fi';
 import { useSession } from 'next-auth/react';
+
+interface SitePrice {
+    _key?: string;
+    site: {
+        _id: string;
+        name: string;
+    };
+    price: number;
+}
 
 interface DispatchType {
     _id: string;
@@ -51,16 +66,27 @@ interface DispatchType {
     description?: string;
     defaultTime?: string;
     sellingPrice: number;
+    sitePrices?: SitePrice[];
     isActive: boolean;
+}
+
+interface Site {
+    _id: string;
+    name: string;
 }
 
 export default function DispatchTypesPage() {
     const { data: session, status } = useSession();
     const [dispatchTypes, setDispatchTypes] = useState<DispatchType[]>([]);
+    const [sites, setSites] = useState<Site[]>([]);
     const [loading, setLoading] = useState(true);
     const [editingType, setEditingType] = useState<DispatchType | null>(null);
     const [isSubmitting, setIsSubmitting] = useState(false);
     const { isOpen, onOpen, onClose } = useDisclosure();
+    const [selectedSiteForPrice, setSelectedSiteForPrice] = useState('');
+    const [sitePriceValue, setSitePriceValue] = useState<number>(0);
+    const [showSitePriceForm, setShowSitePriceForm] = useState(false);
+
     const toast = useToast();
 
     // Theming props
@@ -70,16 +96,23 @@ export default function DispatchTypesPage() {
     // Check if user is admin
     const isAdmin = session?.user?.role === 'admin';
 
-    const fetchDispatchTypes = useCallback(async () => {
+    const fetchData = useCallback(async () => {
         setLoading(true);
         try {
-            const response = await fetch('/api/dispatch-types');
-            if (response.ok) {
-                const data = await response.json();
-                setDispatchTypes(data || []);
-            } else {
-                throw new Error('Failed to fetch dispatch types');
+            const [dispatchTypesRes, sitesRes] = await Promise.all([
+                fetch('/api/dispatch-types'),
+                fetch('/api/sites')
+            ]);
+
+            if (!dispatchTypesRes.ok || !sitesRes.ok) {
+                throw new Error('Failed to fetch data');
             }
+
+            const dispatchTypesData = await dispatchTypesRes.json();
+            const sitesData = await sitesRes.json();
+
+            setDispatchTypes(dispatchTypesData || []);
+            setSites(sitesData || []);
         } catch (error) {
             console.error('Error fetching dispatch types:', error);
             toast({
@@ -96,9 +129,9 @@ export default function DispatchTypesPage() {
 
     useEffect(() => {
         if (status === 'authenticated') {
-            fetchDispatchTypes();
+            fetchData();
         }
-    }, [fetchDispatchTypes, status]);
+    }, [fetchData, status]);
 
     const handleCreate = () => {
         setEditingType({
@@ -107,14 +140,78 @@ export default function DispatchTypesPage() {
             description: '',
             defaultTime: '',
             sellingPrice: 0,
+            sitePrices: [],
             isActive: true
         });
+        setSelectedSiteForPrice('');
+        setSitePriceValue(0);
+        setShowSitePriceForm(false);
         onOpen();
     };
 
     const handleEdit = (type: DispatchType) => {
         setEditingType({ ...type });
+        setSelectedSiteForPrice('');
+        setSitePriceValue(0);
+        setShowSitePriceForm(false);
         onOpen();
+    };
+
+    const handleAddSitePrice = () => {
+        if (!selectedSiteForPrice || sitePriceValue <= 0) {
+            toast({
+                title: 'Error',
+                description: 'Please select a site and enter a valid price.',
+                status: 'error',
+                duration: 3000,
+                isClosable: true,
+            });
+            return;
+        }
+
+        // Check if site already has a price
+        const existingPriceIndex = editingType?.sitePrices?.findIndex(
+            sp => sp.site._id === selectedSiteForPrice
+        );
+
+        if (existingPriceIndex !== undefined && existingPriceIndex >= 0) {
+            // Update existing price
+            const updatedPrices = [...(editingType?.sitePrices || [])];
+            updatedPrices[existingPriceIndex] = {
+                ...updatedPrices[existingPriceIndex],
+                price: sitePriceValue
+            };
+            setEditingType(prev => prev ? { ...prev, sitePrices: updatedPrices } : null);
+        } else {
+            // Add new price
+            const selectedSite = sites.find(s => s._id === selectedSiteForPrice);
+            if (selectedSite) {
+                const newPrice: SitePrice = {
+                    _key: `site-price-${Date.now()}`,
+                    site: {
+                        _id: selectedSite._id,
+                        name: selectedSite.name
+                    },
+                    price: sitePriceValue
+                };
+                setEditingType(prev => prev ? {
+                    ...prev,
+                    sitePrices: [...(prev.sitePrices || []), newPrice]
+                } : null);
+            }
+        }
+
+        // Reset form
+        setSelectedSiteForPrice('');
+        setSitePriceValue(0);
+        setShowSitePriceForm(false);
+    };
+
+    const handleRemoveSitePrice = (siteId: string) => {
+        setEditingType(prev => prev ? {
+            ...prev,
+            sitePrices: prev.sitePrices?.filter(sp => sp.site._id !== siteId) || []
+        } : null);
     };
 
     const handleSave = async () => {
@@ -129,15 +226,22 @@ export default function DispatchTypesPage() {
             return;
         }
 
-        // Handle null/undefined selling price
-        const safeSellingPrice = editingType.sellingPrice !== null && editingType.sellingPrice !== undefined
-            ? Number(editingType.sellingPrice)
-            : 0;
-
-        if (safeSellingPrice < 0) {
+        if (editingType.sellingPrice < 0) {
             toast({
                 title: 'Error',
                 description: 'Selling price cannot be negative.',
+                status: 'error',
+                duration: 3000,
+                isClosable: true,
+            });
+            return;
+        }
+
+        // Validate site prices
+        if (editingType.sitePrices?.some(sp => sp.price < 0)) {
+            toast({
+                title: 'Error',
+                description: 'Site prices cannot be negative.',
                 status: 'error',
                 duration: 3000,
                 isClosable: true,
@@ -159,7 +263,8 @@ export default function DispatchTypesPage() {
                     name: editingType.name.trim(),
                     description: editingType.description?.trim() || '',
                     defaultTime: editingType.defaultTime || '',
-                    sellingPrice: safeSellingPrice,
+                    sellingPrice: editingType.sellingPrice,
+                    sitePrices: editingType.sitePrices || [],
                     isActive: editingType.isActive !== false
                 }),
             });
@@ -180,7 +285,7 @@ export default function DispatchTypesPage() {
 
             onClose();
             setEditingType(null);
-            fetchDispatchTypes();
+            fetchData();
         } catch (error: any) {
             console.error('Error saving dispatch type:', error);
             toast({
@@ -219,7 +324,7 @@ export default function DispatchTypesPage() {
                 isClosable: true,
             });
 
-            fetchDispatchTypes();
+            fetchData();
         } catch (error: any) {
             console.error('Error deleting dispatch type:', error);
             toast({
@@ -232,11 +337,22 @@ export default function DispatchTypesPage() {
         }
     };
 
-    // Safe price display with null check
-    const formatPrice = (price: number | null | undefined): string => {
-        const safePrice = price !== null && price !== undefined ? price : 0;
-        return `E ${safePrice.toFixed(2)}`;
+    // Get site name by ID for display
+    const getSiteName = (siteId: string): string => {
+        const site = sites.find(s => s._id === siteId);
+        return site ? site.name : 'Unknown Site';
     };
+
+    // Get price for a specific site
+    const getSitePrice = (dispatchType: DispatchType, siteId: string): number => {
+        const sitePrice = dispatchType.sitePrices?.find(sp => sp.site._id === siteId);
+        return sitePrice ? sitePrice.price : dispatchType.sellingPrice;
+    };
+
+    // Sites without prices for the current editing type
+    const availableSites = sites.filter(site =>
+        !editingType?.sitePrices?.some(sp => sp.site._id === site._id)
+    );
 
     if (status === 'loading' || loading) {
         return (
@@ -290,6 +406,7 @@ export default function DispatchTypesPage() {
                                         <Th>Description</Th>
                                         <Th>Default Time</Th>
                                         <Th>Selling Price</Th>
+                                        <Th>Site Prices</Th>
                                         <Th>Status</Th>
                                         <Th>Actions</Th>
                                     </Tr>
@@ -304,7 +421,20 @@ export default function DispatchTypesPage() {
                                                 </Text>
                                             </Td>
                                             <Td>{type.defaultTime || 'Not set'}</Td>
-                                            <Td>{formatPrice(type.sellingPrice)}</Td>
+                                            <Td>E {type.sellingPrice.toFixed(2)}</Td>
+                                            <Td>
+                                                <VStack align="start" spacing={1}>
+                                                    {type.sitePrices && type.sitePrices.length > 0 ? (
+                                                        type.sitePrices.map((sitePrice, index) => (
+                                                            <Text key={index} fontSize="sm">
+                                                                {getSiteName(sitePrice.site._id)}: E {sitePrice.price.toFixed(2)}
+                                                            </Text>
+                                                        ))
+                                                    ) : (
+                                                        <Text fontSize="sm" color="gray.500">No site-specific prices</Text>
+                                                    )}
+                                                </VStack>
+                                            </Td>
                                             <Td>
                                                 <Badge colorScheme={type.isActive ? 'green' : 'red'}>
                                                     {type.isActive ? 'Active' : 'Inactive'}
@@ -332,7 +462,7 @@ export default function DispatchTypesPage() {
                                     ))}
                                     {dispatchTypes.length === 0 && (
                                         <Tr>
-                                            <Td colSpan={6} textAlign="center" py={8}>
+                                            <Td colSpan={7} textAlign="center" py={8}>
                                                 <Text color="gray.500">No dispatch types found.</Text>
                                             </Td>
                                         </Tr>
@@ -344,9 +474,9 @@ export default function DispatchTypesPage() {
                 </Card>
 
                 {/* Create/Edit Modal */}
-                <Modal isOpen={isOpen} onClose={onClose} size="lg">
+                <Modal isOpen={isOpen} onClose={onClose} size="xl">
                     <ModalOverlay />
-                    <ModalContent>
+                    <ModalContent maxH="90vh" overflowY="auto">
                         <ModalHeader>
                             {editingType?._id ? 'Edit Dispatch Type' : 'Create Dispatch Type'}
                         </ModalHeader>
@@ -396,7 +526,118 @@ export default function DispatchTypesPage() {
                                             <NumberDecrementStepper />
                                         </NumberInputStepper>
                                     </NumberInput>
+                                    <Text fontSize="sm" color="gray.600" mt={1}>
+                                        This price will be used for sites without specific overrides
+                                    </Text>
                                 </FormControl>
+
+                                {/* Site-Specific Prices */}
+                                <Box width="100%">
+                                    <HStack justify="space-between" mb={2}>
+                                        <FormLabel mb={0}>Site-Specific Prices (Optional)</FormLabel>
+                                        {!showSitePriceForm && availableSites.length > 0 && (
+                                            <Button
+                                                size="sm"
+                                                leftIcon={<FiPlus />}
+                                                onClick={() => setShowSitePriceForm(true)}
+                                            >
+                                                Add Site Price
+                                            </Button>
+                                        )}
+                                    </HStack>
+
+                                    {showSitePriceForm && (
+                                        <Box p={4} borderWidth="1px" borderRadius="md" mb={4}>
+                                            <SimpleGrid columns={{ base: 1, md: 2 }} spacing={4}>
+                                                <FormControl>
+                                                    <FormLabel>Site</FormLabel>
+                                                    <Select
+                                                        value={selectedSiteForPrice}
+                                                        onChange={(e) => setSelectedSiteForPrice(e.target.value)}
+                                                        placeholder="Select site"
+                                                    >
+                                                        {availableSites.map(site => (
+                                                            <option key={site._id} value={site._id}>
+                                                                {site.name}
+                                                            </option>
+                                                        ))}
+                                                    </Select>
+                                                </FormControl>
+                                                <FormControl>
+                                                    <FormLabel>Price per Person</FormLabel>
+                                                    <NumberInput
+                                                        value={sitePriceValue}
+                                                        min={0}
+                                                        step={0.01}
+                                                        precision={2}
+                                                        onChange={(valueString, valueNumber) => setSitePriceValue(valueNumber)}
+                                                    >
+                                                        <NumberInputField />
+                                                        <NumberInputStepper>
+                                                            <NumberIncrementStepper />
+                                                            <NumberDecrementStepper />
+                                                        </NumberInputStepper>
+                                                    </NumberInput>
+                                                </FormControl>
+                                            </SimpleGrid>
+                                            <HStack justify="flex-end" mt={4}>
+                                                <Button
+                                                    size="sm"
+                                                    variant="ghost"
+                                                    onClick={() => {
+                                                        setShowSitePriceForm(false);
+                                                        setSelectedSiteForPrice('');
+                                                        setSitePriceValue(0);
+                                                    }}
+                                                >
+                                                    Cancel
+                                                </Button>
+                                                <Button
+                                                    size="sm"
+                                                    colorScheme="blue"
+                                                    onClick={handleAddSitePrice}
+                                                    isDisabled={!selectedSiteForPrice || sitePriceValue <= 0}
+                                                >
+                                                    Add Price
+                                                </Button>
+                                            </HStack>
+                                        </Box>
+                                    )}
+
+                                    {/* Display current site prices */}
+                                    {editingType?.sitePrices && editingType.sitePrices.length > 0 && (
+                                        <Box mt={4}>
+                                            <Text fontWeight="medium" mb={2}>Current Site Prices:</Text>
+                                            <VStack align="stretch" spacing={2}>
+                                                {editingType.sitePrices.map((sitePrice, index) => (
+                                                    <HStack
+                                                        key={sitePrice.site._id}
+                                                        p={3}
+                                                        borderWidth="1px"
+                                                        borderRadius="md"
+                                                        justify="space-between"
+                                                    >
+                                                        <Box>
+                                                            <Text fontWeight="medium">{sitePrice.site.name}</Text>
+                                                            <Text fontSize="sm" color="gray.600">
+                                                                E {sitePrice.price.toFixed(2)} per person
+                                                            </Text>
+                                                        </Box>
+                                                        <IconButton
+                                                            aria-label="Remove site price"
+                                                            icon={<FiTrash2 />}
+                                                            size="sm"
+                                                            colorScheme="red"
+                                                            variant="ghost"
+                                                            onClick={() => handleRemoveSitePrice(sitePrice.site._id)}
+                                                        />
+                                                    </HStack>
+                                                ))}
+                                            </VStack>
+                                        </Box>
+                                    )}
+                                </Box>
+
                                 <FormControl display="flex" alignItems="center">
                                     <FormLabel htmlFor="is-active" mb="0">
                                         Active

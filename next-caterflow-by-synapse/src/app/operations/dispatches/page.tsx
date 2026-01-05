@@ -1,3 +1,4 @@
+// src/app/operations/dispatches/page.tsx (REPLACE ENTIRE FILE)
 'use client';
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
@@ -22,7 +23,7 @@ import {
     HStack,
     VStack,
 } from '@chakra-ui/react';
-import { FiPlus, FiSearch, FiEye, FiFilter, FiEdit, FiChevronUp, FiChevronDown } from 'react-icons/fi'; // ADDED missing icons
+import { FiPlus, FiSearch, FiEye, FiFilter, FiEdit, FiChevronUp, FiChevronDown } from 'react-icons/fi';
 import DataTable from '@/components/DataTable';
 import { useSession } from 'next-auth/react'
 import DispatchModal from '@/components/DispatchModal';
@@ -36,18 +37,27 @@ interface DispatchRecord {
     notes?: string;
     totalCost?: number;
     costPerPerson?: number;
+    sellingPrice?: number;
+    totalSales?: number;
     dispatchType?: {
         _id: string;
         name: string;
         description?: string;
+        sellingPrice?: number;
+        sitePrices?: Array<{
+            _key: string;
+            site: {
+                _id: string;
+                name: string;
+            };
+            price: number;
+        }>;
     };
-    sourceBin?: {
+    sourceSite?: {
         _id: string;
         name: string;
-        site?: {
-            _id: string;
-            name: string;
-        };
+        location?: string;
+        code?: string;
     };
     dispatchedBy?: {
         _id: string;
@@ -61,6 +71,14 @@ interface DispatchRecord {
             name: string;
             sku?: string;
             unitOfMeasure?: string;
+        };
+        sourceBin?: {
+            _id: string;
+            name: string;
+            site?: {
+                _id: string;
+                name: string;
+            };
         };
         dispatchedQuantity: number;
         unitPrice?: number;
@@ -87,7 +105,7 @@ export default function DispatchesPage() {
     const { isOpen, onOpen, onClose } = useDisclosure();
     const toast = useToast();
     const [viewMode, setViewMode] = useState<'actionRequired' | 'all'>('all');
-    const [expandedDispatchId, setExpandedDispatchId] = useState<string | null>(null); // MOVED up with other state
+    const [expandedDispatchId, setExpandedDispatchId] = useState<string | null>(null);
 
     // Theming props
     const bgPrimary = useColorModeValue('neutral.light.bg-primary', 'neutral.dark.bg-primary');
@@ -141,9 +159,9 @@ export default function DispatchesPage() {
                 const term = searchTerm.toLowerCase();
                 const dispatchNumberMatch = (dispatch.dispatchNumber || '').toLowerCase().includes(term);
                 const dispatchTypeMatch = (dispatch.dispatchType?.name || '').toLowerCase().includes(term);
-                const sourceBinMatch = (dispatch.sourceBin?.name || '').toLowerCase().includes(term);
+                const sourceSiteMatch = (dispatch.sourceSite?.name || '').toLowerCase().includes(term);
                 const dispatchedByMatch = (dispatch.dispatchedBy?.name || '').toLowerCase().includes(term);
-                return dispatchNumberMatch || dispatchTypeMatch || sourceBinMatch || dispatchedByMatch;
+                return dispatchNumberMatch || dispatchTypeMatch || sourceSiteMatch || dispatchedByMatch;
             })
             : dispatches;
 
@@ -220,7 +238,6 @@ export default function DispatchesPage() {
         setExpandedDispatchId(expandedDispatchId === dispatchId ? null : dispatchId);
     };
 
-    // FIXED: Currency formatting - removed the extra {
     const columns = useMemo(() => [
         {
             accessorKey: 'workflowAction',
@@ -274,17 +291,12 @@ export default function DispatchesPage() {
             },
         },
         {
-            accessorKey: 'sourceBin.name',
-            header: 'Source Bin',
+            accessorKey: 'sourceSite.name',
+            header: 'Source Site',
             isSortable: true,
             cell: (row: any) => {
                 const d: DispatchRecord = row?.original ?? row;
-                return (
-                    <Box>
-                        <Text fontWeight="bold">{d?.sourceBin?.name || '-'}</Text>
-                        <Text fontSize="sm" color={secondaryTextColor}>{d?.sourceBin?.site?.name || ''}</Text>
-                    </Box>
-                );
+                return d?.sourceSite?.name || '-';
             },
         },
         {
@@ -317,7 +329,7 @@ export default function DispatchesPage() {
             isSortable: true,
             cell: (row: any) => {
                 const d: DispatchRecord = row?.original ?? row;
-                return d?.totalCost ? `E ${d.totalCost.toFixed(2)}` : 'E 0.00'; // FIXED: removed extra {
+                return d?.totalCost ? `E ${d.totalCost.toFixed(2)}` : 'E 0.00';
             },
         },
         {
@@ -330,12 +342,30 @@ export default function DispatchesPage() {
             },
         },
         {
+            accessorKey: 'sellingPrice',
+            header: 'Price/Person',
+            isSortable: true,
+            cell: (row: any) => {
+                const d: DispatchRecord = row?.original ?? row;
+                return d?.sellingPrice ? `E ${d.sellingPrice.toFixed(2)}` : 'N/A';
+            },
+        },
+        {
+            accessorKey: 'totalSales',
+            header: 'Total Sales',
+            isSortable: true,
+            cell: (row: any) => {
+                const d: DispatchRecord = row?.original ?? row;
+                return d?.totalSales ? `E ${d.totalSales.toFixed(2)}` : 'N/A';
+            },
+        },
+        {
             accessorKey: 'costPerPerson',
             header: 'Cost per Person',
             isSortable: true,
             cell: (row: any) => {
                 const d: DispatchRecord = row?.original ?? row;
-                return d?.costPerPerson ? `E ${d.costPerPerson.toFixed(2)}` : 'N/A'; // FIXED: removed extra {
+                return d?.costPerPerson ? `E ${d.costPerPerson.toFixed(2)}` : 'N/A';
             },
         },
         {
@@ -379,7 +409,6 @@ export default function DispatchesPage() {
                         Dispatches
                     </Heading>
                     <HStack spacing={3} flexWrap="wrap">
-
                         <Button
                             leftIcon={<FiEye />}
                             colorScheme="brand"

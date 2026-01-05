@@ -1,4 +1,4 @@
-// src/app/actions/page.tsx
+// src/app/actions/page.tsx (REPLACE ENTIRE FILE)
 'use client';
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
@@ -32,7 +32,7 @@ import TransferModal from '@/components/TransferModal';
 import BinCountModal from '@/components/BinCountModal';
 import DispatchModal from '@/components/DispatchModal';
 import StockItemSelectorModal from '@/components/StockItemSelectorModal';
-import { FiPlus } from 'react-icons/fi'; // Add this import
+import { FiPlus } from 'react-icons/fi';
 
 // Interfaces matching the individual operation pages
 interface PurchaseOrder {
@@ -88,7 +88,7 @@ interface BinCount {
     countedItems: any[];
 }
 
-// Use the exact same Dispatch interface structure as DispatchModal
+// Use the updated Dispatch interface structure that matches DispatchModal.tsx
 interface Site {
     _id: string;
     name: string;
@@ -108,6 +108,17 @@ interface User {
     associatedSite?: Site;
 }
 
+interface DispatchType {
+    _id: string;
+    name: string;
+    sellingPrice: number;
+    sitePrices?: Array<{
+        _key: string;
+        site: Site;
+        price: number;
+    }>;
+}
+
 interface DispatchedItem {
     _key: string;
     stockItem: {
@@ -118,29 +129,50 @@ interface DispatchedItem {
         currentStock?: number;
         unitPrice?: number;
     };
+    sourceBin?: {
+        _id: string;
+        name: string;
+        site: Site;
+    };
     dispatchedQuantity: number;
     unitPrice?: number;
     totalCost?: number;
     notes?: string;
 }
 
-// This matches the Dispatch interface from DispatchModal exactly
+// Updated Dispatch interface to match the new structure with sourceSite instead of sourceBin
 interface Dispatch {
     _id: string;
     dispatchNumber: string;
     dispatchDate: string;
     notes?: string;
-    dispatchType: {
-        _id: string;
-        name: string;
-    };
+    dispatchType: DispatchType;
+    sourceSite: Site; // Changed from sourceBin to sourceSite
     dispatchedItems: DispatchedItem[];
-    sourceBin: Bin;
     dispatchedBy: User;
     peopleFed?: number;
     evidenceStatus?: 'pending' | 'partial' | 'complete';
     status?: string;
-    attachments?: { _id: string; url?: string; name?: string }[];
+    sellingPrice?: number;
+    totalSales?: number;
+    attachments?: {
+        _id: string;
+        fileName?: string;
+        fileType?: string;
+        description?: string;
+        uploadedAt?: string;
+        file?: {
+            asset?: {
+                _id: string;
+                _type: string;
+                url?: string;
+                originalFilename?: string;
+                mimeType?: string;
+            };
+        };
+        url?: string;
+        name?: string
+    }[];
 }
 
 // Operation types and their required roles
@@ -148,10 +180,9 @@ const OPERATION_TYPES = {
     PurchaseOrder: {
         title: 'Purchase Orders',
         roles: ['admin', 'siteManager', 'stockController', 'auditor'],
-        // Add 'pending-approval' to statusFilter for site managers to see POs needing approval
         statusFilter: ['draft', 'pending-approval'],
         icon: FiEdit,
-        actionLabel: 'Edit', // Keep as Edit for draft, but will handle differently for pending-approval
+        actionLabel: 'Edit',
         apiEndpoint: '/api/purchase-orders',
         detailEndpoint: (id: string) => `/api/purchase-orders?id=${id}`,
     },
@@ -205,7 +236,6 @@ export default function ActionsPage() {
     const scrollbarThumbColor = useColorModeValue('gray.300', 'gray.600');
     const scrollbarThumbHoverColor = useColorModeValue('gray.400', 'gray.500');
 
-
     // Modal states for different operation types
     const { isOpen: isOrderModalOpen, onOpen: onOrderModalOpen, onClose: onOrderModalClose } = useDisclosure();
     const { isOpen: isGoodsReceiptModalOpen, onOpen: onGoodsReceiptModalOpen, onClose: onGoodsReceiptModalClose } = useDisclosure();
@@ -231,7 +261,7 @@ export default function ActionsPage() {
     const isAuthenticated = status === 'authenticated';
     const isAuthReady = status !== 'loading';
 
-    // Theme-based colors - ALL HOOKS AT TOP LEVEL
+    // Theme-based colors
     const primaryBgColor = useColorModeValue('neutral.light.bg-primary', 'neutral.dark.bg-primary');
     const primaryTextColor = useColorModeValue('neutral.light.text-primary', 'neutral.dark.text-primary');
     const cardBg = useColorModeValue('white', 'gray.700');
@@ -248,7 +278,7 @@ export default function ActionsPage() {
             .map(([type, config]) => ({ type, ...config }));
     }, [user?.role]);
 
-    // Fetch data for each operation type separately, following the pattern of individual pages
+    // Fetch data for each operation type separately
     const fetchActions = useCallback(async (specificType?: string) => {
         setLoading(true);
         setError(null);
@@ -273,7 +303,7 @@ export default function ActionsPage() {
                             ...item,
                             _type: operation.type,
                             actionType: operation.type,
-                            siteName: item.site?.name || item.bin?.site?.name || item.sourceBin?.site?.name || 'N/A',
+                            siteName: item.site?.name || item.bin?.site?.name || item.sourceSite?.name || 'N/A',
                             description: item.description || `Operation ${item.poNumber || item.receiptNumber || item.transferNumber || item.countNumber || item.dispatchNumber}`,
                             createdAt: item.orderDate || item.receiptDate || item.transferDate || item.countDate || item.dispatchDate || item.createdAt,
                         }));
@@ -323,8 +353,6 @@ export default function ActionsPage() {
         fetchActions();
     }, [activeTab, availableOperations, fetchActions]);
 
-
-
     // Get actions that require action for each operation type
     const getActionRequiredActions = (operationType: string) => {
         return actions.filter(action => action._type === operationType);
@@ -343,7 +371,7 @@ export default function ActionsPage() {
 
     const actionCounts = getActionCounts();
 
-    // Handler for Purchase Order actions - follows the same pattern as PurchasesPage
+    // Handler for Purchase Order actions
     const handleEditPO = async (action: any) => {
         try {
             const config = OPERATION_TYPES.PurchaseOrder;
@@ -400,7 +428,7 @@ export default function ActionsPage() {
         }
     };
 
-    // Handler for Goods Receipt actions - follows GoodsReceiptsPage pattern
+    // Handler for Goods Receipt actions
     const handleReceiveGoods = async (action: any) => {
         try {
             const config = OPERATION_TYPES.GoodsReceipt;
@@ -422,7 +450,7 @@ export default function ActionsPage() {
         }
     };
 
-    // Handler for Transfer actions - follows TransfersPage pattern
+    // Handler for Transfer actions
     const handleEditTransfer = async (action: any) => {
         try {
             const config = OPERATION_TYPES.InternalTransfer;
@@ -454,7 +482,7 @@ export default function ActionsPage() {
         }
     };
 
-    // Handler for Bin Count actions - follows BinCountsPage pattern
+    // Handler for Bin Count actions
     const handleEditBinCount = async (action: any) => {
         try {
             const config = OPERATION_TYPES.BinCount;
@@ -486,7 +514,7 @@ export default function ActionsPage() {
         }
     };
 
-    // Handler for Dispatch actions - follows DispatchesPage pattern
+    // Handler for Dispatch actions - Updated to match new structure
     const handleEditDispatch = async (action: any) => {
         try {
             const config = OPERATION_TYPES.Dispatch;
@@ -496,13 +524,18 @@ export default function ActionsPage() {
             }
             const dispatch = await response.json();
 
-            // Transform the API response to match the exact Dispatch interface structure
+            // Transform the API response to match the updated Dispatch interface structure
             const safeDispatch: Dispatch = {
                 _id: dispatch._id,
                 dispatchNumber: dispatch.dispatchNumber,
                 dispatchDate: dispatch.dispatchDate,
                 notes: dispatch.notes || '',
-                dispatchType: dispatch.dispatchType || { _id: '', name: '' },
+                dispatchType: dispatch.dispatchType || {
+                    _id: '',
+                    name: '',
+                    sellingPrice: 0
+                },
+                sourceSite: dispatch.sourceSite || { _id: '', name: '' }, // Changed from sourceBin to sourceSite
                 dispatchedItems: (dispatch.dispatchedItems || []).map((item: any) => ({
                     _key: item._key || Math.random().toString(36).substr(2, 9),
                     stockItem: {
@@ -513,16 +546,18 @@ export default function ActionsPage() {
                         currentStock: item.stockItem?.currentStock,
                         unitPrice: item.stockItem?.unitPrice
                     },
+                    sourceBin: item.sourceBin || undefined, // sourceBin is now at item level
                     dispatchedQuantity: item.dispatchedQuantity || 0,
                     unitPrice: item.unitPrice || 0,
                     totalCost: item.totalCost || 0,
                     notes: item.notes || ''
                 })),
-                sourceBin: dispatch.sourceBin || { _id: '', name: '', site: { _id: '', name: '' } },
                 dispatchedBy: dispatch.dispatchedBy || { _id: '', name: '', email: '', role: '' },
                 peopleFed: dispatch.peopleFed,
                 evidenceStatus: dispatch.evidenceStatus || 'pending',
                 status: dispatch.status || 'draft',
+                sellingPrice: dispatch.sellingPrice,
+                totalSales: dispatch.totalSales,
                 attachments: dispatch.attachments || []
             };
 
@@ -629,43 +664,6 @@ export default function ActionsPage() {
         }
     };
 
-    /*const handleApprovePO = async (action: PurchaseOrderDetails | any) => {
-        try {
-            const response = await fetch('/api/actions/update', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    id: action._id,
-                    status: 'pending-approval',
-                }),
-            });
-
-            if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.error || 'Failed to submit for approval');
-            }
-
-            toast({
-                title: 'Order Submitted',
-                description: `The purchase order has been submitted for approval.`,
-                status: 'success',
-                duration: 5000,
-                isClosable: true,
-            });
-            onOrderModalClose();
-            refreshCurrentTab();
-
-        } catch (error: any) {
-            toast({
-                title: 'Error',
-                description: error.message || 'Failed to submit order for approval. Please try again.',
-                status: 'error',
-                duration: 5000,
-                isClosable: true,
-            });
-        }
-    };*/
-
     const handleApprovePO = async (poDetails: PurchaseOrderDetails) => {
         try {
             const response = await fetch('/api/actions/update', {
@@ -753,11 +751,9 @@ export default function ActionsPage() {
         }
     }, [isAuthReady, isAuthenticated, user, fetchActions, refreshTriggers]);
 
-
-    // Add this useEffect after your other useEffect hooks
+    // Initialize edited states when modal opens
     useEffect(() => {
         if (poDetails && isOrderModalOpen) {
-            // Initialize edited states when modal opens
             const initialQuantities: { [key: string]: number } = {};
             const initialPrices: { [key: string]: number } = {};
 
@@ -772,27 +768,6 @@ export default function ActionsPage() {
             setEditedPrices(initialPrices);
         }
     }, [poDetails, isOrderModalOpen]);
-
-    if (status === 'loading' || loading) {
-        return (
-            <Flex justifyContent="center" alignItems="center" minH="100vh" bg={primaryBgColor}>
-                <Spinner size="xl" color="brand.500" />
-            </Flex>
-        );
-    }
-
-    if (error) {
-        return (
-            <Flex justifyContent="center" alignItems="center" minH="100vh" direction="column" bg={primaryBgColor}>
-                <Text fontSize="xl" color="red.500">
-                    {error}
-                </Text>
-                <Button onClick={() => fetchActions()} mt={4} colorScheme="brand">
-                    Try Again
-                </Button>
-            </Flex>
-        );
-    }
 
     const handleFinalApprovePO = async (poDetails: PurchaseOrderDetails) => {
         try {
@@ -897,7 +872,7 @@ export default function ActionsPage() {
             });
 
             // Refresh data
-            refreshCurrentTab(); // In actions/page.tsx
+            refreshCurrentTab();
         } catch (error) {
             toast({
                 title: 'Error',
@@ -910,6 +885,27 @@ export default function ActionsPage() {
             setIsAddItemModalOpen(false);
         }
     };
+
+    if (status === 'loading' || loading) {
+        return (
+            <Flex justifyContent="center" alignItems="center" minH="100vh" bg={primaryBgColor}>
+                <Spinner size="xl" color="brand.500" />
+            </Flex>
+        );
+    }
+
+    if (error) {
+        return (
+            <Flex justifyContent="center" alignItems="center" minH="100vh" direction="column" bg={primaryBgColor}>
+                <Text fontSize="xl" color="red.500">
+                    {error}
+                </Text>
+                <Button onClick={() => fetchActions()} mt={4} colorScheme="brand">
+                    Try Again
+                </Button>
+            </Flex>
+        );
+    }
 
     return (
         <Box p={{ base: 2, md: 6, lg: 8 }} bg={primaryBgColor} minH="calc(100vh - 60px)">
@@ -928,7 +924,6 @@ export default function ActionsPage() {
                     whiteSpace="nowrap"
                     py={1}
                     sx={{
-                        // Custom scrollbar that works with your theme
                         '&::-webkit-scrollbar': {
                             height: '4px',
                         },
@@ -943,13 +938,8 @@ export default function ActionsPage() {
                         '&::-webkit-scrollbar-thumb:hover': {
                             bg: scrollbarThumbHoverColor,
                         },
-                        // Ensure smooth scrolling on all devices
                         WebkitOverflowScrolling: 'touch',
                         scrollBehavior: 'smooth',
-                        // Hide scrollbar when not scrolling (optional)
-                        '&:not(:hover)::-webkit-scrollbar-thumb': {
-                            bg: 'transparent',
-                        },
                     }}
                 >
                     {availableOperations.map((operation, index) => (
@@ -1132,17 +1122,14 @@ export default function ActionsPage() {
                     }}
                     onApproveRequest={() => {
                         if (poDetails) {
-                            // This submits the PO for approval (changes status to 'pending-approval')
                             handleApprovePO(poDetails);
                             refreshCurrentTab();
                         }
                     }}
                     onApprovePO={() => {
-                        // This approves a PO that's already in 'pending-approval' status
                         handleFinalApprovePO(poDetails);
                     }}
                     onRejectPO={() => {
-                        // This rejects a PO that's in 'pending-approval' status
                         handleRejectPO(poDetails);
                     }}
                     onRemoveItem={() => { }}

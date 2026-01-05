@@ -1,8 +1,11 @@
+// src/app/api/dispatch-types/route.ts (REPLACE ENTIRE FILE)
 import { NextResponse } from 'next/server';
 import { client, writeClient } from '@/lib/sanity';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 
+
+// src/app/api/dispatch-types/route.ts (UPDATE the POST and GET functions)
 
 // GET all dispatch types
 export async function GET() {
@@ -13,6 +16,14 @@ export async function GET() {
             description,
             defaultTime,
             sellingPrice,
+            sitePrices[]{
+                _key,
+                "site": site->{
+                    _id,
+                    name
+                },
+                price
+            },
             isActive
         }`;
 
@@ -34,11 +45,22 @@ export async function POST(request: Request) {
         }
 
         const body = await request.json();
-        const { name, description, defaultTime, sellingPrice = 0, isActive = true } = body;
+        const { name, description, defaultTime, sellingPrice = 0, sitePrices = [], isActive = true } = body;
 
         if (!name) {
             return NextResponse.json({ error: 'Name is required' }, { status: 400 });
         }
+
+        // Prepare sitePrices array with proper structure
+        const formattedSitePrices = sitePrices.map((sp: any) => ({
+            _key: sp._key || `site-price-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            _type: 'object',
+            site: {
+                _type: 'reference',
+                _ref: sp.site._id
+            },
+            price: sp.price
+        }));
 
         const newDoc = {
             _type: 'DispatchType',
@@ -46,6 +68,7 @@ export async function POST(request: Request) {
             description,
             defaultTime,
             sellingPrice,
+            sitePrices: formattedSitePrices,
             isActive,
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),

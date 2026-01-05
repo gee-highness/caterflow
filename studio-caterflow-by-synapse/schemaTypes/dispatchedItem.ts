@@ -1,4 +1,4 @@
-// schemas/dispatchedItem.ts
+// schemas/dispatchedItem.ts (REPLACE ENTIRE FILE - same as Step 3 in previous response)
 import { defineType, defineField } from 'sanity';
 
 export default defineType({
@@ -12,6 +12,14 @@ export default defineType({
             type: 'reference',
             to: [{ type: 'StockItem' }],
             validation: (Rule) => Rule.required(),
+        }),
+        defineField({
+            name: 'sourceBin',
+            title: 'Source Bin',
+            type: 'reference',
+            to: [{ type: 'Bin' }],
+            validation: (Rule) => Rule.required(),
+            description: 'The bin from which this item was dispatched',
         }),
         defineField({
             name: 'dispatchedQuantity',
@@ -52,7 +60,7 @@ export default defineType({
         prepare({ title, subtitle, unit, unitPrice, totalCost }) {
             return {
                 title: title,
-                subtitle: `${subtitle} ${unit} | Unit: E {(unitPrice || 0} | Total: E {(totalCost || 0}`,
+                subtitle: `${subtitle} ${unit} | Unit: E ${unitPrice || 0} | Total: E ${totalCost || 0}`,
             };
         },
     },

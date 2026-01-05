@@ -8,20 +8,21 @@ import purchaseOrder from './purchaseOrder';
 import goodsReceipt from './goodsReceipt';
 import dispatchLog from './dispatchLog';
 import internalTransfer from './internalTransfer';
-import stockAdjustment from './stockAdjustment';
+import stockAdjustment from './stockAdjustment'; // Add this
 import inventoryCount from './inventoryCount';
 import appUser from './appUser';
 import notificationPreference from './notificationPreference';
 import fileAttachment from './fileAttachment';
-import dispatchType from './dispatchType'; // Add this import
+import dispatchType from './dispatchType';
 
 // Nested object schemas
 import orderedItem from './orderedItem';
 import receivedItem from './receivedItem';
 import dispatchedItem from './dispatchedItem';
-import adjustedItem from './adjustedItem';
+import adjustedItem from './adjustedItem'; // Add this
 import countedItem from './countedItem';
-import transferredItem from './transferredItem';
+import transferredItem from './transferredItem'; // Add this
+import stockSnapshot from './stockSnapshot';
 
 export const schemaTypes = [
     // Document types
@@ -34,18 +35,19 @@ export const schemaTypes = [
     goodsReceipt,
     dispatchLog,
     internalTransfer,
-    stockAdjustment,
+    stockAdjustment, // Add this
     inventoryCount,
     appUser,
     notificationPreference,
     fileAttachment,
-    dispatchType, // Add this
+    dispatchType,
 
     // Nested object types
     orderedItem,
     receivedItem,
     dispatchedItem,
-    transferredItem,
-    adjustedItem,
+    transferredItem, // Add this
+    adjustedItem, // Add this
     countedItem,
+    stockSnapshot
 ];
