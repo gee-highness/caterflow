@@ -67,18 +67,11 @@ export function buildTransactionSiteFilter(userSiteInfo: UserSiteInfo): string {
 
   if (userSiteInfo.userSiteId) {
     return `&& (
-      // For transfers
       receivingBin->site._ref == "${userSiteInfo.userSiteId}" ||
       fromBin->site._ref == "${userSiteInfo.userSiteId}" ||
       toBin->site._ref == "${userSiteInfo.userSiteId}" ||
-      
-      // For OLD dispatches (sourceBin)
       sourceBin->site._ref == "${userSiteInfo.userSiteId}" ||
-      
-      // For NEW dispatches (sourceSite)
       sourceSite._ref == "${userSiteInfo.userSiteId}" ||
-      
-      // For bin counts
       bin->site._ref == "${userSiteInfo.userSiteId}"
     )`;
   }
