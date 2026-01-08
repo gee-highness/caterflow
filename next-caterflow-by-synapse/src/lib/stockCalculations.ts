@@ -1542,7 +1542,7 @@ export async function updateStockForTransaction(
 
         items = (transaction.dispatchedItems || []).map((item: any) => ({
           stockItemId: item.stockItemId,
-          quantity: (item.dispatchedQuantity || 0),
+          quantity: -(item.dispatchedQuantity || 0),
           binId: item.sourceBinId  // Use item-level sourceBinId, not document-level
         })).filter((item: { binId: any; }) => item.binId); // Only include items with a binId
 
