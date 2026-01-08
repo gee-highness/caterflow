@@ -180,12 +180,8 @@ interface Site {
 interface Supplier {
 	_id: string;
 	name: string;
-	contactPerson?: string;
-	phoneNumber?: string;
-	email?: string;
-	address?: string;
-	terms?: string;
 	code?: string;
+	// Removed: contactPerson, phoneNumber, email, address, terms
 }
 
 interface RequisitionItem {
@@ -267,13 +263,7 @@ interface EnhancedRequisitionSummary {
 		supplier: Supplier;
 		items: RequisitionItem[];
 		performance: SupplierPerformance;
-		contactInfo: {
-			contactPerson: string;
-			phoneNumber: string;
-			email: string;
-			address: string;
-			terms: string;
-		};
+		// Removed: contactInfo
 	}>;
 	stats: {
 		totalAmount: number;
@@ -540,9 +530,8 @@ export default function EnhancedRequisitionSummaryPage() {
 				item.itemName.toLowerCase().includes(query) ||
 				item.poNumber.toLowerCase().includes(query) ||
 				item.category.toLowerCase().includes(query) ||
-				item.itemSku?.toLowerCase().includes(query) ||
-				item.supplierContact?.toLowerCase().includes(query) ||
-				item.supplierPhone?.toLowerCase().includes(query)
+				item.itemSku?.toLowerCase().includes(query)
+				// Removed: supplierContact and supplierPhone search
 			);
 		}
 
@@ -1549,7 +1538,7 @@ export default function EnhancedRequisitionSummaryPage() {
 										<Input
 											value={searchQuery}
 											onChange={(e) => setSearchQuery(e.target.value)}
-											placeholder="Items, suppliers, POs, contacts..."
+											placeholder="Items, suppliers, POs, categories..."
 											borderColor={borderColor}
 											_focus={{ borderColor: accentColor }}
 										/>
@@ -1988,7 +1977,7 @@ export default function EnhancedRequisitionSummaryPage() {
 																					{supplierGroup.supplier.name}
 																				</Text>
 																				<Text fontSize="xs" color={secondaryTextColor}>
-																					{supplierGroup.contactInfo.phoneNumber || 'No phone'}
+																					{supplierGroup.supplier.code || 'No code'}
 																				</Text>
 																			</VStack>
 																		</HStack>
@@ -2221,12 +2210,12 @@ export default function EnhancedRequisitionSummaryPage() {
 																									<Td>
 																										<Box>
 																											<Text fontWeight="medium" mb={item.supplierContact || item.supplierPhone ? 1 : 0}>{item.supplierName}</Text>
-																											{item.supplierContact && (
+																											{item.supplierContact && item.supplierContact !== 'N/A' && (
 																												<Text as="span" fontSize="xs" color={secondaryTextColor} display="block">
 																													{item.supplierContact}
 																												</Text>
 																											)}
-																											{item.supplierPhone && (
+																											{item.supplierPhone && item.supplierPhone !== 'N/A' && (
 																												<Text as="span" fontSize="xs" color={secondaryTextColor} display="block">
 																													{item.supplierPhone}
 																												</Text>
@@ -2326,34 +2315,6 @@ export default function EnhancedRequisitionSummaryPage() {
 																</HStack>
 															</Badge>
 														</HStack>
-
-														{/* Contact Information */}
-														<VStack align="start" spacing={1} bg="gray.50" _dark={{ bg: 'gray.800' }} p={2} borderRadius="md">
-															{supplierGroup.contactInfo.contactPerson !== 'N/A' && (
-																<HStack spacing={2}>
-																	<Icon as={FiUser} color={secondaryTextColor} boxSize={3} />
-																	<Text fontSize="xs" color={secondaryTextColor}>
-																		{supplierGroup.contactInfo.contactPerson}
-																	</Text>
-																</HStack>
-															)}
-															{supplierGroup.contactInfo.phoneNumber !== 'N/A' && (
-																<HStack spacing={2}>
-																	<Icon as={FiPhone} color={secondaryTextColor} boxSize={3} />
-																	<Text fontSize="xs" color={secondaryTextColor}>
-																		{supplierGroup.contactInfo.phoneNumber}
-																	</Text>
-																</HStack>
-															)}
-															{supplierGroup.contactInfo.email !== 'N/A' && (
-																<HStack spacing={2}>
-																	<Icon as={FiMail} color={secondaryTextColor} boxSize={3} />
-																	<Text fontSize="xs" color={secondaryTextColor}>
-																		{supplierGroup.contactInfo.email}
-																	</Text>
-																</HStack>
-															)}
-														</VStack>
 
 														{/* Performance Metrics */}
 														<SimpleGrid columns={2} spacing={2} mt={2}>
@@ -2556,7 +2517,7 @@ export default function EnhancedRequisitionSummaryPage() {
 														<Th>Category</Th>
 														<Th>Supplier</Th>
 														<Th>Item</Th>
-														<Th>Contact</Th>
+														<Th>Supplier Code</Th>
 														<Th isNumeric>Qty</Th>
 														<Th isNumeric>Amount</Th>
 														<Th>Date</Th>
@@ -2580,7 +2541,7 @@ export default function EnhancedRequisitionSummaryPage() {
 															<Td>
 																<Box>
 																	<Text mb={item.siteAddress ? 1 : 0}>{item.siteName}</Text>
-																	{item.siteAddress && (
+																	{item.siteAddress && item.siteAddress !== 'N/A' && (
 																		<Text as="span" fontSize="xs" color={secondaryTextColor} display="block" isTruncated maxW="150px">
 																			{item.siteAddress}
 																		</Text>
@@ -2606,18 +2567,7 @@ export default function EnhancedRequisitionSummaryPage() {
 																		<PopoverBody>
 																			<VStack align="start" spacing={2}>
 																				<Text><strong>Name:</strong> {item.supplierName}</Text>
-																				{item.supplierContact && (
-																					<Text><strong>Contact:</strong> {item.supplierContact}</Text>
-																				)}
-																				{item.supplierPhone && (
-																					<Text><strong>Phone:</strong> {item.supplierPhone}</Text>
-																				)}
-																				{item.supplierEmail && (
-																					<Text><strong>Email:</strong> {item.supplierEmail}</Text>
-																				)}
-																				{item.supplierAddress && (
-																					<Text><strong>Address:</strong> {item.supplierAddress}</Text>
-																				)}
+																				<Text><strong>Code:</strong> {item.supplierCode || 'N/A'}</Text>
 																			</VStack>
 																		</PopoverBody>
 																	</PopoverContent>
@@ -2638,17 +2588,9 @@ export default function EnhancedRequisitionSummaryPage() {
 															</Td>
 															<Td>
 																<Box>
-																	{item.supplierContact && (
-																		<Text as="span" fontSize="xs" display="block">{item.supplierContact}</Text>
-																	)}
-																	{item.supplierPhone && (
-																		<HStack spacing={1}>
-																			<Icon as={FiPhone} boxSize={2} />
-																			<Text as="span" fontSize="xs" color={secondaryTextColor}>
-																				{item.supplierPhone}
-																			</Text>
-																		</HStack>
-																	)}
+																	<Text fontSize="sm" fontWeight="medium">
+																		{item.supplierCode || 'N/A'}
+																	</Text>
 																</Box>
 															</Td>
 															<Td isNumeric>
@@ -2988,7 +2930,7 @@ export default function EnhancedRequisitionSummaryPage() {
 											<SimpleGrid columns={2} spacing={2}>
 												<HStack spacing={2}>
 													<Icon as={FiCheckCircle} color="green.500" boxSize={3} />
-													<Text fontSize="xs">Supplier Contact Info</Text>
+													<Text fontSize="xs">Supplier Information</Text>
 												</HStack>
 												<HStack spacing={2}>
 													<Icon as={FiCheckCircle} color="green.500" boxSize={3} />
