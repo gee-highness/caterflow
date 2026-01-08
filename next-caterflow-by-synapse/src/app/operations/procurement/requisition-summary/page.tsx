@@ -2669,7 +2669,7 @@ export default function EnhancedRequisitionSummaryPage() {
 																	{new Date(item.orderDate).toLocaleDateString('en-GB')}
 																</Text>
 																<Text as="span" fontSize="xs" color={secondaryTextColor} display="block">
-																	{item.orderedBy.name || 'Unknown'}
+																	{item.orderedBy || 'Unknown'}
 																</Text>
 															</Td>
 														</Tr>

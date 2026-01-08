@@ -193,6 +193,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ disp
 }
 
 // --- PATCH single dispatch ---
+// --- PATCH single dispatch ---
 export async function PATCH(request: Request, { params }: { params: Promise<{ dispatchId: string }> }) {
     try {
         const session = await getServerSession(authOptions);
@@ -211,11 +212,13 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ di
         const existing = await client.fetch(
             `*[_type=="DispatchLog" && _id == $id][0]{ 
                 evidenceStatus, 
+                status,
                 dispatchedItems, 
                 peopleFed,
                 dispatchType,
                 sourceSite,
-                dispatchNumber
+                dispatchNumber,
+                completedAt
             }`,
             { id: dispatchId }
         );
@@ -236,9 +239,35 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ di
         let dispatchTypeId = resolveRef(existing.dispatchType);
         let siteId = resolveRef(existing.sourceSite);
 
+        // ✅ CRITICAL: Track if we're completing the dispatch
+        const wasCompleted = existing?.evidenceStatus === 'complete';
+        const willBeCompleted = updateData.evidenceStatus === 'complete' ||
+            (updateData.status === 'completed' && !wasCompleted);
+
         // simple fields
         if (updateData.dispatchDate) patch = patch.set({ dispatchDate: updateData.dispatchDate });
-        if (updateData.evidenceStatus) patch = patch.set({ evidenceStatus: updateData.evidenceStatus });
+
+        // Handle evidenceStatus and status updates
+        if (updateData.evidenceStatus) {
+            patch = patch.set({ evidenceStatus: updateData.evidenceStatus });
+        }
+
+        if (updateData.status) {
+            patch = patch.set({ status: updateData.status });
+        }
+
+        // ✅ SYNC COMPLETION FIELDS WHEN COMPLETING
+        if (willBeCompleted && !wasCompleted) {
+            console.log('🔄 Syncing completion fields for dispatch completion');
+            patch = patch.set({
+                evidenceStatus: 'complete',
+                status: 'completed'
+            });
+
+            if (!updateData.completedAt) {
+                patch = patch.set({ completedAt: new Date().toISOString() });
+            }
+        }
 
         if (updateData.hasOwnProperty('peopleFed')) {
             const newPeopleFed = Number(updateData.peopleFed) || 0;
@@ -247,7 +276,6 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ di
         }
 
         if (updateData.notes) patch = patch.set({ notes: updateData.notes });
-        if (updateData.status) patch = patch.set({ status: updateData.status });
 
         // references - robustly resolve to string ids
         if (updateData.dispatchType) {
@@ -336,22 +364,42 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ di
             patch = patch.set({ attachments: updateData.attachments });
         }
 
-        if (updateData.completedAt) {
+        if (updateData.completedAt && updateData.completedAt !== existing.completedAt) {
             patch = patch.set({ completedAt: updateData.completedAt });
         }
 
-        const wasCompleted = existing?.evidenceStatus === 'complete';
-        const willBeCompleted = updateData.evidenceStatus === 'complete' || (!updateData.evidenceStatus && wasCompleted);
+        // Validate items have source bins before completing
+        if (willBeCompleted && !wasCompleted) {
+            // Get the dispatch items to validate
+            const validationQuery = groq`*[_type == "DispatchLog" && _id == $id][0] {
+                "dispatchedItems": dispatchedItems[]{
+                    "hasBin": defined(sourceBin._ref),
+                    "quantity": dispatchedQuantity
+                }
+            }`;
 
-        if (wasCompleted && (updateData.dispatchedItems || updateData.sourceSite)) {
-            console.log('↩️ Reverting previous stock changes for dispatch edit');
-            await revertPreviousStockChanges(dispatchId);
+            const validation = await client.fetch(validationQuery, { id: dispatchId });
+
+            if (validation?.dispatchedItems) {
+                const itemsWithoutBins = validation.dispatchedItems.filter((item: any) => !item.hasBin);
+                if (itemsWithoutBins.length > 0) {
+                    console.error(`❌ Dispatch ${dispatchId} has ${itemsWithoutBins.length} items without source bins`);
+                    return NextResponse.json({
+                        error: 'Cannot complete dispatch: Some items are missing source bins',
+                        details: `${itemsWithoutBins.length} items need to have bins assigned`
+                    }, { status: 400 });
+                }
+            }
+
+            // ✅ REMOVED: Do NOT call updateStockForTransaction here
+            // This was causing double deductions
         }
 
         const result = await patch.commit();
 
-        // Update stock snapshots if dispatch is completed
-        if (result.evidenceStatus === 'complete' || willBeCompleted) {
+        // ✅ Update stock if dispatch is completed (ONLY HERE, not in validation)
+        if (willBeCompleted && !wasCompleted) {
+            console.log('📦 Updating stock for completed dispatch:', result.dispatchNumber);
             await updateStockForTransaction('dispatch', dispatchId);
         }
 

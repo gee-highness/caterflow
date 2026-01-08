@@ -234,6 +234,7 @@ export async function GET() {
 }
 
 // --- POST create dispatch ---
+// --- POST create dispatch ---
 export async function POST(request: Request) {
     console.log('🚀 POST /api/dispatches - Starting dispatch creation');
 
@@ -332,6 +333,20 @@ export async function POST(request: Request) {
         const dispatchNumber = await getNextDispatchNumber();
         console.log('✅ Dispatch number generated:', dispatchNumber);
 
+        // ✅ CRITICAL FIX: Sync completion fields
+        const evidenceStatus = createData.evidenceStatus || 'pending';
+        const status = createData.status || 'draft';
+
+        // If dispatch is being created as completed, set BOTH fields
+        let finalEvidenceStatus = evidenceStatus;
+        let finalStatus = status;
+
+        if (evidenceStatus === 'complete' || status === 'completed') {
+            console.log('🔄 Syncing completion fields for new dispatch');
+            finalEvidenceStatus = 'complete';
+            finalStatus = 'completed';
+        }
+
         const newDoc: any = {
             _type: 'DispatchLog',
             dispatchNumber,
@@ -339,8 +354,8 @@ export async function POST(request: Request) {
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
             dispatchDate: createData.dispatchDate,
-            evidenceStatus: createData.evidenceStatus || 'pending',
-            status: createData.status || 'draft',
+            evidenceStatus: finalEvidenceStatus,
+            status: finalStatus, // ✅ SYNCED
             peopleFed: peopleFed,
             totalCost: totalCost,
             costPerPerson: costPerPerson,
@@ -354,10 +369,16 @@ export async function POST(request: Request) {
             attachments: createData.attachments || [],
         };
 
+        // ✅ Set completedAt if dispatch is being created as completed
+        if (finalEvidenceStatus === 'complete') {
+            newDoc.completedAt = createData.completedAt || new Date().toISOString();
+        }
+
         console.log('📄 Document to create:', {
             _id: newDoc._id,
             dispatchNumber: newDoc.dispatchNumber,
             evidenceStatus: newDoc.evidenceStatus,
+            status: newDoc.status,
             hasDispatchType: !!newDoc.dispatchType,
             hasSourceSite: !!newDoc.sourceSite,
             sellingPrice: newDoc.sellingPrice
@@ -367,11 +388,14 @@ export async function POST(request: Request) {
         const result = await writeClient.create(newDoc);
         console.log('✅ Document created successfully:', {
             _id: result._id,
-            dispatchNumber: result.dispatchNumber
+            dispatchNumber: result.dispatchNumber,
+            evidenceStatus: result.evidenceStatus,
+            status: result.status
         });
 
         // Only update stock if dispatch is being completed
-        if (createData.evidenceStatus === 'complete' || createData.status === 'completed') {
+        if (finalEvidenceStatus === 'complete') {
+            console.log('📦 Updating stock for newly created completed dispatch');
             await updateStockForTransaction('dispatch', result._id);
         }
 
@@ -433,6 +457,7 @@ export async function PATCH(request: Request) {
         const existingDispatch = await client.fetch(
             groq`*[_type == "DispatchLog" && _id == $id][0] { 
                 evidenceStatus,
+                status,
                 sourceSite
             }`,
             { id: _id }
@@ -449,12 +474,38 @@ export async function PATCH(request: Request) {
 
         let patch = writeClient.patch(_id).set({ updatedAt: new Date().toISOString() });
 
+        // ✅ CRITICAL: Track if we're completing the dispatch
+        const wasCompleted = existingDispatch?.evidenceStatus === 'complete';
+        const willBeCompleted = updateData.evidenceStatus === 'complete' ||
+            (updateData.status === 'completed' && !wasCompleted);
+
         // Basic fields
         if (updateData.dispatchDate) patch = patch.set({ dispatchDate: updateData.dispatchDate });
-        if (updateData.evidenceStatus) patch = patch.set({ evidenceStatus: updateData.evidenceStatus });
+
+        // Handle evidenceStatus and status updates - sync them when completing
+        if (updateData.evidenceStatus) {
+            patch = patch.set({ evidenceStatus: updateData.evidenceStatus });
+        }
+
+        if (updateData.status) {
+            patch = patch.set({ status: updateData.status });
+        }
+
+        // ✅ SYNC COMPLETION FIELDS
+        if (willBeCompleted && !wasCompleted) {
+            console.log('🔄 Syncing completion fields for dispatch completion');
+            patch = patch.set({
+                evidenceStatus: 'complete',
+                status: 'completed'
+            });
+
+            if (!updateData.completedAt) {
+                patch = patch.set({ completedAt: new Date().toISOString() });
+            }
+        }
+
         if (updateData.hasOwnProperty('peopleFed')) patch = patch.set({ peopleFed: updateData.peopleFed });
         if (updateData.notes) patch = patch.set({ notes: updateData.notes });
-        if (updateData.status) patch = patch.set({ status: updateData.status });
 
         // References
         if (updateData.dispatchType) {
@@ -539,18 +590,15 @@ export async function PATCH(request: Request) {
         }
 
         // Completion fields
-        if (updateData.completedAt) {
+        if (updateData.completedAt && updateData.completedAt !== existingDispatch.completedAt) {
             patch = patch.set({ completedAt: updateData.completedAt });
         }
 
         const result = await patch.commit();
 
-        // Check if we're moving to complete status
-        const wasCompleted = existingDispatch?.evidenceStatus === 'complete';
-        const willBeCompleted = updateData.evidenceStatus === 'complete' ||
-            (updateData.status === 'completed' && !wasCompleted);
-
+        // ✅ Update stock if dispatch is completed (ONLY HERE, not in validation)
         if (willBeCompleted && !wasCompleted) {
+            console.log('📦 Updating stock for completed dispatch:', result.dispatchNumber);
             await updateStockForTransaction('dispatch', result._id);
         }
 

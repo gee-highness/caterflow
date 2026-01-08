@@ -41,7 +41,7 @@ import {
     useColorModeValue,
     Icon, Image, SimpleGrid, Badge, Heading, Tabs, TabList, TabPanels, Tab, TabPanel, Tag, TagLabel, TagCloseButton
 } from '@chakra-ui/react';
-import { FiFileText, FiPlus, FiTrash2, FiChevronUp, FiChevronDown, FiPackage } from 'react-icons/fi';
+import { FiFileText, FiPlus, FiTrash2, FiChevronUp, FiChevronDown, FiPackage, FiAlertTriangle, FiCheck, FiRefreshCw } from 'react-icons/fi';
 import StockItemSelectorModal from './StockItemSelectorModal';
 import FileUploadModal from './FileUploadModal';
 import { nanoid } from 'nanoid';
@@ -190,6 +190,28 @@ export default function DispatchModal({
     const userSite = user?.associatedSite;
     const userRole = user?.role;
 
+    const [isCheckingStock, setIsCheckingStock] = useState(false);
+    const [stockValidation, setStockValidation] = useState<{
+        isValid: boolean;
+        overDispatchingItems: Array<{
+            itemName: string;
+            binName: string;
+            requested: number;
+            available: number;
+            difference: number;
+        }>;
+        warnings: string[];
+        lastChecked: Date | null;
+    }>({
+        isValid: true,
+        overDispatchingItems: [],
+        warnings: [],
+        lastChecked: null
+    });
+
+    const [availableStock, setAvailableStock] = useState<Record<string, number>>({});
+    const [isLoadingStock, setIsLoadingStock] = useState(false);
+
     const tableHeaderColor = useColorModeValue('neutral.light.text-primary', 'neutral.dark.text-primary');
     const tableBorderColor = useColorModeValue('neutral.light.border-color', 'neutral.dark.border-color');
     const tableBg = useColorModeValue('neutral.light.bg-card', 'neutral.dark.bg-card');
@@ -202,7 +224,9 @@ export default function DispatchModal({
     const evidenceCardBg = useColorModeValue('white', 'gray.700');
     const fallbackBg = useColorModeValue('gray.100', 'gray.600');
 
-    const existingItemIds = dispatchedItems.filter(item => item.stockItem).map(item => item.stockItem._id);
+    const existingItemIds = dispatchedItems
+        .filter(item => item.stockItem && item.sourceBin?._id === selectedBinForItems?._id)
+        .map(item => item.stockItem._id);
 
     // Safe number conversion helper function with 3 decimal place support
     const safeNumber = (value: string | number): number => {
@@ -337,6 +361,47 @@ export default function DispatchModal({
     const isNew = !dispatch || dispatch._id?.startsWith?.('temp-');
     const isEditable = !(dispatch?.evidenceStatus === 'complete' || dispatch?.status === 'completed');
 
+
+    // Add this useEffect after other useEffects (around line 150-200)
+    useEffect(() => {
+        // Only validate if we have items and are editing
+        if (dispatchedItems.length > 0 && isEditable && !loading) {
+            // Debounce the validation
+            const timer = setTimeout(() => {
+                validateStock();
+            }, 1000); // Wait 1 second after changes
+
+            return () => clearTimeout(timer);
+        }
+    }, [dispatchedItems, sourceSite?._id, isEditable, loading]);
+    // Note: We're adding sourceSite dependency because stock depends on bin availability per site
+
+    // Add this useEffect after other useEffects (around line 150-200)
+    useEffect(() => {
+        if (dispatchedItems.length > 0 && isEditable && !loading) {
+            // Debounce the stock fetch
+            const timer = setTimeout(() => {
+                fetchAvailableStock(dispatchedItems);
+            }, 500); // Wait 500ms after changes
+
+            return () => clearTimeout(timer);
+        } else {
+            setAvailableStock({});
+        }
+    }, [dispatchedItems, isEditable, loading]);
+
+    // Helper to get available stock for an item
+    const getAvailableStock = (itemKey: string): number | undefined => {
+        return availableStock[itemKey];
+    };
+
+    // Helper to check if item is over-dispatching
+    const isOverDispatching = (item: DispatchedItem): boolean => {
+        const available = getAvailableStock(item._key);
+        if (available === undefined) return false;
+        return (item.dispatchedQuantity || 0) > available;
+    };
+
     // Handler for dispatch type change
     const handleDispatchTypeChange = (typeId: string) => {
         setDispatchType(typeId);
@@ -387,14 +452,36 @@ export default function DispatchModal({
 
         const newItems: DispatchedItem[] = items.map(item => {
             const unitPrice = safeNumber(item.unitPrice || 0);
+
+            // Check if this exact combination (item + bin) already exists
+            const existingItemIndex = dispatchedItems.findIndex(
+                existing => existing.stockItem._id === item._id &&
+                    existing.sourceBin?._id === selectedBinForItems._id
+            );
+
+            // If editing the exact same item+bin combo
+            if (editingIndex !== null && existingItemIndex === editingIndex) {
+                const existingItem = dispatchedItems[editingIndex];
+                return {
+                    ...existingItem,
+                    stockItem: {
+                        ...existingItem.stockItem,
+                        currentStock: item.currentStock || 0, // Update stock info
+                    },
+                    unitPrice: unitPrice,
+                    totalCost: unitPrice * existingItem.dispatchedQuantity,
+                };
+            }
+
+            // Create new item
             return {
                 _key: nanoid(),
                 stockItem: {
                     _id: item._id,
                     name: item.name,
                     sku: item.sku,
-                    unitOfMeasure: item.unitOfMeasure,
-                    currentStock: item.currentStock,
+                    unitOfMeasure: item.unitMeasure || item.unitOfMeasure,
+                    currentStock: item.currentStock || 0,
                     unitPrice: unitPrice,
                 },
                 sourceBin: {
@@ -409,13 +496,58 @@ export default function DispatchModal({
             };
         });
 
+        // Track toast messages to show after state update
+        const toastMessages: Array<{ title: string, description: string, status: 'info' | 'warning' | 'success' }> = [];
+
         setDispatchedItems(prevItems => {
-            const updatedItems = [...prevItems];
+            let updatedItems = [...prevItems];
+
             if (editingIndex !== null) {
+                // Replace the item at editingIndex
                 updatedItems[editingIndex] = newItems[0];
                 setEditingIndex(null);
+
+                // Queue toast message
+                toastMessages.push({
+                    title: 'Item updated',
+                    description: `Updated "${newItems[0].stockItem.name}"`,
+                    status: 'success'
+                });
             } else {
-                updatedItems.push(...newItems);
+                // Add new items - allow same item from different bins
+                newItems.forEach(newItem => {
+                    // Check if this exact combination already exists
+                    const exists = updatedItems.some(
+                        existing => existing.stockItem._id === newItem.stockItem._id &&
+                            existing.sourceBin?._id === newItem.sourceBin?._id
+                    );
+
+                    if (!exists) {
+                        updatedItems.push(newItem);
+
+                        // Check if same item exists in different bin
+                        const sameItemDifferentBin = prevItems.some(
+                            existing => existing.stockItem._id === newItem.stockItem._id &&
+                                existing.sourceBin?._id !== newItem.sourceBin?._id
+                        );
+
+                        if (sameItemDifferentBin) {
+                            // Queue toast message
+                            toastMessages.push({
+                                title: 'Item added from different bin',
+                                description: `"${newItem.stockItem.name}" added from ${newItem.sourceBin?.name}`,
+                                status: 'info'
+                            });
+                        }
+                    } else {
+                        // Queue toast message
+                        toastMessages.push({
+                            title: 'Item already in dispatch',
+                            description: `"${newItem.stockItem.name}" is already selected from ${newItem.sourceBin?.name}`,
+                            status: 'warning'
+                        });
+                    }
+                });
             }
             return updatedItems;
         });
@@ -428,14 +560,49 @@ export default function DispatchModal({
         setIsStockItemModalOpen(false);
         setSelectedBinForItems(null);
 
-        if (items.length > 1) {
-            toast({
-                title: 'Items added',
-                description: `${items.length} items added to dispatch`,
-                status: 'success',
-                duration: 2000,
-                isClosable: true,
-            });
+        // Show toast messages after state updates
+        if (toastMessages.length > 0) {
+            // Use setTimeout to ensure toast is called after render cycle
+            setTimeout(() => {
+                toastMessages.forEach(msg => {
+                    toast({
+                        title: msg.title,
+                        description: msg.description,
+                        status: msg.status,
+                        duration: 2000,
+                        isClosable: true,
+                    });
+                });
+            }, 0);
+        }
+
+        if (items.length > 1 && editingIndex === null) {
+            setTimeout(() => {
+                toast({
+                    title: 'Items added',
+                    description: `${items.length} items added to dispatch`,
+                    status: 'success',
+                    duration: 2000,
+                    isClosable: true,
+                });
+            }, 0);
+        } else if (items.length === 1 && editingIndex === null) {
+            const wasNewItem = !dispatchedItems.some(
+                existing => existing.stockItem._id === items[0]._id &&
+                    existing.sourceBin?._id === selectedBinForItems._id
+            );
+
+            if (wasNewItem) {
+                setTimeout(() => {
+                    toast({
+                        title: 'Item added',
+                        description: `"${items[0].name}" added to dispatch`,
+                        status: 'success',
+                        duration: 2000,
+                        isClosable: true,
+                    });
+                }, 0);
+            }
         }
     };
 
@@ -671,15 +838,33 @@ export default function DispatchModal({
     };
 
     // Submit handler for the form (create/update without completing)
+    // Submit handler for the form (create/update without completing)
     const handleSubmit = async (event: React.FormEvent) => {
         event.preventDefault();
+
+        // Validate stock before saving
+        setIsCheckingStock(true);
         try {
+            const isValid = await validateStock();
+            if (!isValid) {
+                toast({
+                    title: 'Cannot Save - Stock Insufficient',
+                    description: 'Some items exceed available stock. Please adjust quantities.',
+                    status: 'error',
+                    duration: 5000,
+                    isClosable: true,
+                });
+                return;
+            }
+
             const result = await saveDispatch('draft');
             setSavedDispatchId(result._id || result.id);
             onSave();
             onClose();
         } catch {
             // saveDispatch already shows toast
+        } finally {
+            setIsCheckingStock(false);
         }
     };
 
@@ -688,6 +873,7 @@ export default function DispatchModal({
         dispatchedItems.every(item => item.dispatchedQuantity > 0) &&
         (peopleFed || 0) > 0;
 
+    // Trigger the complete flow: ensure saved, then open upload modal
     // Trigger the complete flow: ensure saved, then open upload modal
     const handleCompleteDispatch = async () => {
         if (!isFullyDispatched) {
@@ -712,7 +898,21 @@ export default function DispatchModal({
             return;
         }
 
+        // Validate stock before completing
+        setIsCheckingStock(true);
         try {
+            const isValid = await validateStock();
+            if (!isValid) {
+                toast({
+                    title: 'Cannot Complete - Stock Insufficient',
+                    description: 'Some items exceed available stock. Please adjust quantities.',
+                    status: 'error',
+                    duration: 5000,
+                    isClosable: true,
+                });
+                return;
+            }
+
             setIsSaving(true);
             if (isNew || !dispatch?._id) {
                 const saved = await saveDispatch('draft');
@@ -726,6 +926,7 @@ export default function DispatchModal({
         } catch (err) {
             // errors handled in saveDispatch
         } finally {
+            setIsCheckingStock(false);
             setIsSaving(false);
         }
     };
@@ -1065,6 +1266,198 @@ export default function DispatchModal({
         return undefined;
     };
 
+    // Function to check if any item is over-dispatching available stock
+    // Function to check if any item is over-dispatching available stock
+    const checkStockAvailability = async (items: DispatchedItem[]): Promise<{
+        isValid: boolean;
+        overDispatchingItems: Array<{
+            itemName: string;
+            binName: string;
+            requested: number;
+            available: number;
+            difference: number;
+        }>;
+        warnings: string[];
+    }> => {
+        const overDispatchingItems: Array<{
+            itemName: string;
+            binName: string;
+            requested: number;
+            available: number;
+            difference: number;
+        }> = [];
+        const warnings: string[] = [];
+
+        if (items.length === 0) {
+            return { isValid: true, overDispatchingItems, warnings };
+        }
+
+        try {
+            // Use cached availableStock if we have it, otherwise fetch
+            let stockData = availableStock;
+
+            // Check if we need to refresh stock data
+            const itemsWithoutStock = items.filter(item => availableStock[item._key] === undefined);
+            if (itemsWithoutStock.length > 0) {
+                await fetchAvailableStock(itemsWithoutStock);
+                // Wait a bit for state update
+                await new Promise(resolve => setTimeout(resolve, 100));
+                stockData = availableStock;
+            }
+
+            // Check each item
+            items.forEach(item => {
+                const available = stockData[item._key];
+                if (available === undefined) {
+                    warnings.push(`Could not check stock for "${item.stockItem.name}"`);
+                    return;
+                }
+
+                const requested = item.dispatchedQuantity || 0;
+
+                if (requested > available) {
+                    const binName = item.sourceBin?.name || 'Unknown Bin';
+                    overDispatchingItems.push({
+                        itemName: item.stockItem.name,
+                        binName: binName,
+                        requested: requested,
+                        available: available,
+                        difference: requested - available
+                    });
+                }
+            });
+
+            return {
+                isValid: overDispatchingItems.length === 0,
+                overDispatchingItems,
+                warnings
+            };
+
+        } catch (error) {
+            console.error('Error checking stock availability:', error);
+            warnings.push('Error checking stock availability. Please try again.');
+            return { isValid: false, overDispatchingItems, warnings };
+        }
+    };
+
+    // Function to validate stock and update state
+    const validateStock = async (): Promise<boolean> => {
+        if (dispatchedItems.length === 0) {
+            setStockValidation({
+                isValid: true,
+                overDispatchingItems: [],
+                warnings: [],
+                lastChecked: new Date()
+            });
+            return true;
+        }
+
+        setIsCheckingStock(true);
+        try {
+            const validation = await checkStockAvailability(dispatchedItems);
+            setStockValidation({
+                ...validation,
+                lastChecked: new Date()
+            });
+
+            if (!validation.isValid && validation.overDispatchingItems.length > 0) {
+                // Show warning toast
+                const totalOver = validation.overDispatchingItems.length;
+                toast({
+                    title: `Stock Insufficient (${totalOver} item${totalOver > 1 ? 's' : ''})`,
+                    description: `${validation.overDispatchingItems.length} item${totalOver > 1 ? 's' : ''} exceed available stock`,
+                    status: 'warning',
+                    duration: 5000,
+                    isClosable: true,
+                });
+            }
+
+            return validation.isValid;
+        } catch (error) {
+            console.error('Error validating stock:', error);
+            toast({
+                title: 'Stock Check Failed',
+                description: 'Could not verify stock levels. Please try again.',
+                status: 'error',
+                duration: 3000,
+                isClosable: true,
+            });
+            return false;
+        } finally {
+            setIsCheckingStock(false);
+        }
+    };
+
+    const fetchAvailableStock = async (items: DispatchedItem[]) => {
+        if (items.length === 0) {
+            setAvailableStock({});
+            return;
+        }
+
+        setIsLoadingStock(true);
+        try {
+            // Group items by bin for batch API calls
+            const itemsByBin: Record<string, Array<{ itemId: string; itemKey: string }>> = {};
+
+            items.forEach(item => {
+                const binId = item.sourceBin?._id;
+                if (!binId) return;
+
+                if (!itemsByBin[binId]) {
+                    itemsByBin[binId] = [];
+                }
+
+                itemsByBin[binId].push({
+                    itemId: item.stockItem._id,
+                    itemKey: item._key
+                });
+            });
+
+            const stockPromises = Object.entries(itemsByBin).map(async ([binId, binItems]) => {
+                try {
+                    const stockRes = await fetch('/api/stock/bulk-current', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            stockItems: binItems.map(item => item.itemId),
+                            binId: binId
+                        })
+                    });
+
+                    if (stockRes.ok) {
+                        const stockData = await stockRes.json();
+
+                        // Map stock data back to item keys
+                        const stockMap: Record<string, number> = {};
+                        binItems.forEach(item => {
+                            stockMap[item.itemKey] = stockData.results[item.itemId] || 0;
+                        });
+
+                        return stockMap;
+                    }
+                } catch (error) {
+                    console.error(`Error fetching stock for bin ${binId}:`, error);
+                }
+                return {};
+            });
+
+            const stockResults = await Promise.all(stockPromises);
+
+            // Combine all stock results
+            const combinedStock: Record<string, number> = {};
+            stockResults.forEach(result => {
+                Object.assign(combinedStock, result);
+            });
+
+            setAvailableStock(combinedStock);
+
+        } catch (error) {
+            console.error('Error fetching available stock:', error);
+        } finally {
+            setIsLoadingStock(false);
+        }
+    };
+
     const filteredBins = userRole === 'admin'
         ? binsForSelectedSite
         : binsForSelectedSite.filter(bin => bin.site._id === userSite?._id);
@@ -1224,6 +1617,26 @@ export default function DispatchModal({
                                     <VStack spacing={4} align="stretch">
                                         <HStack justify="space-between" align="center">
                                             <FormLabel mb={0}>Dispatched Items</FormLabel>
+                                            <HStack spacing={2}>
+                                                <Text fontSize="sm" color={textSecondaryColor}>
+                                                    {dispatchedItems.length} item(s) across {selectedBins.length} bin(s)
+                                                </Text>
+                                                {isEditable && dispatchedItems.length > 0 && (
+                                                    <Button
+                                                        size="xs"
+                                                        variant="ghost"
+                                                        onClick={() => fetchAvailableStock(dispatchedItems)}
+                                                        isLoading={isLoadingStock}
+                                                        leftIcon={<FiRefreshCw />}
+                                                        isDisabled={isLoadingStock}
+                                                    >
+                                                        Refresh Stock
+                                                    </Button>
+                                                )}
+                                            </HStack>
+                                        </HStack>
+                                        <HStack justify="space-between" align="center">
+                                            <FormLabel mb={0}>Dispatched Items</FormLabel>
                                             <Text fontSize="sm" color={textSecondaryColor}>
                                                 {dispatchedItems.length} item(s) across {selectedBins.length} bin(s)
                                             </Text>
@@ -1245,6 +1658,13 @@ export default function DispatchModal({
                                                 <TabPanels>
                                                     {Object.entries(itemsByBin).map(([binId, items]) => (
                                                         <TabPanel key={binId} p={0} mt={4}>
+                                                            {isLoadingStock && items.length > 0 && (
+                                                                <HStack p={2} bg="blue.50" borderRadius="md" mb={2}>
+                                                                    <Spinner size="sm" color="blue.500" />
+                                                                    <Text fontSize="sm" color="blue.700">Loading stock levels...</Text>
+                                                                </HStack>
+                                                            )}
+
                                                             <TableContainer
                                                                 bg={tableBg}
                                                                 borderRadius="lg"
@@ -1258,64 +1678,132 @@ export default function DispatchModal({
                                                                             <Th color={tableHeaderColor} borderColor={tableBorderColor}>Item</Th>
                                                                             <Th color={tableHeaderColor} borderColor={tableBorderColor}>Unit Price</Th>
                                                                             <Th color={tableHeaderColor} borderColor={tableBorderColor}>Quantity</Th>
+                                                                            <Th color={tableHeaderColor} borderColor={tableBorderColor}>Available Stock</Th>
                                                                             <Th color={tableHeaderColor} borderColor={tableBorderColor}>Total Cost</Th>
                                                                             <Th color={tableHeaderColor} borderColor={tableBorderColor}>Unit</Th>
                                                                             <Th color={tableHeaderColor} borderColor={tableBorderColor}> </Th>
                                                                         </Tr>
                                                                     </Thead>
                                                                     <Tbody>
-                                                                        {items.map((item) => (
-                                                                            <Tr key={item._key}>
-                                                                                <Td borderColor={tableBorderColor}>{item.stockItem.name}</Td>
-                                                                                <Td borderColor={tableBorderColor}>
-                                                                                    <Input
-                                                                                        value={item.unitPrice || 0}
-                                                                                        onChange={(e) => handleUnitPriceChange(item._key, e.target.value)}
-                                                                                        type="number"
-                                                                                        step="0.01"
-                                                                                        min="0"
-                                                                                        size="sm"
-                                                                                        width="100px"
-                                                                                        isDisabled={true}
-                                                                                    />
-                                                                                </Td>
-                                                                                <Td borderColor={tableBorderColor}>
-                                                                                    <NumberInput
-                                                                                        value={item.dispatchedQuantity}
-                                                                                        onChange={(valueString) => handleQuantityChange(item._key, valueString)}
-                                                                                        min={0}
-                                                                                        step={0.001}
-                                                                                        precision={3}
-                                                                                        size="sm"
-                                                                                        width="100px"
-                                                                                        isDisabled={!isEditable}
-                                                                                    >
-                                                                                        <NumberInputField />
-                                                                                        <NumberInputStepper>
-                                                                                            <NumberIncrementStepper />
-                                                                                            <NumberDecrementStepper />
-                                                                                        </NumberInputStepper>
-                                                                                    </NumberInput>
-                                                                                </Td>
-                                                                                <Td borderColor={tableBorderColor}>
-                                                                                    <Text fontWeight="medium">
-                                                                                        E {(item.totalCost || 0).toFixed(2)}
-                                                                                    </Text>
-                                                                                </Td>
-                                                                                <Td borderColor={tableBorderColor}>{item.stockItem.unitOfMeasure}</Td>
-                                                                                <Td borderColor={tableBorderColor}>
-                                                                                    <HStack>
-                                                                                        <IconButton
-                                                                                            aria-label="Remove item"
-                                                                                            icon={<FiTrash2 />}
+                                                                        {items.map((item) => {
+                                                                            const available = getAvailableStock(item._key);
+                                                                            const isOver = isOverDispatching(item);
+
+                                                                            return (
+                                                                                <Tr key={item._key}>
+                                                                                    <Td borderColor={tableBorderColor}>
+                                                                                        <VStack align="start" spacing={0}>
+                                                                                            <Text fontWeight="medium">{item.stockItem.name}</Text>
+                                                                                            {item.sourceBin?.name && (
+                                                                                                <Text fontSize="xs" color={textSecondaryColor}>
+                                                                                                    From: {item.sourceBin.name}
+                                                                                                </Text>
+                                                                                            )}
+                                                                                            {available !== undefined && (
+                                                                                                <HStack spacing={1} mt={1}>
+                                                                                                    <Text fontSize="xs" color={textSecondaryColor}>
+                                                                                                        Available:
+                                                                                                    </Text>
+                                                                                                    <Badge
+                                                                                                        colorScheme={isOver ? "red" : "green"}
+                                                                                                        variant="subtle"
+                                                                                                        size="xs"
+                                                                                                        fontSize="2xs"
+                                                                                                    >
+                                                                                                        {available.toFixed(3)}
+                                                                                                    </Badge>
+                                                                                                </HStack>
+                                                                                            )}
+                                                                                        </VStack>
+                                                                                    </Td>
+                                                                                    <Td borderColor={tableBorderColor}>
+                                                                                        <Input
+                                                                                            value={item.unitPrice || 0}
+                                                                                            onChange={(e) => handleUnitPriceChange(item._key, e.target.value)}
+                                                                                            type="number"
+                                                                                            step="0.01"
+                                                                                            min="0"
                                                                                             size="sm"
-                                                                                            onClick={() => handleRemoveItem(item._key)}
-                                                                                            isDisabled={!isEditable}
+                                                                                            width="100px"
+                                                                                            isDisabled={true}
                                                                                         />
-                                                                                    </HStack>
-                                                                                </Td>
-                                                                            </Tr>
-                                                                        ))}
+                                                                                    </Td>
+                                                                                    <Td borderColor={tableBorderColor}>
+                                                                                        <VStack align="start" spacing={1}>
+                                                                                            <NumberInput
+                                                                                                value={item.dispatchedQuantity}
+                                                                                                onChange={(valueString) => handleQuantityChange(item._key, valueString)}
+                                                                                                min={0}
+                                                                                                step={0.001}
+                                                                                                precision={3}
+                                                                                                size="sm"
+                                                                                                width="100px"
+                                                                                                isDisabled={!isEditable}
+                                                                                            >
+                                                                                                <NumberInputField
+                                                                                                    borderColor={isOver ? "red.300" : undefined}
+                                                                                                    _focus={{ borderColor: isOver ? "red.500" : "blue.500" }}
+                                                                                                />
+                                                                                                <NumberInputStepper>
+                                                                                                    <NumberIncrementStepper />
+                                                                                                    <NumberDecrementStepper />
+                                                                                                </NumberInputStepper>
+                                                                                            </NumberInput>
+
+                                                                                            {isOver && (
+                                                                                                <Text fontSize="xs" color="red.500" fontWeight="medium">
+                                                                                                    {(item.dispatchedQuantity - (available || 0)).toFixed(3)} over
+                                                                                                </Text>
+                                                                                            )}
+                                                                                        </VStack>
+                                                                                    </Td>
+                                                                                    <Td borderColor={tableBorderColor}>
+                                                                                        <VStack align="start" spacing={1}>
+                                                                                            {available !== undefined ? (
+                                                                                                <>
+                                                                                                    <Badge
+                                                                                                        colorScheme={isOver ? "red" : "green"}
+                                                                                                        variant={isOver ? "solid" : "subtle"}
+                                                                                                        size="sm"
+                                                                                                        width="100%"
+                                                                                                        textAlign="center"
+                                                                                                        py={1}
+                                                                                                    >
+                                                                                                        {available.toFixed(3)}
+                                                                                                    </Badge>
+                                                                                                    {!isOver && item.dispatchedQuantity > 0 && (
+                                                                                                        <Text fontSize="xs" color="green.500" fontWeight="medium">
+                                                                                                            {(available - item.dispatchedQuantity).toFixed(3)} left
+                                                                                                        </Text>
+                                                                                                    )}
+                                                                                                </>
+                                                                                            ) : (
+                                                                                                <Text fontSize="xs" color="gray.500" fontStyle="italic">
+                                                                                                    Loading...
+                                                                                                </Text>
+                                                                                            )}
+                                                                                        </VStack>
+                                                                                    </Td>
+                                                                                    <Td borderColor={tableBorderColor}>
+                                                                                        <Text fontWeight="medium">
+                                                                                            E {(item.totalCost || 0).toFixed(2)}
+                                                                                        </Text>
+                                                                                    </Td>
+                                                                                    <Td borderColor={tableBorderColor}>{item.stockItem.unitOfMeasure}</Td>
+                                                                                    <Td borderColor={tableBorderColor}>
+                                                                                        <HStack>
+                                                                                            <IconButton
+                                                                                                aria-label="Remove item"
+                                                                                                icon={<FiTrash2 />}
+                                                                                                size="sm"
+                                                                                                onClick={() => handleRemoveItem(item._key)}
+                                                                                                isDisabled={!isEditable}
+                                                                                            />
+                                                                                        </HStack>
+                                                                                    </Td>
+                                                                                </Tr>
+                                                                            );
+                                                                        })}
                                                                     </Tbody>
                                                                 </Table>
                                                             </TableContainer>
@@ -1494,6 +1982,61 @@ export default function DispatchModal({
                                             </Box>
                                         )}
                                     </VStack>
+
+                                    {/* Stock Validation Warnings */}
+                                    {!stockValidation.isValid && stockValidation.overDispatchingItems.length > 0 && (
+                                        <VStack align="stretch" mt={4} p={4} borderRadius="md" borderWidth="1px" borderColor="red.200" bg="red.50">
+                                            <HStack>
+                                                <Icon as={FiAlertTriangle} color="red.500" boxSize={5} />
+                                                <Heading size="sm" color="red.700">Stock Insufficient</Heading>
+                                            </HStack>
+                                            <Text fontSize="sm" color="red.600" mb={2}>
+                                                The following items exceed available stock:
+                                            </Text>
+                                            <VStack align="stretch" spacing={2}>
+                                                {stockValidation.overDispatchingItems.map((item, index) => (
+                                                    <Box key={index} p={2} bg="white" borderRadius="md" borderWidth="1px" borderColor="red.100">
+                                                        <HStack justify="space-between">
+                                                            <Text fontWeight="medium" color="red.700">{item.itemName}</Text>
+                                                            <Badge colorScheme="red" variant="solid">
+                                                                {item.difference.toFixed(3)} over
+                                                            </Badge>
+                                                        </HStack>
+                                                        <HStack justify="space-between" fontSize="sm">
+                                                            <Text color="gray.600">Bin: {item.binName}</Text>
+                                                            <Text color="gray.600">
+                                                                Available: <Text as="span" fontWeight="bold">{item.available.toFixed(3)}</Text> |
+                                                                Requested: <Text as="span" fontWeight="bold">{item.requested.toFixed(3)}</Text>
+                                                            </Text>
+                                                        </HStack>
+                                                    </Box>
+                                                ))}
+                                            </VStack>
+                                            <Text fontSize="sm" color="red.600" fontStyle="italic" mt={2}>
+                                                Reduce quantities or remove items before saving.
+                                            </Text>
+                                        </VStack>
+                                    )}
+
+                                    {/* Stock Check Status */}
+                                    {isCheckingStock && (
+                                        <HStack p={3} bg="blue.50" borderRadius="md" borderWidth="1px" borderColor="blue.200">
+                                            <Spinner size="sm" color="blue.500" />
+                                            <Text fontSize="sm" color="blue.700">Checking stock availability...</Text>
+                                        </HStack>
+                                    )}
+
+                                    {stockValidation.isValid && stockValidation.lastChecked && !isCheckingStock && dispatchedItems.length > 0 && (
+                                        <HStack p={3} bg="green.50" borderRadius="md" borderWidth="1px" borderColor="green.200">
+                                            <Icon as={FiCheck} color="green.500" boxSize={4} />
+                                            <Text fontSize="sm" color="green.700">
+                                                Stock check passed • {stockValidation.overDispatchingItems.length === 0 ? 'All items in stock' : 'Ready to save'}
+                                            </Text>
+                                            <Badge colorScheme="green" variant="subtle" ml="auto" fontSize="xs">
+                                                Updated {new Date(stockValidation.lastChecked).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                            </Badge>
+                                        </HStack>
+                                    )}
                                 </VStack>
                             </ModalBody>
 
@@ -1507,14 +2050,14 @@ export default function DispatchModal({
                                 py={4}
                                 px={4}
                             >
-                                <Button variant="outline" mr={3} onClick={onClose} isDisabled={isSaving || loading}>
+                                <Button variant="outline" mr={3} onClick={onClose} isDisabled={isSaving || loading || isCheckingStock}>
                                     Cancel
                                 </Button>
                                 <Button
                                     colorScheme="blue"
                                     variant="outline"
                                     onClick={exportDispatchPDF}
-                                    isDisabled={dispatchedItems.length === 0 || isExporting || isSaving || loading}
+                                    isDisabled={dispatchedItems.length === 0 || isExporting || isSaving || loading || isCheckingStock}
                                     isLoading={isExporting}
                                     loadingText="Exporting..."
                                     leftIcon={<FiFileText />}
@@ -1526,11 +2069,12 @@ export default function DispatchModal({
                                         <Button
                                             colorScheme="blue"
                                             type="submit"
-                                            isLoading={isSaving}
-                                            isDisabled={isSubmitDisabled}
-                                            loadingText={dispatch ? "Updating..." : "Creating..."}
+                                            isLoading={isSaving || isCheckingStock}
+                                            isDisabled={isSubmitDisabled || !stockValidation.isValid || isCheckingStock}
+                                            loadingText={isCheckingStock ? "Checking stock..." : (dispatch ? "Updating..." : "Creating...")}
                                             mr={3}
                                             ml={3}
+                                            title={!stockValidation.isValid ? "Stock insufficient - adjust quantities" : ""}
                                         >
                                             {dispatch ? 'Update Dispatch' : 'Create Dispatch'}
                                         </Button>
@@ -1538,8 +2082,10 @@ export default function DispatchModal({
                                         <Button
                                             colorScheme="green"
                                             onClick={handleCompleteDispatch}
-                                            isLoading={isSaving}
-                                            isDisabled={!isFullyDispatched || dispatchedItems.length === 0 || isSaving}
+                                            isLoading={isSaving || isCheckingStock}
+                                            isDisabled={!isFullyDispatched || dispatchedItems.length === 0 || isSaving || !stockValidation.isValid || isCheckingStock}
+                                            loadingText={isCheckingStock ? "Checking stock..." : (isSaving ? "Saving..." : "Completing...")}
+                                            title={!stockValidation.isValid ? "Stock insufficient - adjust quantities" : ""}
                                         >
                                             {isNew ? 'Save & Upload Evidence' : 'Upload Evidence & Complete'}
                                         </Button>

@@ -126,17 +126,13 @@ async function processRequisitionSummary(purchaseOrders: any[], userSiteInfo: an
 	const suppliers = new Map<string, { _id: string; name: string; code?: string }>();
 	const categories = new Set<string>();
 
-	// Fetch all suppliers with their codes
+	// Fetch all suppliers with their codes ONLY (no contact info)
 	const allSuppliers = await client.fetch(groq`
     *[_type == "Supplier"] {
       _id,
       name,
-      code,
-      contactPerson,
-      phoneNumber,
-      email,
-      address,
-      terms
+      code
+      // REMOVE: contactPerson, phoneNumber, email, address, terms
     }
   `);
 
@@ -211,7 +207,6 @@ async function processRequisitionSummary(purchaseOrders: any[], userSiteInfo: an
 		}
 
 		// Process each ordered item
-		// Process each ordered item
 		for (const item of po.orderedItems) {
 			const supplierId = item.supplier?._id;
 			const supplierName = item.supplier?.name || 'Unknown Supplier';
@@ -237,11 +232,6 @@ async function processRequisitionSummary(purchaseOrders: any[], userSiteInfo: an
 						_id: supplierId,
 						name: supplierName,
 						code: generateSupplierCode(supplierName),
-						contactPerson: 'N/A',
-						phoneNumber: 'N/A',
-						email: 'N/A',
-						address: 'N/A',
-						terms: 'N/A'
 					};
 					suppliers.set(supplierId, supplier);
 				}
@@ -264,40 +254,24 @@ async function processRequisitionSummary(purchaseOrders: any[], userSiteInfo: an
 				category = determineCategory(siteName);
 			}
 
-			// Get supplier contact info from database
-			const supplier = suppliers.get(supplierId || '');
-			const contactInfo = supplier ? {
-				contactPerson: supplier.contactPerson || 'N/A',
-				phoneNumber: supplier.phoneNumber || 'N/A',
-				email: supplier.email || 'N/A',
-				address: supplier.address || 'N/A',
-				terms: supplier.terms || 'N/A'
-			} : {
-				contactPerson: 'N/A',
-				phoneNumber: 'N/A',
-				email: 'N/A',
-				address: 'N/A',
-				terms: 'N/A'
-			};
-
-			// Add item to summary
+			// Add item to summary - REMOVE contact information fields
 			items.push({
 				siteId,
 				siteName,
-				siteAddress: po.site?.address || 'N/A',
-				siteContact: po.site?.contactPerson || 'N/A',
-				sitePhone: po.site?.phoneNumber || 'N/A',
+				siteAddress: 'N/A',        // Simplified
+				siteContact: 'N/A',        // Simplified
+				sitePhone: 'N/A',          // Simplified
 				supplierId,
 				supplierName,
-				supplierContact: contactInfo.contactPerson,
-				supplierPhone: contactInfo.phoneNumber,
-				supplierEmail: contactInfo.email,
-				supplierAddress: contactInfo.address,
-				supplierTerms: contactInfo.terms,
+				supplierContact: 'N/A',    // REMOVE contact info
+				supplierPhone: 'N/A',      // REMOVE contact info
+				supplierEmail: 'N/A',      // REMOVE contact info
+				supplierAddress: 'N/A',    // REMOVE contact info
+				supplierTerms: 'N/A',      // REMOVE contact info
 				supplierCode,
 				amount,
 				category,
-				subCategory: item.stockItem?.category?.description || category, // Use description as subcategory
+				subCategory: item.stockItem?.category?.description || category,
 				poNumber: po.poNumber,
 				orderDate: po.orderDate,
 				itemName: item.stockItem?.name,
@@ -319,11 +293,6 @@ async function processRequisitionSummary(purchaseOrders: any[], userSiteInfo: an
 					_id: supplierId,
 					name: supplierName,
 					code: supplierCode,
-					contactPerson: contactInfo.contactPerson,
-					phoneNumber: contactInfo.phoneNumber,
-					email: contactInfo.email,
-					address: contactInfo.address,
-					terms: contactInfo.terms
 				});
 			}
 		}
@@ -377,18 +346,13 @@ async function processRequisitionSummary(purchaseOrders: any[], userSiteInfo: an
 			};
 		});
 
-		// Get site suppliers (with full contact info)
+		// Get site suppliers (WITHOUT contact info)
 		const siteSuppliers = Array.from(siteSupplierIds).map(id => {
 			const supplier = suppliers.get(id);
 			return supplier ? {
 				_id: supplier._id,
 				name: supplier.name,
 				code: supplier.code,
-				contactPerson: supplier.contactPerson,
-				phoneNumber: supplier.phoneNumber,
-				email: supplier.email,
-				address: supplier.address,
-				terms: supplier.terms
 			} : null;
 		}).filter(Boolean) as any[];
 
@@ -403,7 +367,7 @@ async function processRequisitionSummary(purchaseOrders: any[], userSiteInfo: an
 		};
 	});
 
-	// Group items by category for the summary (using actual categories from database)
+	// Group items by category for the summary
 	const itemsByCategory = Array.from(categories).map(category => {
 		const categoryItems = items.filter(item => item.category === category);
 		const categoryTotal = categoryItems.reduce((sum, item) => sum + item.amount, 0);
@@ -451,7 +415,11 @@ async function processRequisitionSummary(purchaseOrders: any[], userSiteInfo: an
 		const supplierSiteIds = new Set(supplierItems.map(item => item.siteId).filter(Boolean));
 
 		return {
-			supplier,
+			supplier: {
+				_id: supplier._id,
+				name: supplier.name,
+				code: supplier.code
+			},
 			items: supplierItems,
 			performance: {
 				totalAmount: supplierTotal,
@@ -474,13 +442,7 @@ async function processRequisitionSummary(purchaseOrders: any[], userSiteInfo: an
 				siteCount: supplierSiteIds.size,
 				sites: Array.from(supplierSiteIds).map(id => sites.get(id)).filter(Boolean) as any[]
 			},
-			contactInfo: {
-				contactPerson: supplier.contactPerson || 'N/A',
-				phoneNumber: supplier.phoneNumber || 'N/A',
-				email: supplier.email || 'N/A',
-				address: supplier.address || 'N/A',
-				terms: supplier.terms || 'N/A'
-			}
+			// REMOVE contactInfo entirely since it's not used in PDF
 		};
 	});
 
@@ -512,7 +474,11 @@ async function processRequisitionSummary(purchaseOrders: any[], userSiteInfo: an
 		const supplierTotal = supplierItems.reduce((sum, item) => sum + item.amount, 0);
 
 		return {
-			supplier,
+			supplier: {
+				_id: supplier._id,
+				name: supplier.name,
+				code: supplier.code
+			},
 			totalAmount: supplierTotal,
 			itemCount: supplierItems.length,
 			purchaseOrderCount: new Set(supplierItems.map(item => item.poNumber)).size,
@@ -539,10 +505,14 @@ async function processRequisitionSummary(purchaseOrders: any[], userSiteInfo: an
 		stats,
 		totalAmount,
 		sites: Array.from(sites.values()),
-		suppliers: Array.from(suppliers.values()),
+		suppliers: Array.from(suppliers.values()).map(s => ({
+			_id: s._id,
+			name: s.name,
+			code: s.code
+		})),
 		supplierPerformance,
-		categories: allCategoryTitles, // Return ALL categories from database
-		usedCategories: Array.from(categories), // Categories actually used in this report
+		categories: allCategoryTitles,
+		usedCategories: Array.from(categories),
 		purchaseOrdersCount: uniquePOs,
 		itemsCount: items.length,
 		generatedAt: new Date().toISOString(),
@@ -568,57 +538,4 @@ function generateSupplierCode(supplierName: string): string {
 		.substring(0, 3);
 
 	return code || supplierName.substring(0, 3).toUpperCase();
-}
-
-// Add this function to fetch categories from the database
-async function getCategories() {
-	const categories = await client.fetch(groq`
-    *[_type == "Category"] {
-      _id,
-      title,
-      description,
-      "siteMatchPatterns": siteMatchPatterns[] // Optional: Add field to store patterns
-    }
-  `);
-	return categories;
-}
-
-// Replace the hardcoded determineCategory function with this:
-async function determineCategory(siteName: string): Promise<string> {
-	try {
-		// Fetch all categories
-		const categories = await getCategories();
-
-		if (!categories || categories.length === 0) {
-			console.warn('No categories found in database');
-			return 'GENERAL SUPPLIES';
-		}
-
-		const lowerName = siteName.toLowerCase();
-
-		// If categories have siteMatchPatterns, use them
-		for (const category of categories) {
-			if (category.siteMatchPatterns && Array.isArray(category.siteMatchPatterns)) {
-				for (const pattern of category.siteMatchPatterns) {
-					if (lowerName.includes(pattern.toLowerCase())) {
-						return category.title;
-					}
-				}
-			}
-		}
-
-		// Fallback: check if site name contains category keywords
-		for (const category of categories) {
-			if (lowerName.includes(category.title.toLowerCase())) {
-				return category.title;
-			}
-		}
-
-		// Return first category or default
-		return categories[0]?.title || 'GENERAL SUPPLIES';
-
-	} catch (error) {
-		console.error('Error determining category:', error);
-		return 'GENERAL SUPPLIES';
-	}
 }

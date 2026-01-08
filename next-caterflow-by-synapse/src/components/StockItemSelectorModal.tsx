@@ -28,6 +28,7 @@ import {
     Tooltip,
     SimpleGrid,
     Progress,
+    IconButton,
 } from '@chakra-ui/react';
 import { FiSearch, FiCheck, FiX, FiFilter, FiPackage, FiShoppingCart } from 'react-icons/fi';
 
@@ -42,7 +43,7 @@ interface StockItem {
         _id: string;
         title: string;
     };
-    currentStock: number;
+    currentStock?: number;
     unitPrice?: number;
     minStockLevel?: number;
     maxStockLevel?: number;
@@ -84,6 +85,10 @@ export default function StockItemSelectorModal({
     const toast = useToast();
     const itemsContainerRef = useRef<HTMLDivElement>(null);
 
+    const [showOnlyWithStock, setShowOnlyWithStock] = useState(true);
+
+    const [allBins, setAllBins] = useState<any[]>([]);
+
     // Theme-aware colors
     const searchIconColor = useColorModeValue('neutral.light.icon-color', 'neutral.dark.icon-color');
     const noItemsTextColor = useColorModeValue('neutral.light.text-secondary', 'neutral.dark.text-secondary');
@@ -97,27 +102,45 @@ export default function StockItemSelectorModal({
     const fetchStockItems = useCallback(async () => {
         setLoading(true);
         try {
-            const url = sourceBinId ? `/api/stock-items?binId=${sourceBinId}` : '/api/stock-items';
-            const [itemsRes, categoriesRes] = await Promise.all([
-                fetch(url),
-                fetch('/api/categories'),
-            ]);
-
-            if (!itemsRes.ok || !categoriesRes.ok) {
-                throw new Error('Failed to fetch data');
+            const binsRes = await fetch('/api/bins');
+            if (binsRes.ok) {
+                const binsData = await binsRes.json();
+                setAllBins(binsData);
             }
 
-            const itemsData = await itemsRes.json();
-            const categoriesData = await categoriesRes.json();
+            // 1. First, fetch items quickly without stock data
+            const url = sourceBinId ? `/api/stock-items?binId=${sourceBinId}` : '/api/stock-items';
+            const itemsRes = await fetch(url);
 
+            if (!itemsRes.ok) {
+                throw new Error('Failed to fetch stock items');
+            }
+
+            let itemsData = await itemsRes.json();
+
+            // Set items immediately so modal shows quickly
             setStockItems(itemsData);
-            setCategories(categoriesData);
-            setLoading(false);
+
+            // Fetch categories in parallel
+            const categoriesRes = await fetch('/api/categories');
+            if (categoriesRes.ok) {
+                const categoriesData = await categoriesRes.json();
+                setCategories(categoriesData);
+            }
+
+            // 2. Then, fetch stock data in the background
+            if (sourceBinId && itemsData.length > 0) {
+                // Don't wait for this - let it run in background
+                fetchStockDataInBackground(itemsData, sourceBinId);
+            } else {
+                setLoading(false);
+            }
+
         } catch (error) {
             console.error('Error fetching stock items:', error);
             toast({
                 title: 'Error fetching stock items.',
-                description: 'Failed to load stock items and categories.',
+                description: 'Failed to load stock items.',
                 status: 'error',
                 duration: 5000,
                 isClosable: true,
@@ -125,6 +148,45 @@ export default function StockItemSelectorModal({
             setLoading(false);
         }
     }, [sourceBinId, toast]);
+
+    // Add this new function for background stock fetching
+    const fetchStockDataInBackground = async (items: StockItem[], binId: string) => {
+        try {
+            // Use bulk API for better performance
+            const stockRes = await fetch('/api/stock/bulk-current', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    stockItems: items.map(item => item._id),
+                    binId: binId
+                })
+            });
+
+            if (stockRes.ok) {
+                const stockData = await stockRes.json();
+
+                // Update items with stock data
+                const updatedItems = items.map(item => ({
+                    ...item,
+                    currentStock: stockData.results[item._id] || 0
+                }));
+
+                // Filter out items with zero stock
+                const itemsWithStock = updatedItems.filter(item =>
+                    (item.currentStock || 0) > 0
+                );
+
+                setStockItems(itemsWithStock);
+
+                console.log(`📊 Updated ${items.length} items with stock data`);
+            }
+        } catch (error) {
+            console.error('Background stock fetch failed:', error);
+            // Don't show error to user - they already have items
+        } finally {
+            setLoading(false);
+        }
+    };
 
     useEffect(() => {
         if (isOpen) {
@@ -136,19 +198,32 @@ export default function StockItemSelectorModal({
     // Memoize filtered items for better performance
     const memoizedFilteredItems = useMemo(() => {
         const lowercasedSearchTerm = searchTerm.toLowerCase();
+
         let items = stockItems.filter(item =>
-            !existingItemIds.includes(item._id) &&
             (selectedCategory === '' || item.category?._id === selectedCategory) &&
             (item.name.toLowerCase().includes(lowercasedSearchTerm) ||
                 item.sku.toLowerCase().includes(lowercasedSearchTerm) ||
                 (item.description && item.description.toLowerCase().includes(lowercasedSearchTerm)))
         );
 
-        // Sort by name by default
-        items.sort((a, b) => a.name.localeCompare(b.name));
+        // Apply stock filter if enabled
+        if (showOnlyWithStock && sourceBinId) {
+            items = items.filter(item => (item.currentStock || 0) > 0);
+        }
+
+        // Sort: items with stock first, then alphabetically
+        items.sort((a, b) => {
+            const aHasStock = (a.currentStock || 0) > 0;
+            const bHasStock = (b.currentStock || 0) > 0;
+
+            if (aHasStock && !bHasStock) return -1;
+            if (!aHasStock && bHasStock) return 1;
+
+            return a.name.localeCompare(b.name);
+        });
 
         return items;
-    }, [searchTerm, selectedCategory, stockItems, existingItemIds]);
+    }, [searchTerm, selectedCategory, stockItems, showOnlyWithStock, sourceBinId]);
 
     useEffect(() => {
         setFilteredItems(memoizedFilteredItems);
@@ -172,13 +247,15 @@ export default function StockItemSelectorModal({
 
     const handleConfirmSelection = () => {
         if (selectedItems.length === 0) {
-            toast({
-                title: 'No items selected',
-                description: 'Please select at least one item.',
-                status: 'warning',
-                duration: 3000,
-                isClosable: true,
-            });
+            setTimeout(() => {
+                toast({
+                    title: 'No items selected',
+                    description: 'Please select at least one item.',
+                    status: 'warning',
+                    duration: 3000,
+                    isClosable: true,
+                });
+            }, 0);
             return;
         }
         onSelect(selectedItems);
@@ -194,7 +271,7 @@ export default function StockItemSelectorModal({
     };
 
     const getStockLevelColor = (item: StockItem) => {
-        if (!item.minStockLevel || !item.maxStockLevel) return 'gray';
+        if (!item.minStockLevel || !item.maxStockLevel || item.currentStock === undefined) return 'gray';
         const percentage = (item.currentStock / item.maxStockLevel) * 100;
         if (percentage <= 20) return 'red';
         if (percentage <= 50) return 'orange';
@@ -202,11 +279,15 @@ export default function StockItemSelectorModal({
     };
 
     const getStockLevelText = (item: StockItem) => {
-        if (!item.minStockLevel || !item.maxStockLevel) return 'N/A';
+        if (!item.minStockLevel || !item.maxStockLevel || item.currentStock === undefined) return 'N/A';
         if (item.currentStock <= item.minStockLevel) return 'Low Stock';
         if (item.currentStock >= item.maxStockLevel) return 'Overstocked';
         return 'In Stock';
     };
+
+    const isItemInDispatch = useCallback((itemId: string) => {
+        return existingItemIds.includes(itemId);
+    }, [existingItemIds]);
 
     const clearFilters = () => {
         setSearchTerm('');
@@ -222,6 +303,12 @@ export default function StockItemSelectorModal({
             setSelectedItems(filteredItems);
         }
     };
+
+    const getBinName = useCallback(() => {
+        if (!sourceBinId) return '';
+        const bin = allBins.find(b => b._id === sourceBinId);
+        return bin ? bin.name : 'Loading...';
+    }, [sourceBinId, allBins]);
 
     return (
         <Modal
@@ -239,11 +326,25 @@ export default function StockItemSelectorModal({
                 flexDirection="column"
             >
                 <ModalHeader borderBottomWidth="1px" flexShrink={0}>
-                    <VStack align="start" spacing={3}>
+                    <VStack align="start" spacing={3} w="full">
                         <Flex justify="space-between" align="center" w="full">
                             <HStack spacing={2}>
                                 <Icon as={FiShoppingCart} boxSize={5} />
-                                <Text fontSize="xl" fontWeight="bold">Select Stock Items</Text>
+                                <VStack align="start" spacing={0}>
+                                    <Text fontSize="xl" fontWeight="bold">
+                                        Select Stock Items
+                                        {sourceBinId && (
+                                            <Text as="span" fontWeight="normal" color="gray.600" ml={2}>
+                                                - {getBinName()}
+                                            </Text>
+                                        )}
+                                    </Text>
+                                    {sourceBinId && (
+                                        <Text fontSize="sm" color="gray.500" fontWeight="normal">
+                                            {filteredItems.filter(item => (item.currentStock || 0) > 0).length} items with stock available
+                                        </Text>
+                                    )}
+                                </VStack>
                             </HStack>
                             {multiSelect && selectedItems.length > 0 && (
                                 <Button
@@ -257,14 +358,20 @@ export default function StockItemSelectorModal({
                                 </Button>
                             )}
                         </Flex>
+
                         {multiSelect && (
-                            <Flex align="center" gap={4}>
+                            <Flex align="center" gap={4} w="full">
                                 <Badge colorScheme="blue" variant="solid">
                                     {selectedItems.length} item(s) selected
                                 </Badge>
                                 <Text fontSize="sm" color="gray.600">
-                                    {filteredItems.length} available items
+                                    {filteredItems.length} items total
                                 </Text>
+                                {!sourceBinId && (
+                                    <Badge colorScheme="purple" variant="outline">
+                                        Select a bin to see stock
+                                    </Badge>
+                                )}
                             </Flex>
                         )}
                     </VStack>
@@ -422,17 +529,38 @@ export default function StockItemSelectorModal({
                                                 maxHeight="180px"
                                                 p={3}
                                                 borderWidth="2px"
-                                                borderColor={isSelected ? 'blue.500' : listItemBorderColor}
+                                                borderColor={isSelected ? 'blue.500' :
+                                                    isItemInDispatch(item._id) ? 'orange.300' :
+                                                        (item.currentStock || 0) <= 0 && sourceBinId ? 'gray.300' : listItemBorderColor}
                                                 borderRadius="lg"
-                                                bg={isSelected ? selectedItemBg : 'transparent'}
+                                                bg={isSelected ? selectedItemBg :
+                                                    isItemInDispatch(item._id) ? 'orange.50' :
+                                                        (item.currentStock || 0) <= 0 && sourceBinId ? 'gray.50' : 'transparent'}
                                                 _hover={{
-                                                    bg: isSelected ? selectedItemBg : listItemHoverBg,
-                                                    borderColor: isSelected ? 'blue.500' : 'blue.300',
-                                                    cursor: 'pointer',
-                                                    transform: 'translateY(-2px)',
-                                                    transition: 'all 0.2s'
+                                                    bg: isSelected ? selectedItemBg :
+                                                        isItemInDispatch(item._id) ? 'orange.100' :
+                                                            (item.currentStock || 0) <= 0 && sourceBinId ? 'gray.100' : listItemHoverBg,
+                                                    borderColor: isSelected ? 'blue.500' :
+                                                        isItemInDispatch(item._id) ? 'orange.500' :
+                                                            (item.currentStock || 0) <= 0 && sourceBinId ? 'gray.400' : 'blue.300',
+                                                    cursor: (item.currentStock || 0) <= 0 && sourceBinId ? 'not-allowed' : 'pointer',
+                                                    transform: (item.currentStock || 0) <= 0 && sourceBinId ? 'none' : 'translateY(-2px)',
                                                 }}
-                                                onClick={() => handleItemSelect(item)}
+                                                onClick={() => {
+                                                    if ((item.currentStock || 0) <= 0 && sourceBinId) {
+                                                        setTimeout(() => {
+                                                            toast({
+                                                                title: 'No stock available',
+                                                                description: `"${item.name}" has no stock in this bin`,
+                                                                status: 'warning',
+                                                                duration: 2000,
+                                                                isClosable: true,
+                                                            });
+                                                        }, 0);
+                                                        return;
+                                                    }
+                                                    handleItemSelect(item);
+                                                }}
                                                 onTouchStart={(e) => e.stopPropagation()} // Prevent touch event bubbling
                                                 position="relative"
                                                 transition="all 0.2s"
@@ -450,6 +578,8 @@ export default function StockItemSelectorModal({
                                                         overflowY: 'auto',
                                                     },
                                                 }}
+                                                opacity={(item.currentStock || 0) <= 0 && sourceBinId ? 0.7 : 1}
+                                                pointerEvents={(item.currentStock || 0) <= 0 && sourceBinId ? 'none' : 'auto'}
                                             >
                                                 <HStack align="start" spacing={3}>
                                                     {multiSelect && (
@@ -478,13 +608,32 @@ export default function StockItemSelectorModal({
                                                                 >
                                                                     {item.itemType}
                                                                 </Badge>
-                                                                {showStockLevels && item.minStockLevel && item.maxStockLevel && (
+                                                                {isItemInDispatch(item._id) && (
                                                                     <Badge
-                                                                        colorScheme={stockLevelColor}
+                                                                        colorScheme="orange"
                                                                         variant="solid"
                                                                         size="sm"
                                                                     >
-                                                                        {stockLevelText}
+                                                                        Already in Dispatch
+                                                                    </Badge>
+                                                                )}
+                                                                {/* Show "No Stock" badge for items with zero or undefined stock */}
+                                                                {(item.currentStock === 0 || item.currentStock === undefined) && sourceBinId && (
+                                                                    <Badge
+                                                                        colorScheme="red"
+                                                                        variant="subtle"
+                                                                        size="sm"
+                                                                    >
+                                                                        No Stock
+                                                                    </Badge>
+                                                                )}
+                                                                {showStockLevels && item.minStockLevel && item.maxStockLevel && item.currentStock !== undefined && item.currentStock > 0 && (
+                                                                    <Badge
+                                                                        colorScheme={getStockLevelColor(item)}
+                                                                        variant="solid"
+                                                                        size="sm"
+                                                                    >
+                                                                        {getStockLevelText(item)}
                                                                     </Badge>
                                                                 )}
                                                             </HStack>
@@ -517,24 +666,25 @@ export default function StockItemSelectorModal({
                                                             </Text>
                                                         )}
 
-                                                        {showStockLevels && sourceBinId && (
+                                                        {/* Always show current stock if we have it */}
+                                                        {item.currentStock !== undefined && (
                                                             <VStack align="start" spacing={1} w="full">
                                                                 <HStack justify="space-between" w="full">
                                                                     <Text fontSize="sm" fontWeight="medium">
                                                                         Current Stock:
                                                                     </Text>
-                                                                    <Text fontSize="sm" fontWeight="bold" color={stockLevelColor}>
-                                                                        {item.currentStock} {item.unitOfMeasure}
+                                                                    <Text fontSize="sm" fontWeight="bold" color={getStockLevelColor(item)}>
+                                                                        {item.currentStock.toFixed(3)} {item.unitOfMeasure}
                                                                     </Text>
                                                                 </HStack>
-                                                                {item.minStockLevel && item.maxStockLevel && (
+                                                                {item.currentStock !== undefined && item.maxStockLevel && (
                                                                     <Tooltip
-                                                                        label={`Min: ${item.minStockLevel} | Max: ${item.maxStockLevel}`}
+                                                                        label={`Min: ${item.minStockLevel || 'N/A'} | Max: ${item.maxStockLevel}`}
                                                                         placement="top"
                                                                     >
                                                                         <Progress
                                                                             value={(item.currentStock / item.maxStockLevel) * 100}
-                                                                            colorScheme={stockLevelColor}
+                                                                            colorScheme={getStockLevelColor(item)}
                                                                             size="sm"
                                                                             borderRadius="full"
                                                                             w="full"
@@ -562,7 +712,7 @@ export default function StockItemSelectorModal({
                             )}
                         </Box>
 
-                        {/* Selected Items Summary (when multi-select) */}
+                        {/* Selected Items Summary (when multi-select) 
                         {multiSelect && selectedItems.length > 0 && (
                             <Box
                                 p={3}
@@ -573,27 +723,19 @@ export default function StockItemSelectorModal({
                                 flexShrink={0}
                             >
                                 <VStack align="start" spacing={2}>
-                                    <HStack>
-                                        <Icon as={FiCheck} color="green.500" />
-                                        <Text fontWeight="bold">Selected Items Summary</Text>
-                                    </HStack>
                                     <SimpleGrid columns={{ base: 1, md: 2 }} spacing={2} w="full">
+                                        <HStack>
+                                            <Icon as={FiCheck} color="green.500" />
+                                            <Text fontWeight="bold">Selected Items Summary</Text>
+                                        </HStack>
                                         <HStack>
                                             <Text fontSize="sm">Total Items:</Text>
                                             <Badge colorScheme="blue">{selectedItems.length}</Badge>
                                         </HStack>
-                                        {showPrices && (
-                                            <HStack>
-                                                <Text fontSize="sm">Estimated Cost:</Text>
-                                                <Badge colorScheme="green">
-                                                    ${selectedItems.reduce((sum, item) => sum + (item.unitPrice || 0), 0).toFixed(2)}
-                                                </Badge>
-                                            </HStack>
-                                        )}
                                     </SimpleGrid>
                                 </VStack>
                             </Box>
-                        )}
+                        )}*/}
                     </VStack>
                 </ModalBody>
 
@@ -601,31 +743,98 @@ export default function StockItemSelectorModal({
                     borderTop="1px solid"
                     borderColor={footerBorderColor}
                     pt={4}
+                    pb={4}
                     flexShrink={0}
                 >
-                    <HStack spacing={3} w="full" justify="space-between">
-                        <Button variant="ghost" onClick={onClose}>
+                    <HStack spacing={4} w="full" justify="space-between" align="center">
+                        {/* Left side: Cancel button */}
+                        <Button variant="ghost" onClick={onClose} size="md">
                             Cancel
                         </Button>
-                        {multiSelect ? (
-                            <HStack spacing={3}>
-                                <Text fontSize="sm" color="gray.600">
-                                    {selectedItems.length} item(s) selected
-                                </Text>
-                                <Button
-                                    colorScheme="blue"
-                                    onClick={handleConfirmSelection}
-                                    isDisabled={selectedItems.length === 0}
-                                    leftIcon={<FiCheck />}
-                                    size="lg"
-                                    px={6}
+
+                        {/* Middle: Filter icons and selected count */}
+                        <HStack spacing={2} flex="1" justify="center" align="center">
+                            {/* Stock filter icon */}
+                            {sourceBinId && (
+                                <Tooltip
+                                    label={showOnlyWithStock ? "Showing only items with stock" : "Showing all items"}
+                                    placement="top"
                                 >
-                                    Add {selectedItems.length} Item{selectedItems.length !== 1 ? 's' : ''}
-                                </Button>
-                            </HStack>
+                                    <IconButton
+                                        aria-label={showOnlyWithStock ? "Showing only in-stock items" : "Showing all items"}
+                                        icon={<FiPackage />}
+                                        size="sm"
+                                        variant={showOnlyWithStock ? "solid" : "outline"}
+                                        colorScheme="blue"
+                                        onClick={() => setShowOnlyWithStock(!showOnlyWithStock)}
+                                        isRound
+                                    />
+                                </Tooltip>
+                            )}
+
+                            {/* Clear filters icon */}
+                            <Tooltip
+                                label="Clear all filters"
+                                placement="top"
+                            >
+                                <IconButton
+                                    aria-label="Clear filters"
+                                    icon={<FiFilter />}
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={clearFilters}
+                                    isDisabled={!searchTerm && !selectedCategory && !showOnlyWithStock}
+                                    isRound
+                                />
+                            </Tooltip>
+
+                            {/* Select all icon (only for multi-select) */}
+                            {multiSelect && filteredItems.length > 0 && (
+                                <Tooltip
+                                    label={`Select all ${filteredItems.length} items`}
+                                    placement="top"
+                                >
+                                    <IconButton
+                                        aria-label="Select all items"
+                                        icon={<FiCheck />}
+                                        size="sm"
+                                        variant="outline"
+                                        onClick={selectAll}
+                                        colorScheme="blue"
+                                        isRound
+                                    />
+                                </Tooltip>
+                            )}
+
+                            {/* Selected items counter */}
+                            {multiSelect && (
+                                <Badge
+                                    colorScheme="blue"
+                                    variant="solid"
+                                    fontSize="0.8em"
+                                    px={2}
+                                    py={1}
+                                >
+                                    {selectedItems.length} selected
+                                </Badge>
+                            )}
+                        </HStack>
+
+                        {/* Right side: Add/Confirm button */}
+                        {multiSelect ? (
+                            <Button
+                                colorScheme="blue"
+                                onClick={handleConfirmSelection}
+                                isDisabled={selectedItems.length === 0}
+                                leftIcon={<FiCheck />}
+                                size="md"
+                                px={6}
+                            >
+                                Add {selectedItems.length}
+                            </Button>
                         ) : (
                             <Text fontSize="sm" color="gray.600" fontStyle="italic">
-                                Click on an item to select it
+                                Click item to select
                             </Text>
                         )}
                     </HStack>

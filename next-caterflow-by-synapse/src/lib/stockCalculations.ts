@@ -16,6 +16,112 @@ import { Mutex } from 'async-mutex';
 
 Decimal.set({ precision: 10, rounding: Decimal.ROUND_HALF_UP });
 
+// Validation function for dispatch items
+export const validateDispatchItems = async (dispatchId: string): Promise<{
+  valid: boolean;
+  items: Array<{
+    stockItemId: string;
+    binId: string | null;
+    quantity: number;
+    itemName?: string;
+    binName?: string;
+  }>;
+  missingBins: string[];
+}> => {
+  try {
+    const query = groq`*[_type == "DispatchLog" && _id == $dispatchId][0] {
+            "dispatchedItems": dispatchedItems[]{
+                "stockItemId": stockItem._ref,
+                "stockItemName": stockItem->name,
+                dispatchedQuantity,
+                "sourceBinId": sourceBin._ref,
+                "sourceBinName": sourceBin->name
+            }
+        }`;
+
+    const dispatch = await client.fetch(query, { dispatchId });
+
+    if (!dispatch || !dispatch.dispatchedItems) {
+      return {
+        valid: false,
+        items: [],
+        missingBins: ['Dispatch not found']
+      };
+    }
+
+    const items = dispatch.dispatchedItems.map((item: any) => ({
+      stockItemId: item.stockItemId,
+      binId: item.sourceBinId,
+      quantity: item.dispatchedQuantity || 0,
+      itemName: item.stockItemName,
+      binName: item.sourceBinName
+    }));
+
+    const missingBins = items
+      .filter((item: { binId: any; }) => !item.binId)
+      .map((item: { itemName: any; }) => `Item "${item.itemName}" missing source bin`);
+
+    return {
+      valid: missingBins.length === 0,
+      items,
+      missingBins
+    };
+
+  } catch (error) {
+    console.error('Error validating dispatch items:', error);
+    return {
+      valid: false,
+      items: [],
+      missingBins: [`Validation error: ${error}`]
+    };
+  }
+};
+
+export const debugDispatchStock = async (dispatchId: string): Promise<void> => {
+  console.log(`🔍 Debugging dispatch ${dispatchId} stock deduction...`);
+
+  // Get the dispatch
+  const dispatch = await client.fetch(
+    groq`*[_type == "DispatchLog" && _id == $dispatchId][0] {
+          dispatchNumber,
+          evidenceStatus,
+          status,
+          "dispatchedItems": dispatchedItems[]{
+              "stockItemId": stockItem._ref,
+              "stockItemName": stockItem->name,
+              dispatchedQuantity,
+              "sourceBinId": sourceBin._ref,
+              "sourceBinName": sourceBin->name
+          }
+      }`,
+    { id: dispatchId }
+  );
+
+  if (!dispatch) {
+    console.error(`❌ Dispatch ${dispatchId} not found`);
+    return;
+  }
+
+  console.log(`📋 Dispatch ${dispatch.dispatchNumber} (${dispatch.evidenceStatus}, ${dispatch.status})`);
+  console.log(`📦 ${dispatch.dispatchedItems?.length || 0} items to process:`);
+
+  // Check each item
+  for (const item of dispatch.dispatchedItems || []) {
+    console.log(`  └─ ${item.stockItemName}:`, {
+      quantity: item.dispatchedQuantity,
+      bin: item.sourceBinName || 'NO BIN!',
+      binId: item.sourceBinId || 'MISSING'
+    });
+
+    if (item.sourceBinId) {
+      // Check current stock
+      const currentStock = await calculateStock(item.stockItemId, item.sourceBinId);
+      console.log(`     Current stock: ${currentStock.quantity}`);
+      console.log(`     After dispatch: ${currentStock.quantity - item.dispatchedQuantity}`);
+    }
+  }
+};
+
 // Replace the old mutex system with a new one that prevents timer conflicts
 class StockCalculationManager {
   private static instance: StockCalculationManager;
@@ -1420,12 +1526,12 @@ export async function updateStockForTransaction(
             _id,
             dispatchNumber,
             evidenceStatus,
-            "sourceBin": sourceBin._ref,
             "dispatchedItems": dispatchedItems[]{
-              "stockItemId": stockItem._ref,
-              dispatchedQuantity
+                "stockItemId": stockItem._ref,
+                dispatchedQuantity,
+                "sourceBinId": sourceBin._ref
             }
-          }`,
+        }`,
           { id: transactionId }
         );
 
@@ -1436,9 +1542,11 @@ export async function updateStockForTransaction(
 
         items = (transaction.dispatchedItems || []).map((item: any) => ({
           stockItemId: item.stockItemId,
-          quantity: -(item.dispatchedQuantity || 0),
-          binId: transaction.sourceBin
-        }));
+          quantity: (item.dispatchedQuantity || 0),
+          binId: item.sourceBinId  // Use item-level sourceBinId, not document-level
+        })).filter((item: { binId: any; }) => item.binId); // Only include items with a binId
+
+        console.log(`📋 Processing ${items.length} dispatch items with item-level bins`);
         break;
 
       case 'transfer':
@@ -1521,23 +1629,34 @@ export async function updateStockForTransaction(
     // Process items with proper locking
     const updatePromises = items.map(async (item) => {
       if (!item.stockItemId || !item.binId) {
-        console.warn('⚠️ Skipping item without stockItemId or binId');
+        console.warn('⚠️ Skipping item without stockItemId or binId:', {
+          stockItemId: item.stockItemId,
+          binId: item.binId,
+          quantity: item.quantity,
+          transactionType,
+          transactionId
+        });
         return;
       }
 
       const lockKey = `${item.stockItemId}-${item.binId}`;
       const mutex = getMutexForKey(lockKey);
 
-
       // Use mutex to prevent race conditions
       return mutex.runExclusive(async () => {
         try {
+          console.log(`🔄 Processing ${transactionType} item:`, {
+            stockItemId: item.stockItemId,
+            binId: item.binId,
+            quantity: item.quantity
+          });
+
           // Re-fetch current stock WITHIN the lock to ensure we have latest
           const currentSnapshot = await client.fetch(
             groq`*[_type == "stockSnapshot" && stockItem._ref == $stockItemId && bin._ref == $binId][0]{
-              quantity,
-              lastUpdated
-            }`,
+                    quantity,
+                    lastUpdated
+                }`,
             { stockItemId: item.stockItemId, binId: item.binId }
           );
 
@@ -1545,6 +1664,7 @@ export async function updateStockForTransaction(
 
           // If no snapshot exists, calculate from transactions
           if (!currentSnapshot) {
+            console.log(`📊 No snapshot found, calculating from transactions for ${item.stockItemId}-${item.binId}`);
             currentStock = await calculateStockFromTransactions(item.stockItemId, item.binId, false);
           }
 
@@ -1553,25 +1673,29 @@ export async function updateStockForTransaction(
           if (transactionType === 'inventoryCount') {
             // Inventory counts set the absolute quantity
             newStock = item.quantity;
+            console.log(`📋 Inventory count sets stock to ${newStock} for ${item.stockItemId}-${item.binId}`);
           } else {
             // Other transactions adjust the quantity
             newStock = currentStock + item.quantity;
+            console.log(`📋 ${transactionType} adjustment:`, {
+              current: currentStock,
+              adjustment: item.quantity,
+              new: newStock,
+              item: item.stockItemId,
+              bin: item.binId
+            });
 
             // Validate no negative stock (except for special cases)
             if (newStock < 0) {
-              console.warn(`⚠️ Negative stock detected for ${item.stockItemId} in ${item.binId}: ${newStock}. Setting to 0.`);
-              // DON'T set to 0 - keep negative for analysis
-              // newStock = 0;
+              console.warn(`⚠️ Negative stock detected for ${item.stockItemId} in ${item.binId}:`, {
+                current: currentStock,
+                adjustment: item.quantity,
+                new: newStock,
+                transactionType,
+                transactionId
+              });
             }
           }
-
-          console.log(`📦 Updating ${transactionType} stock:`, {
-            stockItemId: item.stockItemId,
-            binId: item.binId,
-            current: currentStock,
-            adjustment: item.quantity,
-            new: newStock
-          });
 
           // Update the snapshot
           await updateStockSnapshot(
@@ -1582,8 +1706,16 @@ export async function updateStockForTransaction(
             transactionId
           );
 
+          console.log(`✅ Updated ${transactionType} stock:`, {
+            stockItemId: item.stockItemId,
+            binId: item.binId,
+            current: currentStock,
+            adjustment: item.quantity,
+            new: newStock
+          });
+
         } catch (error) {
-          console.error(`❌ Failed to update stock for item ${item.stockItemId}:`, error);
+          console.error(`❌ Failed to update stock for item ${item.stockItemId}-${item.binId}:`, error);
           throw error; // Re-throw to ensure transaction integrity
         }
       });
