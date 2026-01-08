@@ -61,17 +61,24 @@ export function buildBinSiteFilter(userSiteInfo: UserSiteInfo): string {
 }
 
 export function buildTransactionSiteFilter(userSiteInfo: UserSiteInfo): string {
-  // For transactions that can reference bins from different sites
   if (userSiteInfo.canAccessMultipleSites) {
     return '';
   }
 
   if (userSiteInfo.userSiteId) {
     return `&& (
+      // For transfers
       receivingBin->site._ref == "${userSiteInfo.userSiteId}" ||
-      sourceBin->site._ref == "${userSiteInfo.userSiteId}" ||
       fromBin->site._ref == "${userSiteInfo.userSiteId}" ||
       toBin->site._ref == "${userSiteInfo.userSiteId}" ||
+      
+      // For OLD dispatches (sourceBin)
+      sourceBin->site._ref == "${userSiteInfo.userSiteId}" ||
+      
+      // For NEW dispatches (sourceSite)
+      sourceSite._ref == "${userSiteInfo.userSiteId}" ||
+      
+      // For bin counts
       bin->site._ref == "${userSiteInfo.userSiteId}"
     )`;
   }

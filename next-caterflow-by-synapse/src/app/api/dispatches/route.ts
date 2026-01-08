@@ -94,6 +94,13 @@ export async function GET() {
     try {
         const userSiteInfo = await getUserSiteInfo();
         const siteFilter = buildTransactionSiteFilter(userSiteInfo);
+        // Add this temporary code to /api/dispatches/route.ts in the GET function:
+        console.log('🔍 User Site Info:', {
+            userSiteInfo,
+            siteFilter,
+            role: getUserSiteInfo.toString,
+            //allowedSites: userSiteInfo?.allowedSites
+        });
 
         const query = groq`*[_type == "DispatchLog" ${siteFilter}] | order(dispatchDate desc) {
             _id,

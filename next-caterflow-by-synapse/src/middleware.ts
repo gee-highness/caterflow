@@ -20,7 +20,7 @@ export default withAuth(
       '/inventory': ['admin', 'siteManager', 'stockController', 'auditor'],
       '/operations/purchases': ['admin', 'siteManager', 'auditor'],
       '/operations/receipts': ['admin', 'siteManager', 'stockController', 'auditor'], // Added stockController
-      '/operations/dispatches': ['admin', 'stockController', 'auditor'], // Added stockController (view-only)
+            '/operations/dispatches': ['admin', 'stockController', 'siteManager', 'auditor'], 
       '/operations/transfers': ['admin', 'siteManager', 'stockController', 'auditor', 'procurer'],
       '/operations/counts': ['admin', 'siteManager', 'stockController', 'auditor'],
       '/operations/adjustments': ['admin', 'siteManager', 'stockController', 'auditor'],

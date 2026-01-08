@@ -142,11 +142,16 @@ export default function UsersPage() {
         onOpen();
     };
 
+    // In the handleEditUser function in users/page.tsx
     const handleEditUser = (user: AppUserWithSite) => {
         setSelectedUser({
             ...user,
+            // Ensure associatedSite is in the correct format
             associatedSite: user.associatedSite
-                ? { _ref: user.associatedSite._id } as Reference
+                ? {
+                    _id: user.associatedSite._id,
+                    name: user.associatedSite.name
+                }
                 : undefined
         } as any);
         onOpen();

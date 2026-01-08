@@ -20,7 +20,7 @@ import {
     FormErrorMessage,
     useColorModeValue,
 } from '@chakra-ui/react';
-import { AppUser, Site, Reference } from '@/lib/sanityTypes';
+import { AppUser, Site } from '@/lib/sanityTypes';
 
 interface UserManagementModalProps {
     isOpen: boolean;
@@ -57,22 +57,26 @@ const UserManagementModal: React.FC<UserManagementModalProps> = ({
             setRole(userToEdit.role || 'siteManager');
             setIsActive(userToEdit.isActive !== undefined ? userToEdit.isActive : true);
 
-            // Handle both Reference and expanded Site objects
+            // Handle the site selection - data comes in different formats
             if (userToEdit.associatedSite) {
-                const associatedSite = userToEdit.associatedSite;
+                console.log('userToEdit.associatedSite:', userToEdit.associatedSite);
 
-                if (typeof associatedSite === 'object') {
-                    // Use type guards with proper type assertions
-                    if ('_id' in associatedSite) {
-                        // It's an expanded Site object
-                        setSelectedSiteId((associatedSite as unknown as Site)._id);
-                    } else if ('_ref' in associatedSite) {
-                        // It's a Reference object
-                        setSelectedSiteId((associatedSite as Reference)._ref);
+                // Check if it's an expanded site object (from API)
+                if (typeof userToEdit.associatedSite === 'object') {
+                    const associatedSite = userToEdit.associatedSite as any;
+
+                    // Type guard to check if it has _id property (expanded site)
+                    if ('_id' in associatedSite && associatedSite._id) {
+                        setSelectedSiteId(associatedSite._id);
                     }
-                } else if (typeof associatedSite === 'string') {
-                    // It's a string ID
-                    setSelectedSiteId(associatedSite);
+                    // Check if it's a reference object
+                    else if ('_ref' in associatedSite && associatedSite._ref) {
+                        setSelectedSiteId(associatedSite._ref);
+                    }
+                }
+                // Handle string ID
+                else if (typeof userToEdit.associatedSite === 'string') {
+                    setSelectedSiteId(userToEdit.associatedSite);
                 }
             } else {
                 setSelectedSiteId('');
@@ -94,7 +98,6 @@ const UserManagementModal: React.FC<UserManagementModalProps> = ({
         if (!name.trim()) newErrors.name = 'Name is required';
         if (!email.trim()) newErrors.email = 'Email is required';
         else if (!/\S+@\S+\.\S+/.test(email)) newErrors.email = 'Email is invalid';
-
 
         setErrors(newErrors);
         return Object.keys(newErrors).length === 0;
@@ -195,7 +198,7 @@ const UserManagementModal: React.FC<UserManagementModalProps> = ({
                                     <option value="admin">Admin</option>
                                     <option value="siteManager">Site Manager</option>
                                     <option value="stockController">Stock Controller</option>
-                                    <option value="procurer">Procurer</option>
+                                    <option value="dispatchStaff">Dispatch Staff</option>
                                     <option value="auditor">Auditor</option>
                                 </Select>
                             </FormControl>
@@ -207,6 +210,7 @@ const UserManagementModal: React.FC<UserManagementModalProps> = ({
                                     onChange={(e) => setSelectedSiteId(e.target.value)}
                                     placeholder="Select a site (optional)"
                                 >
+                                    <option value="">None</option>
                                     {sites.map((site) => (
                                         <option key={site._id} value={site._id}>
                                             {site.name}
