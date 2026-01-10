@@ -32,7 +32,7 @@ export function Footer({ appName = 'StockWise' }: FooterProps) {
           <Text>
             &copy; {new Date().getFullYear()} {appName} by{' '}
             <Link href="https://triptych-sol.vercel.app/" isExternal>
-              Synapse Digital
+              Triptych Solutions
             </Link>
             . All rights reserved.
           </Text>
