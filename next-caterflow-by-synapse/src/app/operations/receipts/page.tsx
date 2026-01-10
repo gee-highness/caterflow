@@ -192,9 +192,10 @@ export default function GoodsReceiptsPage() {
                 const term = searchTerm.toLowerCase();
                 const receiptNumberMatch = receipt.receiptNumber?.toLowerCase().includes(term) || false;
                 const poNumberMatch = getPopulatedData(receipt.purchaseOrder, 'poNumber')?.toLowerCase().includes(term) || false;
-                const supplierMatch = receipt.supplierNames?.toLowerCase().includes(term) || false;
-                const siteMatch = getPopulatedData(receipt.purchaseOrder?.site, 'name')?.toLowerCase().includes(term) || false;
-                return receiptNumberMatch || poNumberMatch || supplierMatch || siteMatch;
+                // FIX: Ensure supplierNames is a string before calling toLowerCase()
+                const supplierMatch = receipt.supplierNames ? String(receipt.supplierNames).toLowerCase().includes(term) : false;
+                // const siteMatch = getPopulatedData(receipt.purchaseOrder?.site, 'name')?.toLowerCase().includes(term) || false;
+                return receiptNumberMatch || poNumberMatch || supplierMatch;//|| siteMatch;
             })
             : goodsReceipts;
 
@@ -316,9 +317,9 @@ export default function GoodsReceiptsPage() {
         {
             accessorKey: 'supplierNames',
             header: 'Suppliers',
-            isSortable: true, // Enable sorting for supplier names
+            isSortable: true,
             cell: (row: any) => {
-                const supplierNames = row.supplierNames || 'N/A';
+                const supplierNames = row.supplierNames ? String(row.supplierNames) : 'N/A';
                 return <Text color={secondaryTextColor}>{supplierNames}</Text>;
             },
         },
