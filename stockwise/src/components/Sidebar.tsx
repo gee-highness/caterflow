@@ -66,7 +66,7 @@ const SidebarContent = ({ onItemClick }: { onItemClick?: () => void }) => {
     const textSecondaryColor = useColorModeValue('neutral.light.text-secondary', 'neutral.dark.text-secondary');
     const hoverBg = useColorModeValue('gray.100', 'gray.700');
 
-    const hText = useColorModeValue('gray.700, gray.100');
+    const hText = useColorModeValue('gray.700', 'gray.100');
 
     // Define menu items with roles and groups - Improved icons for better distinction
     const menuGroups = [
