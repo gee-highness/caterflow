@@ -582,7 +582,7 @@ export default function CreatePurchaseOrderModal({
                                                                     Category: {item.category?.title || 'Uncategorized'} • Unit: {item.unitOfMeasure}
                                                                 </Text>
                                                                 <Text fontSize="sm" color="blue.600" fontWeight="medium">
-                                                                    Price: ${item.unitPrice || 0}
+                                                                    Price: E {item.unitPrice || 0}
                                                                 </Text>
                                                             </VStack>
                                                             {isSelected && (
