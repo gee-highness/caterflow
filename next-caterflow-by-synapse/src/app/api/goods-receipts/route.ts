@@ -51,26 +51,39 @@ const getNextReceiptNumber = async (): Promise<string> => {
     }
 };
 
+// Helper function to extract supplier names from ordered items
+const extractSupplierNames = (orderedItems: any[]): string => {
+    if (!orderedItems || orderedItems.length === 0) return 'No suppliers';
+
+    const supplierNames = orderedItems
+        .map((item: any) => item.supplier?.name)
+        .filter((name: string | undefined) => name && name.trim() !== '');
+
+    const uniqueSupplierNames = [...new Set(supplierNames)];
+
+    if (uniqueSupplierNames.length === 0) return 'No suppliers';
+    if (uniqueSupplierNames.length <= 2) return uniqueSupplierNames.join(', ');
+
+    return `${uniqueSupplierNames.slice(0, 2).join(', ')} +${uniqueSupplierNames.length - 2} more`;
+};
+
 export async function GET() {
     try {
         const userSiteInfo = await getUserSiteInfo();
         const siteFilter = buildTransactionSiteFilter(userSiteInfo);
 
-        // FIXED QUERY: Properly expand all references including nested ones
         const query = groq`*[_type == "GoodsReceipt" ${siteFilter}] | order(receiptDate desc) {
             _id,
             receiptNumber,
             receiptDate,
             status,
             notes,
-            // FIX: Properly expand purchaseOrder with all necessary fields
             "purchaseOrder": purchaseOrder->{
                 _id,
                 poNumber,
                 status,
                 orderDate,
                 totalAmount,
-                // FIX: Ensure supplier is properly expanded
                 "supplier": supplier->{
                     _id,
                     name,
@@ -78,13 +91,13 @@ export async function GET() {
                     phoneNumber,
                     email
                 },
-                // FIX: Ensure site is properly expanded
                 "site": site->{
                     _id,
                     name,
                     location,
                     contactNumber
                 },
+                // FIX: Include orderedItems with supplier data
                 orderedItems[]{
                     _key,
                     orderedQuantity,
@@ -95,6 +108,14 @@ export async function GET() {
                         name,
                         sku,
                         unitPrice
+                    },
+                    // IMPORTANT: Include supplier from each ordered item
+                    supplier->{
+                        _id,
+                        name,
+                        contactPerson,
+                        phoneNumber,
+                        email
                     }
                 }
             },
@@ -145,7 +166,21 @@ export async function GET() {
         }`;
 
         const goodsReceipts = await client.fetch(query);
-        return NextResponse.json(goodsReceipts);
+
+        // Process receipts to add supplier names
+        const processedReceipts = goodsReceipts.map((receipt: any) => {
+            // Extract supplier names from purchase order's ordered items
+            const supplierNames = receipt.purchaseOrder?.orderedItems
+                ? extractSupplierNames(receipt.purchaseOrder.orderedItems)
+                : 'No suppliers';
+
+            return {
+                ...receipt,
+                supplierNames // Add extracted supplier names to the receipt
+            };
+        });
+
+        return NextResponse.json(processedReceipts);
     } catch (error) {
         console.error('Failed to fetch goods receipts:', error);
         return NextResponse.json(

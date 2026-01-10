@@ -7,6 +7,7 @@ import { logSanityInteraction } from '@/lib/sanityLogger';
 import { NextResponse } from 'next/server';
 import { revertPreviousStockChanges, updateStockForTransaction } from '@/lib/stockCalculations';
 
+// In /api/goods-receipts/[id]/route.ts - Update the GET function
 export async function GET(
     request: Request,
     { params }: { params: Promise<{ id: string }> }
@@ -21,7 +22,6 @@ export async function GET(
             );
         }
 
-        // FIXED: Updated query to properly expand supplier and site
         const query = groq`*[_type == "GoodsReceipt" && _id == $id][0] {
     _id,
     _type,
@@ -29,13 +29,11 @@ export async function GET(
     receiptDate,
     status,
     notes,
-    // FIX: Properly expand purchaseOrder with supplier and site
     purchaseOrder->{
         _id,
         poNumber,
         status,
         orderDate,
-        // FIX: Ensure supplier is properly expanded
         supplier->{
             _id,
             name,
@@ -43,13 +41,13 @@ export async function GET(
             phoneNumber,
             email
         },
-        // FIX: Ensure site is properly expanded
         site->{
             _id,
             name,
             location,
             contactNumber
         },
+        // FIX: Include orderedItems with supplier data
         orderedItems[] {
             _key,
             orderedQuantity,
@@ -59,6 +57,14 @@ export async function GET(
                 name,
                 sku,
                 unitOfMeasure
+            },
+            // IMPORTANT: Include supplier from each ordered item
+            supplier->{
+                _id,
+                name,
+                contactPerson,
+                phoneNumber,
+                email
             }
         }
     },
@@ -113,7 +119,17 @@ export async function GET(
             );
         }
 
-        return NextResponse.json(goodsReceipt);
+        // Extract supplier names from purchase order's ordered items
+        const supplierNames = goodsReceipt.purchaseOrder?.orderedItems
+            ? extractSupplierNames(goodsReceipt.purchaseOrder.orderedItems)
+            : 'No suppliers';
+
+        const processedReceipt = {
+            ...goodsReceipt,
+            supplierNames // Add extracted supplier names to the receipt
+        };
+
+        return NextResponse.json(processedReceipt);
     } catch (error: any) {
         console.error("Error fetching goods receipt:", error);
         return NextResponse.json(
@@ -122,6 +138,22 @@ export async function GET(
         );
     }
 }
+
+// Add the extractSupplierNames function at the top of the file
+const extractSupplierNames = (orderedItems: any[]): string => {
+    if (!orderedItems || orderedItems.length === 0) return 'No suppliers';
+
+    const supplierNames = orderedItems
+        .map((item: any) => item.supplier?.name)
+        .filter((name: string | undefined) => name && name.trim() !== '');
+
+    const uniqueSupplierNames = [...new Set(supplierNames)];
+
+    if (uniqueSupplierNames.length === 0) return 'No suppliers';
+    if (uniqueSupplierNames.length <= 2) return uniqueSupplierNames.join(', ');
+
+    return `${uniqueSupplierNames.slice(0, 2).join(', ')} +${uniqueSupplierNames.length - 2} more`;
+};
 
 // CHANGE FROM POST TO PUT FOR UPDATES
 export async function PUT(

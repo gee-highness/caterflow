@@ -68,6 +68,25 @@ const calculateTotalAmount = (receivedItems: any[]): number => {
     }, 0);
 };
 
+// Helper function to extract supplier names from PO ordered items
+const extractSupplierNamesFromPO = (purchaseOrder: any): string => {
+    if (!purchaseOrder?.orderedItems || purchaseOrder.orderedItems.length === 0) {
+        return 'No suppliers';
+    }
+
+    // Extract supplier names from ordered items
+    const supplierNames = purchaseOrder.orderedItems
+        .map((item: any) => item.supplier?.name)
+        .filter((name: string | undefined) => name && name.trim() !== '');
+
+    const uniqueSupplierNames = [...new Set(supplierNames)];
+
+    if (uniqueSupplierNames.length === 0) return 'No suppliers';
+    if (uniqueSupplierNames.length <= 2) return uniqueSupplierNames.join(', ');
+
+    return `${uniqueSupplierNames.slice(0, 2).join(', ')} +${uniqueSupplierNames.length - 2} more`;
+};
+
 export default function GoodsReceiptsPage() {
     const { data: session, status } = useSession();
     const [goodsReceipts, setGoodsReceipts] = useState<GoodsReceipt[]>([]);
@@ -97,8 +116,23 @@ export default function GoodsReceiptsPage() {
             const response = await fetch('/api/goods-receipts');
             if (response.ok) {
                 const data = await response.json();
-                setGoodsReceipts(data || []);
-                setGoodsReceiptsList(data || []);
+
+                // Process data to extract supplier names from purchase order items
+                const processedData = data.map((receipt: any) => {
+                    // Extract supplier names from the purchase order's ordered items
+                    const supplierNames = receipt.purchaseOrder
+                        ? extractSupplierNamesFromPO(receipt.purchaseOrder)
+                        : 'No suppliers';
+
+                    return {
+                        ...receipt,
+                        // Add supplierNames to the receipt for easy access
+                        supplierNames
+                    };
+                });
+
+                setGoodsReceipts(processedData || []);
+                setGoodsReceiptsList(processedData || []);
             } else {
                 throw new Error('Failed to fetch goods receipts');
             }
@@ -119,8 +153,15 @@ export default function GoodsReceiptsPage() {
             const response = await fetch('/api/purchase-orders');
             if (response.ok) {
                 const data = await response.json();
-                setAllPurchaseOrders(data || []);
-                const approvedPOs = data.filter((po: any) => po.status === 'processed');
+
+                // Process POs to add supplier names
+                const processedPOs = data.map((po: any) => ({
+                    ...po,
+                    supplierNames: extractSupplierNamesFromPO(po)
+                }));
+
+                setAllPurchaseOrders(processedPOs || []);
+                const approvedPOs = processedPOs.filter((po: any) => po.status === 'processed');
                 setApprovedPurchaseOrders(approvedPOs || []);
             } else {
                 console.error('Failed to fetch purchase orders:', response.status);
@@ -151,7 +192,9 @@ export default function GoodsReceiptsPage() {
                 const term = searchTerm.toLowerCase();
                 const receiptNumberMatch = receipt.receiptNumber?.toLowerCase().includes(term) || false;
                 const poNumberMatch = getPopulatedData(receipt.purchaseOrder, 'poNumber')?.toLowerCase().includes(term) || false;
-                return receiptNumberMatch || poNumberMatch;
+                const supplierMatch = receipt.supplierNames?.toLowerCase().includes(term) || false;
+                const siteMatch = getPopulatedData(receipt.purchaseOrder?.site, 'name')?.toLowerCase().includes(term) || false;
+                return receiptNumberMatch || poNumberMatch || supplierMatch || siteMatch;
             })
             : goodsReceipts;
 
@@ -186,10 +229,7 @@ export default function GoodsReceiptsPage() {
                     _id: po.site?._id || '',
                     name: po.site?.name || ''
                 },
-                supplier: {
-                    _id: po.supplier?._id || '',
-                    name: po.supplier?.name || ''
-                },
+                supplierNames: po.supplierNames || 'No suppliers',
                 orderedItems: po.orderedItems || [],
                 orderedBy: po.orderedBy || '',
                 totalAmount: po.totalAmount || 0
@@ -273,16 +313,16 @@ export default function GoodsReceiptsPage() {
             isSortable: true, // Enable sorting for dates
             cell: (row: any) => <Text color={secondaryTextColor}>{new Date(row.receiptDate).toLocaleDateString()}</Text>,
         },
-/*        {
-            accessorKey: 'supplier.name',
-            header: 'Supplier',
+        {
+            accessorKey: 'supplierNames',
+            header: 'Suppliers',
             isSortable: true, // Enable sorting for supplier names
             cell: (row: any) => {
-                const supplierName = getPopulatedData(row.purchaseOrder?.supplier, 'name');
-                return <Text color={secondaryTextColor}>{supplierName || 'N/A'}</Text>;
+                const supplierNames = row.supplierNames || 'N/A';
+                return <Text color={secondaryTextColor}>{supplierNames}</Text>;
             },
         },
-  */      {
+        {
             accessorKey: 'site.name',
             header: 'Site',
             isSortable: true, // Enable sorting for site names
@@ -335,10 +375,10 @@ export default function GoodsReceiptsPage() {
             cell: (row: any) => <Text fontWeight="bold" color={primaryTextColor}>{row.poNumber || 'N/A'}</Text>
         },
         {
-            accessorKey: 'supplier.name',
-            header: 'Supplier',
+            accessorKey: 'supplierNames',
+            header: 'Suppliers',
             isSortable: true, // Enable sorting for supplier names
-            cell: (row: any) => <Text color={secondaryTextColor}>{row.supplier?.name || 'N/A'}</Text>
+            cell: (row: any) => <Text color={secondaryTextColor}>{row.supplierNames || 'N/A'}</Text>
         },
         {
             accessorKey: 'site.name',
