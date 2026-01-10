@@ -35,17 +35,14 @@ import {
     Flex,
     Box,
     useColorModeValue,
-    Icon, // Add this
-    SimpleGrid, // Add this
-    Image // Add this
+    Icon,
+    SimpleGrid,
+    Image
 } from '@chakra-ui/react';
 import { FiCheck, FiSave, FiX, FiCheckCircle, FiFileText, FiDollarSign } from 'react-icons/fi';
 import FileUploadModal from '@/components/FileUploadModal';
 import BinSelectorModal from '@/components/BinSelectorModal';
 import { parseInvoiceMetadata, isInvoiceAttachment, getInvoiceDisplayInfo } from '@/lib/invoiceUtils';
-
-
-// Add these imports at the top
 import { FiChevronUp, FiChevronDown, FiTrash2 } from 'react-icons/fi';
 import { urlFor } from '@/lib/sanity';
 
@@ -57,18 +54,18 @@ interface ReceivedItemData {
         name: string;
         sku?: string;
         unitOfMeasure?: string;
-        unitPrice?: number; // ADD THIS
+        unitPrice?: number;
     };
     orderedQuantity?: number;
     receivedQuantity: number;
-    totalPrice?: number; // ADD THIS - total for received quantity
-    unitPrice?: number; // ADD THIS - calculated unit price
+    totalPrice?: number;
+    unitPrice?: number;
     batchNumber?: string;
     expiryDate?: string;
     condition: string;
 }
 
-// Update your GoodsReceiptData interface to include proper attachments
+// Update GoodsReceiptData interface to include orderedItems with suppliers
 interface GoodsReceiptData {
     _id: string;
     receiptNumber: string;
@@ -88,6 +85,25 @@ interface GoodsReceiptData {
             _id: string;
             name: string;
         };
+        // Add orderedItems with suppliers from the API
+        orderedItems?: Array<{
+            _key: string;
+            orderedQuantity: number;
+            unitPrice: number;
+            stockItem: {
+                _id: string;
+                name: string;
+                sku?: string;
+                unitOfMeasure?: string;
+            };
+            supplier?: {
+                _id: string;
+                name: string;
+                contactPerson?: string;
+                phoneNumber?: string;
+                email?: string;
+            };
+        }>;
     };
     receivingBin?: {
         _id: string;
@@ -110,6 +126,8 @@ interface GoodsReceiptData {
             };
         };
     }[];
+    // Add supplierNames if returned by API
+    supplierNames?: string;
 }
 
 interface GoodsReceiptModalProps {
@@ -142,6 +160,22 @@ const initialFormData = {
     receivedItems: [],
 };
 
+// Helper function to extract supplier names from ordered items
+const extractSupplierNames = (orderedItems: any[]): string => {
+    if (!orderedItems || orderedItems.length === 0) return 'No suppliers';
+
+    const supplierNames = orderedItems
+        .map((item: any) => item.supplier?.name)
+        .filter((name: string | undefined) => name && name.trim() !== '');
+
+    const uniqueSupplierNames = [...new Set(supplierNames)];
+
+    if (uniqueSupplierNames.length === 0) return 'No suppliers';
+    if (uniqueSupplierNames.length <= 2) return uniqueSupplierNames.join(', ');
+
+    return `${uniqueSupplierNames.slice(0, 2).join(', ')} +${uniqueSupplierNames.length - 2} more`;
+};
+
 export default function GoodsReceiptModal({
     isOpen,
     onClose,
@@ -160,13 +194,8 @@ export default function GoodsReceiptModal({
     const [availableBins, setAvailableBins] = useState<Bin[]>([]);
     const [savedReceiptId, setSavedReceiptId] = useState<string>('');
 
-    // Add this state with your other state declarations
     const [isEvidenceExpanded, setIsEvidenceExpanded] = useState(false);
-
-    const [totalPrices, setTotalPrices] = useState<{ [key: string]: number | undefined }>({});
-
     const [isInvoiceModalOpen, setIsInvoiceModalOpen] = useState(false);
-
 
     const isNewReceipt = !receipt || receipt._id.startsWith('temp-');
 
@@ -245,6 +274,11 @@ export default function GoodsReceiptModal({
                     if (!poResponse.ok) throw new Error('Failed to fetch PO details');
                     const poData = await poResponse.json();
 
+                    // Extract supplier names from the PO's ordered items
+                    const supplierNames = poData.orderedItems
+                        ? extractSupplierNames(poData.orderedItems)
+                        : 'No suppliers';
+
                     const initialItems: ReceivedItemData[] = (poData.orderedItems || []).map((item: any) => {
                         const unitPrice = item.unitPrice || item.stockItem?.unitPrice || 0;
                         const receivedQuantity = 0;
@@ -270,8 +304,12 @@ export default function GoodsReceiptModal({
 
                     setFormData({
                         ...initialFormData,
-                        purchaseOrder: poData,
+                        purchaseOrder: {
+                            ...poData,
+                            supplierNames // Add supplier names to purchase order
+                        },
                         receivedItems: initialItems,
+                        supplierNames // Also add supplier names to receipt
                     });
 
                     if (poData.site?._id) {
@@ -296,14 +334,13 @@ export default function GoodsReceiptModal({
         };
 
         loadInitialData();
-    }, [isOpen, receipt, preSelectedPO, toast, onClose, fetchBinsForSite, isNewReceipt]); // ADD isNewReceipt to dependencies
+    }, [isOpen, receipt, preSelectedPO, toast, onClose, fetchBinsForSite, isNewReceipt]);
 
     const handleFieldChange = (field: keyof GoodsReceiptData, value: any) => {
         setFormData(prev => ({ ...prev, [field]: value }));
     };
 
     const handleItemChange = (key: string, field: keyof ReceivedItemData, value: any) => {
-        // Convert string to number for quantity fields
         const processedValue = field === 'receivedQuantity' ? handleNumberInput(value) : value;
 
         setFormData(prev => ({
@@ -312,12 +349,9 @@ export default function GoodsReceiptModal({
                 if (item._key === key) {
                     const updatedItem = { ...item, [field]: processedValue };
 
-                    // Auto-calculate total price when received quantity changes
                     if (field === 'receivedQuantity') {
-                        // Use the current unit price (could be from PO or manually set)
                         const currentUnitPrice = item.unitPrice || item.stockItem.unitPrice || 0;
                         updatedItem.totalPrice = processedValue * currentUnitPrice;
-                        // Also update the unit price field to match
                         updatedItem.unitPrice = currentUnitPrice;
                     }
 
@@ -329,7 +363,6 @@ export default function GoodsReceiptModal({
     };
 
     const handleBinSelect = (bin: Bin) => {
-        // Set the receivingBin as a reference object
         handleFieldChange('receivingBin', { _id: bin._id, name: bin.name });
     };
 
@@ -348,7 +381,6 @@ export default function GoodsReceiptModal({
         }
 
         try {
-            // First, update stock item prices if unit prices are provided
             for (const item of formData.receivedItems || []) {
                 if (item.unitPrice && item.unitPrice > 0) {
                     try {
@@ -445,7 +477,7 @@ export default function GoodsReceiptModal({
         });
     };
 
-    const isFullyReceived = true; // (formData.receivedItems || []).every(item => item.receivedQuantity >= (item.orderedQuantity || 0));
+    const isFullyReceived = true;
 
     const handleCompleteReceipt = async () => {
         if (!isFullyReceived) {
@@ -466,7 +498,6 @@ export default function GoodsReceiptModal({
             if (isNewReceipt) {
                 const savedReceipt = await saveReceipt('draft');
                 finalReceiptId = savedReceipt._id;
-                // Ensure finalReceiptId is a string before setting state
                 if (finalReceiptId) {
                     setSavedReceiptId(finalReceiptId);
                 }
@@ -500,12 +531,11 @@ export default function GoodsReceiptModal({
             receivedItems: (prev.receivedItems || []).map(item => {
                 if (item._key === key) {
                     const totalPrice = valueAsNumber;
-                    // Calculate unit price based on received quantity and total price
                     const unitPrice = item.receivedQuantity > 0 ? totalPrice / item.receivedQuantity : 0;
                     return {
                         ...item,
                         totalPrice,
-                        unitPrice // This will be saved and used to update stock item
+                        unitPrice
                     };
                 }
                 return item;
@@ -513,7 +543,6 @@ export default function GoodsReceiptModal({
         }));
     };
 
-    // Replace the current handleFinalizeReceipt function with this:
     const handleFinalizeReceipt = async (attachmentIds: string[]) => {
         setIsUploadModalOpen(false);
         try {
@@ -522,7 +551,6 @@ export default function GoodsReceiptModal({
 
             if (!receiptIdToUse) throw new Error('No receipt ID available for completion');
 
-            // Update stock item prices (same logic as saveReceipt)
             for (const item of formData.receivedItems || []) {
                 if (item.unitPrice && item.unitPrice > 0) {
                     try {
@@ -587,27 +615,22 @@ export default function GoodsReceiptModal({
         }
     };
 
-    // Safe number conversion helper function
     const safeNumber = (value: string | number): number => {
         if (typeof value === 'number') return isNaN(value) ? 0 : value;
         const num = parseFloat(value);
         return isNaN(num) ? 0 : num;
     };
 
-    // Safe number input handler
     const handleNumberInput = (value: string): number => {
         if (value === '' || value === '-') return 0;
         const num = parseFloat(value);
         return isNaN(num) ? 0 : num;
     };
 
-    // Add this function to fetch current stock item prices
-    // Update the fetchCurrentStockItemPrices function:
     const fetchCurrentStockItemPrices = async (items: any[]) => {
         const itemsWithCurrentPrices = await Promise.all(
             items.map(async (item) => {
                 try {
-                    // Use the correct endpoint: /api/stock-items/[id]
                     const response = await fetch(`/api/stock-items/${item.stockItem._id}`);
                     if (response.ok) {
                         const currentStockItem = await response.json();
@@ -630,8 +653,6 @@ export default function GoodsReceiptModal({
         return itemsWithCurrentPrices;
     };
 
-    // Add this function to handle invoice upload completion
-    // Add this function to handle invoice upload completion
     const handleInvoiceUploadComplete = async (attachmentIds: string[]) => {
         try {
             toast({
@@ -642,7 +663,6 @@ export default function GoodsReceiptModal({
                 isClosable: true,
             });
 
-            // Refresh the receipt data to show the new invoice
             if (formData._id) {
                 const response = await fetch(`/api/goods-receipts/${formData._id}`);
                 if (response.ok) {
@@ -662,39 +682,31 @@ export default function GoodsReceiptModal({
         }
     };
 
-
-
     const getAttachmentUrl = (attachment: any): { url: string | undefined, type: 'image' | 'file' | 'unknown' } => {
         console.log('Attachment data:', attachment);
 
-        // If it's a Sanity file reference with asset
         if (attachment.file?.asset) {
             const asset = attachment.file.asset;
 
             try {
                 console.log('Asset found:', asset);
 
-                // Check if it's an image asset (can use urlFor)
                 if (asset._type === 'sanity.imageAsset') {
                     const url = urlFor(asset).url();
                     console.log('Generated image URL:', url);
                     return { url, type: 'image' };
                 }
-                // Check if it's a file asset (PDF, document, etc.)
                 else if (asset._type === 'sanity.fileAsset') {
-                    // For file assets, use the direct download URL
                     const fileUrl = asset.url;
                     console.log('File asset URL:', fileUrl);
                     return { url: fileUrl, type: 'file' };
                 }
-                // Handle case where we have a direct URL in the asset
                 else if (asset.url) {
                     console.log('Using asset URL:', asset.url);
                     return { url: asset.url, type: asset._type === 'sanity.imageAsset' ? 'image' : 'file' };
                 }
             } catch (error) {
                 console.error('Error processing asset:', error);
-                // Fallback to any available URL
                 if (asset.url) {
                     console.log('Fallback to asset URL:', asset.url);
                     return { url: asset.url, type: 'file' };
@@ -702,7 +714,6 @@ export default function GoodsReceiptModal({
             }
         }
 
-        // Fallback to direct URL if available
         if (attachment.url) {
             console.log('Using direct URL:', attachment.url);
             return { url: attachment.url, type: attachment.url.match(/\.(jpg|jpeg|png|gif|webp)$/i) ? 'image' : 'file' };
@@ -712,9 +723,14 @@ export default function GoodsReceiptModal({
         return { url: undefined, type: 'unknown' };
     };
 
-    // Add this function to GoodsReceiptModal component
     const exportGoodsReceiptPDF = () => {
         if (!formData.purchaseOrder || !formData.receivingBin) return;
+
+        // Get supplier name from the purchase order
+        const supplierName = formData.supplierNames ||
+            (formData.purchaseOrder?.orderedItems && formData.purchaseOrder.orderedItems.length > 0
+                ? extractSupplierNames(formData.purchaseOrder.orderedItems)
+                : 'N/A');
 
         const htmlContent = `
 <!DOCTYPE html>
@@ -831,7 +847,7 @@ export default function GoodsReceiptModal({
                 </div>
                 <div class="info-item">
                     <span class="info-label">Supplier:</span>
-                    <span> ${formData.purchaseOrder.supplier?.name || 'N/A'}</span>
+                    <span> ${supplierName}</span>
                 </div>
             </div>
             <div>
@@ -862,7 +878,6 @@ export default function GoodsReceiptModal({
         </thead>
         <tbody>
             ${(formData.receivedItems || []).map(item => {
-            // Use the current stock item unit price for calculations
             const displayUnitPrice = item.stockItem.unitPrice || 0;
             const displayTotalPrice = item.receivedQuantity * displayUnitPrice;
 
@@ -915,10 +930,14 @@ export default function GoodsReceiptModal({
         }
     };
 
-
-
     const modalTitle = !isNewReceipt ? `Goods Receipt: ${formData.receiptNumber}` : 'New Goods Receipt';
     const isEditable = formData.status !== 'completed';
+
+    // Get supplier name for display
+    const displaySupplierName = formData.supplierNames ||
+        (formData.purchaseOrder?.orderedItems && formData.purchaseOrder.orderedItems.length > 0
+            ? extractSupplierNames(formData.purchaseOrder.orderedItems)
+            : 'N/A');
 
     return (
         <>
@@ -993,14 +1012,6 @@ export default function GoodsReceiptModal({
                                                     </option>
                                                 ))}
                                             </Select>
-                                            {/*<Button
-                                                onClick={() => setIsBinSelectorOpen(true)}
-                                                isDisabled={!isEditable}
-                                                variant="outline"
-                                                colorScheme="brand"
-                                            >
-                                                Browse Bins
-                                            </Button>*/}
                                         </HStack>
                                     </FormControl>
                                 </HStack>
@@ -1014,13 +1025,33 @@ export default function GoodsReceiptModal({
                                                 <Text>{formData.purchaseOrder.poNumber}</Text>
                                             </HStack>
                                             <HStack justifyContent="space-between">
-                                                <Text fontWeight="medium">Supplier:</Text>
-                                                <Text>{formData.purchaseOrder.supplier?.name}</Text>
+                                                <Text fontWeight="medium">Suppliers:</Text>
+                                                <Text>{displaySupplierName}</Text>
                                             </HStack>
                                             <HStack justifyContent="space-between">
                                                 <Text fontWeight="medium">Site:</Text>
                                                 <Text>{formData.purchaseOrder.site?.name}</Text>
                                             </HStack>
+                                            {formData.purchaseOrder.orderedItems && formData.purchaseOrder.orderedItems.length > 0 && (
+                                                <Box mt={2}>
+                                                    <Text fontWeight="medium" mb={1}>Ordered Items:</Text>
+                                                    <VStack align="stretch" spacing={1}>
+                                                        {formData.purchaseOrder.orderedItems.slice(0, 3).map((item, index) => (
+                                                            <HStack key={item._key || index} justifyContent="space-between">
+                                                                <Text fontSize="sm">{item.stockItem?.name}</Text>
+                                                                <Text fontSize="sm" color={secondaryTextColor}>
+                                                                    {item.orderedQuantity} × E {item.unitPrice?.toFixed(2)} = E {(item.orderedQuantity * item.unitPrice).toFixed(2)}
+                                                                </Text>
+                                                            </HStack>
+                                                        ))}
+                                                        {formData.purchaseOrder.orderedItems.length > 3 && (
+                                                            <Text fontSize="sm" color={secondaryTextColor}>
+                                                                +{formData.purchaseOrder.orderedItems.length - 3} more items
+                                                            </Text>
+                                                        )}
+                                                    </VStack>
+                                                </Box>
+                                            )}
                                         </VStack>
                                     </Box>
                                 )}
@@ -1092,11 +1123,6 @@ export default function GoodsReceiptModal({
                                                                 borderColor={borderColor}
                                                                 placeholder="0.00"
                                                             />
-                                                            {/*item.receivedQuantity > 0 && (
-                                                                <Text fontSize="xs" color={secondaryTextColor} mt={1}>
-                                                                    Auto: E {((item.stockItem.unitPrice || 0) * item.receivedQuantity).toFixed(2)}
-                                                                </Text>
-                                                            )*/}
                                                         </Td>
                                                         <Td isNumeric borderColor={borderColor}>
                                                             <Text fontSize="sm">
@@ -1190,7 +1216,6 @@ export default function GoodsReceiptModal({
                                                     Proof of goods receipt and supplier invoices
                                                 </Text>
 
-                                                {/* Separate invoices from other attachments */}
                                                 {formData.attachments.filter(attachment =>
                                                     isInvoiceAttachment(attachment.description || "")
                                                 ).length > 0 && (
@@ -1263,7 +1288,6 @@ export default function GoodsReceiptModal({
                                                         </Box>
                                                     )}
 
-                                                {/* Regular evidence files */}
                                                 {formData.attachments.filter(attachment =>
                                                     !isInvoiceAttachment(attachment.description || "")
                                                 ).length > 0 && (
@@ -1420,8 +1444,8 @@ export default function GoodsReceiptModal({
                 isOpen={isUploadModalOpen}
                 onClose={() => {
                     setIsUploadModalOpen(false);
-                    onSave(); // Refresh parent page
-                    onClose(); // Close main modal
+                    onSave();
+                    onClose();
                 }}
                 onUploadComplete={handleFinalizeReceipt}
                 relatedToId={savedReceiptId || formData._id || ''}
@@ -1439,8 +1463,7 @@ export default function GoodsReceiptModal({
                 title="Track Invoice"
                 description="Upload supplier invoice for this goods receipt"
                 invoiceData={{
-                    supplier: formData.purchaseOrder?.supplier?.name,
-                    // You can pre-populate other invoice data here
+                    supplier: displaySupplierName,
                 }}
             />
 
