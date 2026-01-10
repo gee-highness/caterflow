@@ -59,12 +59,14 @@ const SidebarContent = ({ onItemClick }: { onItemClick?: () => void }) => {
 
     // Theme-aware colors
     const sidebarBg = useColorModeValue(theme.colors.neutral.light['bg-secondary'], theme.colors.neutral.dark['bg-secondary']);
-    const activeBg = useColorModeValue(theme.colors.brand['100'], theme.colors.brand['500']);
+    const activeBg = useColorModeValue(theme.colors.brand['100'], theme.colors.brand['700']);
     const hBg = useColorModeValue(theme.colors.brand['100'], theme.colors.brand['100']);
     const borderColor = useColorModeValue(theme.colors.neutral.light['border-color'], theme.colors.neutral.dark['border-color']);
     const iconColor = useColorModeValue('neutral.light.text-primary', 'neutral.dark.text-primary');
     const textSecondaryColor = useColorModeValue('neutral.light.text-secondary', 'neutral.dark.text-secondary');
     const hoverBg = useColorModeValue('gray.100', 'gray.700');
+
+    const hText = useColorModeValue('gray.700, gray.100');
 
     // Define menu items with roles and groups - Improved icons for better distinction
     const menuGroups = [
@@ -243,7 +245,7 @@ const SidebarContent = ({ onItemClick }: { onItemClick?: () => void }) => {
                                             color={pathname === item.href ? theme.colors.brand['500'] : iconColor}
                                             border="1px"
                                             borderColor={pathname === item.href ? activeBg : 'transparent'}
-                                            _hover={{ bg: hBg }}
+                                            _hover={{ bg: hBg, color: hText }}
                                             onClick={() => handleItemClick(item.href)}
                                         >
                                             {item.label}
@@ -281,7 +283,7 @@ const SidebarContent = ({ onItemClick }: { onItemClick?: () => void }) => {
                         variant="ghost"
                         justifyContent="flex-start"
                         leftIcon={<Icon as={FiUser} />}
-                        _hover={{ bg: hBg }}
+                        _hover={{ bg: hBg, color: hText }}
 
                         onClick={() => handleItemClick("/profile")}
                     >
