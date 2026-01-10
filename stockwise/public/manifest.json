@@ -1,6 +1,6 @@
 {
-  "name": "Caterflow by Synapse",
-  "short_name": "Caterflow by Synapse",
+  "name": "StockWise by Triptych",
+  "short_name": "StockWise by Triptych",
   "description": "Stock management made easy!",
   "start_url": "/",
   "display": "standalone",

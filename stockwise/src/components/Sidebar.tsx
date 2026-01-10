@@ -187,7 +187,7 @@ const SidebarContent = ({ onItemClick }: { onItemClick?: () => void }) => {
                 >
                     <Image
                         src="/icons/icon-512x512.png"
-                        alt="Caterflow Logo"
+                        alt="StockWise Logo"
                         width={120}
                         height={120}
                     />
@@ -302,7 +302,7 @@ const SidebarContent = ({ onItemClick }: { onItemClick?: () => void }) => {
     );
 };
 
-export function Sidebar({ appName = 'Caterflow' }: SidebarProps) {
+export function Sidebar({ appName = 'StockWise' }: SidebarProps) {
     const isMobile = useBreakpointValue({ base: true, md: false });
     const { isOpen, closeSidebar } = useSidebar();
     const theme = useTheme();

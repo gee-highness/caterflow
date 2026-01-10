@@ -954,7 +954,7 @@ export default function ProcurementPage() {
             border-radius: 12px;
             border: 1px solid #E2E8F0;
         }
-        .caterflow-brand {
+        .stockwise-brand {
             font-size: 11px;
             color: #0067FF;
             margin-top: 8px;
@@ -1002,7 +1002,7 @@ export default function ProcurementPage() {
 <body>
 <div class="header-container">
 <div class="logo-container">
-    <img src="pdf.png" alt="Caterflow" class="logo" />
+    <img src="pdf.png" alt="StockWise" class="logo" />
 </div>
 <div class="header-content">
     <h1>PURCHASE ORDER</h1>
@@ -1054,9 +1054,9 @@ export default function ProcurementPage() {
     <div class="footer">
         <p style="margin: 0 0 8px 0;">Generated on ${new Date().toLocaleDateString()} at ${new Date().toLocaleTimeString()}</p>
         <p style="margin: 0 0 8px 0;">This is a system-generated purchase order. Please provide your quotation for the requested items.</p>
-        <div class="caterflow-brand">
-            <a href="https://synapse-digital.vercel.app/" target="_blank" style="color: #0067FF; text-decoration: none; cursor: pointer;">
-                Caterflow by Synapse
+        <div class="stockwise-brand">
+            <a https://triptych-sol.vercel.app//" target="_blank" style="color: #0067FF; text-decoration: none; cursor: pointer;">
+                StockWise by Triptych
             </a>
         </div>
     </div>

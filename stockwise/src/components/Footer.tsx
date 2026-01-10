@@ -17,7 +17,7 @@ interface FooterProps {
   appName?: string;
 }
 
-export function Footer({ appName = 'Caterflow' }: FooterProps) {
+export function Footer({ appName = 'StockWise' }: FooterProps) {
   const theme = useTheme();
 
   const footerBg = useColorModeValue(theme.colors.neutral.light['bg-secondary'], theme.colors.neutral.dark['bg']);
@@ -31,24 +31,24 @@ export function Footer({ appName = 'Caterflow' }: FooterProps) {
         <Flex direction={{ base: 'column', md: 'row' }} justify="space-between" align="center">
           <Text>
             &copy; {new Date().getFullYear()} {appName} by{' '}
-            <Link href="https://synapse-digital.vercel.app" isExternal>
+            <Link https://triptych-sol.vercel.app/" isExternal>
               Synapse Digital
             </Link>
-            . All rights reserved.
-          </Text>
-          <Flex mt={{ base: 4, md: 0 }} gap={4}>
-            <Link href="/privacy" fontSize="sm">
-              Privacy Policy
-            </Link>
-            <Link href="/terms" fontSize="sm">
-              Terms of Service
-            </Link>
-            <Link href="https://caterflow-docs.vercel.app/" fontSize="sm" isExternal>
-              Support
-            </Link>
-          </Flex>
+          . All rights reserved.
+        </Text>
+        <Flex mt={{ base: 4, md: 0 }} gap={4}>
+          <Link href="/privacy" fontSize="sm">
+            Privacy Policy
+          </Link>
+          <Link href="/terms" fontSize="sm">
+            Terms of Service
+          </Link>
+          <Link href="https://stockwise-management.vercel.app/docs.html/" fontSize="sm" isExternal>
+            Support
+          </Link>
         </Flex>
-      </Container>
-    </Box>
+      </Flex>
+    </Container>
+    </Box >
   );
 }

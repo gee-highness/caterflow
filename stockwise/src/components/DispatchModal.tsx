@@ -1123,7 +1123,7 @@ export default function DispatchModal({
     <body>
         <div class="header-container">
             <div class="logo-container">
-                <img src="/pdf.png" alt="Caterflow" class="logo" />
+                <img src="/pdf.png" alt="StockWise" class="logo" />
             </div>
             <div class="header-content">
                 <h1>DISPATCH RECORD</h1>
@@ -1215,9 +1215,9 @@ export default function DispatchModal({
         <div class="footer">
         <p style="margin: 0 0 8px 0;">Generated on ${new Date().toLocaleDateString()} at ${new Date().toLocaleTimeString()}</p>
         <p style="margin: 0 0 8px 0;">This is a system-generated purchase order. Please provide your quotation for the requested items.</p>
-        <div class="caterflow-brand">
-            <a href="https://synapse-digital.vercel.app/" target="_blank" style="color: #0067FF; text-decoration: none; cursor: pointer;">
-                Caterflow by Synapse
+        <div class="stockwise-brand">
+            <a https://triptych-sol.vercel.app//" target="_blank" style="color: #0067FF; text-decoration: none; cursor: pointer;">
+                StockWise by Triptych
             </a>
         </div>
     </div>

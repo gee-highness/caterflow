@@ -35,7 +35,7 @@ export default function DashboardClient({ stockItems, purchaseOrders, appUsers }
     return (
         <Box p={{ base: 4, md: 6 }}>
             <Heading as="h1" size={{ base: 'xl', md: '2xl' }} fontWeight="bold" mb={6} color={primaryTextColor}>
-                Caterflow Dashboard
+                StockWise Dashboard
             </Heading>
 
             <Grid

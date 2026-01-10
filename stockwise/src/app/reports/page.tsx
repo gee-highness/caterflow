@@ -1720,7 +1720,7 @@ export default function ComprehensiveReportsPage() {
     const createFormattedSummaryData = useCallback(() => {
         return [
             // HEADER SECTION WITH DATES (ONLY IN EXECUTIVE SUMMARY)
-            ['CATERFLOW COMPREHENSIVE REPORT', ''],
+            ['STOCKWISE COMPREHENSIVE REPORT', ''],
             ['', ''],
             ['Generated On', new Date().toLocaleDateString()],
             ['Report Period', `${format(new Date(primaryDateRange.start), 'MM/dd/yyyy')} to ${format(new Date(primaryDateRange.end), 'MM/dd/yyyy')}`],
@@ -2251,7 +2251,7 @@ export default function ComprehensiveReportsPage() {
             console.log('💾 Generating Excel file with VAT...');
             const excelBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
             const data = new Blob([excelBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-            const fileName = `Caterflow_Comprehensive_Report_VAT_${format(new Date(), 'yyyy-MM-dd')}.xlsx`;
+            const fileName = `StockWise_Comprehensive_Report_VAT_${format(new Date(), 'yyyy-MM-dd')}.xlsx`;
             saveAs(data, fileName);
 
             console.log('✅ Excel export with VAT completed successfully');

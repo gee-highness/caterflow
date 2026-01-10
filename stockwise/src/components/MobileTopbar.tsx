@@ -70,7 +70,7 @@ export const MobileTopbar = ({ onItemClick }: { onItemClick?: () => void }) => {
                 >
                     <Image
                         src="/icons/icon-512x512.png"
-                        alt="Caterflow Logo"
+                        alt="StockWise Logo"
                         width={32}
                         height={32}
                         style={{ objectFit: 'cover' }}
@@ -79,7 +79,7 @@ export const MobileTopbar = ({ onItemClick }: { onItemClick?: () => void }) => {
                 <Heading size="md" color={headingColor}
                     onClick={() => handleItemClick('/')}
                 >
-                    Caterflow
+                    StockWise
                 </Heading>
                 {isInstallable && (
                     <Button onClick={promptInstall} size="sm" colorScheme="blue">
