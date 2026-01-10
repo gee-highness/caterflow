@@ -60,7 +60,7 @@ const SidebarContent = ({ onItemClick }: { onItemClick?: () => void }) => {
     // Theme-aware colors
     const sidebarBg = useColorModeValue(theme.colors.neutral.light['bg-secondary'], theme.colors.neutral.dark['bg-secondary']);
     const activeBg = useColorModeValue(theme.colors.brand['100'], theme.colors.brand['700']);
-    const hBg = useColorModeValue(theme.colors.brand['100'], theme.colors.brand['100']);
+    const hBg = useColorModeValue(theme.colors.brand['100'], theme.colors.brand['700']);
     const borderColor = useColorModeValue(theme.colors.neutral.light['border-color'], theme.colors.neutral.dark['border-color']);
     const iconColor = useColorModeValue('neutral.light.text-primary', 'neutral.dark.text-primary');
     const textSecondaryColor = useColorModeValue('neutral.light.text-secondary', 'neutral.dark.text-secondary');
