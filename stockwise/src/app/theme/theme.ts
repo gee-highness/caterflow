@@ -2,11 +2,12 @@
 import { extendTheme, type ThemeConfig } from '@chakra-ui/react';
 import { mode } from '@chakra-ui/theme-tools';
 
-// 1. Natural StockWise Color Palette (Strawberry & Green theme)
+// 1. Define the color palette with swapped colors
+// Names stay the same but colors are swapped to strawberry theme
 const colors = {
   brand: {
-    // Primary - Natural Strawberry Red
-    50: '#FFEBEE',
+    // Strawberry red as primary (replaces blue)
+    50: '#FFEBEE', // Very light strawberry
     100: '#FFCDD2',
     200: '#EF9A9A',
     300: '#E57373',
@@ -18,39 +19,38 @@ const colors = {
     900: '#640D4C',
   },
   accent: {
-    // Natural food-inspired colors
-    green: '#228B22', // Forest Green - healthy stock
-    lightGreen: '#32CD32', // Lime Green - fresh items
-    red: '#DC143C', // Crimson - low stock/urgent
-    orange: '#FF8C00', // Dark Orange - expiring soon
-    purple: '#9370DB', // Medium Purple - transfers
-    brown: '#8B4513', // Saddle Brown - containers/baskets
-    pink: '#FF69B4', // Hot Pink - special items
-    yellow: '#FFD700', // Gold - premium items
+    // Color names stay same, but actual colors change
+    blue: '#DC143C', // Strawberry red (was blue)
+    darkBlue: '#C2185B', // Darker strawberry (was dark blue)
+    pink: '#9370DB', // Purple (was pink)
+    orange: '#FF8C00', // Orange (unchanged)
+    green: '#32CD32', // Bright lime green (was green)
+    lightGreen: '#228B22', // Forest green (was light green)
+    black: '#151515', // Black (unchanged)
   },
   neutral: {
     light: {
-      'bg-primary': '#FAF9F5', // Warm off-white, like natural paper
+      'bg-primary': '#FAF9F5',
       'bg-secondary': '#FFFFFF',
       'bg-header': '#FFFFFF',
       'bg-card': '#FFFFFF',
-      'text-primary': '#2D3748', // Charcoal
-      'text-secondary': '#718096',
+      'text-primary': '#151515',
+      'text-secondary': '#4A5568',
       'border-color': '#E2E8F0',
       'input-bg': '#FFFFFF',
       'input-border': '#CBD5E0',
       'placeholder-color': '#A0AEC0',
       'tag-bg': '#EDF2F7',
       'tag-color': '#4A5568',
-      'status-green': '#228B22', // Forest Green
-      'status-orange': '#FF8C00', // Dark Orange
-      'status-red': '#DC143C', // Crimson
-      'status-purple': '#9370DB', // Medium Purple
-      'status-pink': '#FF69B4', // Hot Pink
-      'status-brown': '#8B4513', // Saddle Brown
+      // Status colors - names same, colors swapped
+      'status-green': '#32CD32', // Bright lime green
+      'status-orange': '#FF8C00', // Orange
+      'status-red': '#DC143C', // Strawberry red
+      'status-purple': '#9370DB', // Purple
+      'status-pink': '#FF007B', // Keep pink for accent
     },
     dark: {
-      'bg-primary': '#0F172A', // Deep navy blue
+      'bg-primary': '#0F172A',
       'bg-secondary': '#1E293B',
       'bg-header': '#1E293B',
       'bg-card': '#1E293B',
@@ -62,23 +62,23 @@ const colors = {
       'placeholder-color': '#94A3B8',
       'tag-bg': '#334155',
       'tag-color': '#E2E8F0',
-      'status-green': '#32CD32', // Lime Green (brighter for dark mode)
-      'status-orange': '#FFA500', // Orange
-      'status-red': '#FF6B6B', // Light Red
-      'status-purple': '#B794F4', // Light Purple
-      'status-pink': '#FF69B4', // Hot Pink
-      'status-brown': '#D2691E', // Chocolate
+      // Status colors for dark mode
+      'status-green': '#32CD32', // Bright lime green
+      'status-orange': '#FF8C00', // Orange
+      'status-red': '#FF6B6B', // Lighter red for dark mode
+      'status-purple': '#B794F4', // Light purple
+      'status-pink': '#FF69B4', // Hot pink
     },
   },
 };
 
-// 2. Configure initial color mode (same structure)
+// 2. Configure initial color mode
 const config: ThemeConfig = {
   initialColorMode: 'dark',
   useSystemColorMode: false,
 };
 
-// 3. Define global styles (same structure with updated colors)
+// 3. Define global styles
 const styles = {
   global: (props: Record<string, any>) => ({
     body: {
@@ -109,7 +109,7 @@ const styles = {
       padding: '4',
     },
     a: {
-      color: mode(colors.brand[500], colors.brand[300])(props),
+      color: mode(colors.brand[500], colors.brand[300])(props), // Now strawberry red
       _hover: {
         textDecoration: 'underline',
       },
@@ -130,12 +130,12 @@ const styles = {
       background: mode('#A8A8A8', '#505050')(props),
     },
     '::selection': {
-      backgroundColor: mode('rgba(220, 20, 60, 0.2)', 'rgba(220, 20, 60, 0.4)')(props),
+      backgroundColor: mode('rgba(220, 20, 60, 0.2)', 'rgba(220, 20, 60, 0.4)')(props), // Strawberry red
     },
   }),
 };
 
-// 4. Component overrides (same structure, updated colors)
+// 4. Component overrides
 const components = {
   Button: {
     baseStyle: (props: Record<string, any>) => ({
@@ -197,10 +197,10 @@ const components = {
   },
   Link: {
     baseStyle: (props: Record<string, any>) => ({
-      color: mode(colors.brand[500], colors.brand[300])(props),
+      color: mode(colors.brand[500], colors.brand[300])(props), // Strawberry red
       _hover: {
         textDecoration: 'underline',
-        color: mode(colors.brand[600], colors.brand[400])(props),
+        color: mode(colors.brand[600], colors.brand[400])(props), // Darker strawberry
       },
     }),
   },
@@ -227,7 +227,7 @@ const components = {
   Textarea: {
     variants: {
       outline: (props: Record<string, any>) => ({
-        bg: mode(colors.neutral.light['input-bg'], colors.neutral.dark['input-input-bg'])(props),
+        bg: mode(colors.neutral.light['input-bg'], colors.neutral.dark['input-bg'])(props),
         borderColor: mode(colors.neutral.light['input-border'], colors.neutral.dark['input-border'])(props),
         _hover: {
           borderColor: mode(colors.brand[300], colors.brand[400])(props),
@@ -288,9 +288,6 @@ const components = {
           textColor = mode('white', 'white')(props);
         } else if (props.colorScheme === 'pink') {
           bgColor = mode(colors.neutral.light['status-pink'], colors.neutral.dark['status-pink'])(props);
-          textColor = mode('white', 'white')(props);
-        } else if (props.colorScheme === 'brown') {
-          bgColor = mode(colors.neutral.light['status-brown'], colors.neutral.dark['status-brown'])(props);
           textColor = mode('white', 'white')(props);
         } else {
           bgColor = mode('gray.100', 'whiteAlpha.300')(props);
@@ -387,7 +384,7 @@ const theme = extendTheme({
     'dark-md': '0 4px 6px rgba(0,0,0,0.2), 0 1px 3px rgba(0,0,0,0.15)',
     'dark-lg': '0 10px 15px rgba(0,0,0,0.25), 0 4px 6px rgba(0,0,0,0.2)',
     'dark-xl': '0 20px 25px rgba(0,0,0,0.35), 0 10px 10px rgba(0,0,0,0.25)',
-    outline: `0 0 0 3px ${colors.brand[500]}20`,
+    outline: `0 0 0 3px ${colors.brand[500]}20`, // Now strawberry red
   },
   fonts: {
     heading: `'Inter', -apple-system, BlinkMacSystemFont, sans-serif`,
