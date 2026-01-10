@@ -62,68 +62,12 @@ export async function POST(request: Request) {
             }
         }
 
-        // 4. Update stock levels for all received items
-        const receiptQuery = groq`
-            *[_type == "GoodsReceipt" && _id == $receiptId][0] {
-                receivedItems[] {
-                    stockItem->{_id},
-                    receivedQuantity,
-                    receivingBin->{_id}
-                }
-            }
-        `;
-
-        const receipt = await writeClient.fetch(receiptQuery, { receiptId });
-
-        if (receipt?.receivedItems) {
-            for (const item of receipt.receivedItems) {
-                // Ensure stockItem, receivedQuantity, and receivingBin exist before proceeding
-                if (item.stockItem?._id && item.receivedQuantity && item.receivingBin?._id) {
-                    // Update stock level in the bin
-                    const binStockQuery = groq`
-                        *[_type == "BinStock" && 
-                         bin._ref == $binId && 
-                         stockItem._ref == $stockItemId][0] {
-                            _id,
-                            quantity
-                        }
-                    `;
-
-                    const binStock = await writeClient.fetch(binStockQuery, {
-                        binId: item.receivingBin?._id,
-                        stockItemId: item.stockItem._id,
-                    });
-
-                    if (binStock) {
-                        // Update existing bin stock
-                        transaction.patch(binStock._id, (patch) =>
-                            patch.inc({ quantity: item.receivedQuantity })
-                        );
-                    } else {
-                        // Create new bin stock entry
-                        transaction.create({
-                            _type: 'BinStock',
-                            bin: {
-                                _type: 'reference',
-                                _ref: item.receivingBin?._id,
-                            },
-                            stockItem: {
-                                _type: 'reference',
-                                _ref: item.stockItem._id,
-                            },
-                            quantity: item.receivedQuantity,
-                            _id: undefined, // Let Sanity generate the ID
-                        });
-                    }
-                }
-            }
-        }
-
         // Execute the transaction
         const result = await transaction.commit();
 
+        // 4. IMPORTANT: Update stock snapshots using the new system
+        console.log('🔄 Updating stock snapshots for procurement...');
         await updateStockForTransaction('procurement', receiptId);
-
 
         // Update evidence status after transaction
         await updateEvidenceStatus(receiptId, attachmentIds);

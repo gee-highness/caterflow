@@ -1508,6 +1508,7 @@ export const calculateBulkStockFromTransactions = async (
 };
 
 // 5. Hook to update snapshots when transactions occur
+// 5. Hook to update snapshots when transactions occur
 export async function updateStockForTransaction(
   transactionType: 'dispatch' | 'transfer' | 'inventoryCount' | 'procurement' | 'adjustment',
   transactionId: string
@@ -1618,6 +1619,47 @@ export async function updateStockForTransaction(
           binId: transaction.bin
         }));
         break;
+
+      case 'procurement':  // ADD THIS CASE FOR GOODS RECEIPTS
+        transaction = await client.fetch(
+          groq`*[_type == "GoodsReceipt" && _id == $id][0] {
+            _id,
+            receiptNumber,
+            status,
+            "receivingBin": receivingBin._ref,
+            "receivedItems": receivedItems[]{
+                "stockItemId": stockItem._ref,
+                receivedQuantity
+            }
+          }`,
+          { id: transactionId }
+        );
+
+        if (!transaction) {
+          console.error(`❌ Goods receipt ${transactionId} not found`);
+          return;
+        }
+
+        if (!transaction.receivingBin) {
+          console.error(`❌ Goods receipt ${transactionId} has no receiving bin`);
+          return;
+        }
+
+        items = (transaction.receivedItems || []).map((item: any) => ({
+          stockItemId: item.stockItemId,
+          quantity: item.receivedQuantity || 0,
+          binId: transaction.receivingBin  // Use the receipt-level receiving bin
+        })).filter((item: { stockItemId: any; quantity: number }) =>
+          item.stockItemId && item.quantity > 0
+        );
+
+        console.log(`📋 Processing ${items.length} procurement items for bin ${transaction.receivingBin}`);
+        break;
+
+      case 'adjustment':
+        // Handle adjustment if needed
+        console.log(`⚠️ Adjustment transaction type not yet implemented for ${transactionId}`);
+        return;
 
       default:
         console.error(`❌ Unsupported transaction type: ${transactionType}`);
