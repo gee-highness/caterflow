@@ -156,6 +156,7 @@ const extractSupplierNames = (orderedItems: any[]): string => {
 };
 
 // CHANGE FROM POST TO PUT FOR UPDATES
+// src/app/api/goods-receipts/[id]/route.ts - Update the PUT function
 export async function PUT(
     request: Request,
     { params }: { params: Promise<{ id: string }> }
@@ -187,9 +188,9 @@ export async function PUT(
         // ✅ Get existing receipt to check previous status
         const existingReceipt = await client.fetch(
             groq`*[_type == "GoodsReceipt" && _id == $id][0] { 
-                status,
-                receiptNumber
-            }`,
+        status,
+        receiptNumber
+      }`,
             { id }
         );
 
@@ -218,11 +219,17 @@ export async function PUT(
             })
             .commit();
 
-        // ✅ CRITICAL FIX: Update stock if receipt status changed to 'completed'
+        // ✅ FIX: Only update stock if status changed TO 'completed'
+        // (Not when editing a completed receipt)
         if (isStatusChangeToCompleted) {
-            console.log('📦 Updating stock for completed goods receipt:', existingReceipt.receiptNumber);
+            console.log('📦 Updating stock for status change to completed:', existingReceipt.receiptNumber);
             await updateStockForTransaction('procurement', id);
         }
+        // ❌ REMOVE: Don't update stock for regular edits of completed receipts
+        // else if (wasCompleted && willBeCompleted) {
+        //   console.log('🔄 Editing completed receipt, updating stock:', existingReceipt.receiptNumber);
+        //   await updateStockForTransaction('procurement', id);
+        // }
 
         await logSanityInteraction(
             'update',
