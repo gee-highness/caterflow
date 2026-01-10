@@ -31,24 +31,24 @@ export function Footer({ appName = 'StockWise' }: FooterProps) {
         <Flex direction={{ base: 'column', md: 'row' }} justify="space-between" align="center">
           <Text>
             &copy; {new Date().getFullYear()} {appName} by{' '}
-            <Link https://triptych-sol.vercel.app/" isExternal>
+            <Link href="https://triptych-sol.vercel.app/" isExternal>
               Synapse Digital
             </Link>
-          . All rights reserved.
-        </Text>
-        <Flex mt={{ base: 4, md: 0 }} gap={4}>
-          <Link href="/privacy" fontSize="sm">
-            Privacy Policy
-          </Link>
-          <Link href="/terms" fontSize="sm">
-            Terms of Service
-          </Link>
-          <Link href="https://stockwise-management.vercel.app/docs.html/" fontSize="sm" isExternal>
-            Support
-          </Link>
+            . All rights reserved.
+          </Text>
+          <Flex mt={{ base: 4, md: 0 }} gap={4}>
+            <Link href="/privacy" fontSize="sm">
+              Privacy Policy
+            </Link>
+            <Link href="/terms" fontSize="sm">
+              Terms of Service
+            </Link>
+            <Link href="https://stockwise-management.vercel.app/docs.html/" fontSize="sm" isExternal>
+              Support
+            </Link>
+          </Flex>
         </Flex>
-      </Flex>
-    </Container>
+      </Container>
     </Box >
   );
 }
