@@ -1,10 +1,10 @@
-// src/app/api/approvals/route.ts
+// src/app/api/approvals/route.ts - UPDATED
 import { NextResponse } from 'next/server';
 import { client } from '@/lib/sanity';
 import { groq } from 'next-sanity';
 import { getUserSiteInfo } from '@/lib/siteFiltering';
 
-// Purchase orders pending approval - simplified filter
+// Purchase orders pending approval - SIMPLIFIED and FIXED
 const purchaseOrderApprovalQuery = (siteFilter: string) => groq`
   *[_type == "PurchaseOrder" && status == "pending-approval" ${siteFilter}] {
     _id,
@@ -16,18 +16,22 @@ const purchaseOrderApprovalQuery = (siteFilter: string) => groq`
     "priority": "high",
     "site": site->{name, _id},
     "poNumber": poNumber,
-    "orderedByName": orderedBy->name,
+    "orderedBy": orderedBy->{ // FIXED: Make sure to fetch the user object
+      _id,
+      name,
+      email
+    },
     orderedItems[]{
         _key,
         orderedQuantity,
         unitPrice,
-        "stockItem": stockItem->{name},
+        "stockItem": stockItem->{name, unitOfMeasure},
         "supplier": supplier->{name}
     }
   }
 `;
 
-// Internal transfers pending approval - simplified filter
+// Internal transfers pending approval - SIMPLIFIED and FIXED
 const internalTransferApprovalQuery = (siteFilter: string) => groq`
   *[_type == "InternalTransfer" && status == "pending-approval" ${siteFilter}] {
     _id,
@@ -39,7 +43,21 @@ const internalTransferApprovalQuery = (siteFilter: string) => groq`
     "priority": "high",
     "fromSite": fromBin->site->{name, _id},
     "toSite": toBin->site->{name, _id},
-    transferNumber
+    "fromBin": fromBin->{name, _id, site->{name, _id}},
+    "toBin": toBin->{name, _id, site->{name, _id}},
+    "transferredBy": transferredBy->{ // FIXED: Make sure to fetch the user object
+      _id,
+      name,
+      email
+    },
+    "transferredItems": items[]{
+        _key,
+        transferredQuantity,
+        "stockItem": stockItem->{name, unitOfMeasure}
+    },
+    transferNumber,
+    transferDate,
+    notes
   }
 `;
 
@@ -51,22 +69,14 @@ export async function GET(request: Request) {
 
         console.log('Approvals API called with:', { userRole, userSite });
 
-        // If userSite is provided directly, use it (for site managers)
         let siteFilter = '';
 
         if (userRole === 'siteManager' && userSite) {
             console.log('Building site filter for site manager with site:', userSite);
-
-            // For purchase orders: only show POs from their site
             siteFilter = `&& site._ref == "${userSite}"`;
-
-            // For transfers: show transfers FROM their site (since they approve outgoing transfers)
-            // This is handled in the client-side filter below
         } else if (userRole === 'admin' || userRole === 'auditor' || userRole === 'procurer') {
-            // Admins, auditors, and procurers can see everything
             siteFilter = '';
         } else {
-            // No permission
             return NextResponse.json([]);
         }
 
@@ -78,6 +88,10 @@ export async function GET(request: Request) {
             client.fetch(internalTransferApprovalQuery('')), // Transfers filtered client-side
         ]);
 
+        // Add debug logging
+        console.log('Purchase orders raw data:', JSON.stringify(purchaseOrders, null, 2));
+        console.log('Internal transfers raw data:', JSON.stringify(internalTransfers, null, 2));
+
         let approvals = [...purchaseOrders, ...internalTransfers];
 
         console.log('Raw approvals fetched:', {
@@ -86,22 +100,41 @@ export async function GET(request: Request) {
             total: approvals.length
         });
 
-        // Normalize items
+        // Normalize items with better debugging
         approvals = approvals.map((approval: any) => {
             if (approval._type === 'PurchaseOrder') {
                 const supplierNames = [...new Set((approval.orderedItems || []).map((i: any) => i.supplier?.name).filter(Boolean))];
+
+                console.log('PO approval:', {
+                    poNumber: approval.poNumber,
+                    orderedBy: approval.orderedBy,
+                    orderedByName: approval.orderedBy?.name,
+                    hasOrderedBy: !!approval.orderedBy
+                });
+
                 return {
                     ...approval,
                     siteName: approval.site?.name || 'Unknown Site',
                     description: supplierNames.length > 0
                         ? `Purchase order from ${supplierNames.join(', ')}`
                         : (approval.description || 'Purchase order'),
-                    supplierNames: supplierNames.join(', ')
+                    supplierNames: supplierNames.join(', '),
+                    // Extract the name from orderedBy object
+                    requestedBy: approval.orderedBy?.name || 'Unknown'
                 };
             } else if (approval._type === 'InternalTransfer') {
+                console.log('Transfer approval:', {
+                    transferNumber: approval.transferNumber,
+                    transferredBy: approval.transferredBy,
+                    transferredByName: approval.transferredBy?.name,
+                    hasTransferredBy: !!approval.transferredBy
+                });
+
                 return {
                     ...approval,
                     siteName: approval.fromSite?.name || 'Unknown Site',
+                    // Extract the name from transferredBy object
+                    requestedBy: approval.transferredBy?.name || 'Unknown'
                 };
             }
             return approval;
@@ -114,7 +147,6 @@ export async function GET(request: Request) {
                     return approval.site?._id === userSite;
                 }
                 if (approval._type === 'InternalTransfer') {
-                    // Site managers approve transfers FROM their site
                     return approval.fromSite?._id === userSite;
                 }
                 return false;
@@ -126,7 +158,7 @@ export async function GET(request: Request) {
         // Sort by creation date, newest first
         approvals.sort((a: any, b: any) => new Date(b._createdAt).getTime() - new Date(a._createdAt).getTime());
 
-        console.log('Final approvals to return:', approvals.length);
+        console.log('Final approvals to return (first 2):', approvals.slice(0, 2));
 
         return NextResponse.json(approvals);
     } catch (error: any) {

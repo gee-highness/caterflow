@@ -96,6 +96,11 @@ interface PurchaseOrderApproval {
     };
     createdAt: string;
     priority: 'high' | 'medium' | 'low';
+    requestedBy?: string;
+    orderedBy?: {  // Add this
+        name?: string;
+        email?: string;
+    };
 }
 
 type ApprovalAction = TransferApproval | PurchaseOrderApproval;
@@ -200,23 +205,40 @@ export default function ApprovalsPage() {
                 priority: 'medium' as const,
             }));
 
+            // In fetchPendingApprovals function, add more debugging:
+            console.log('Purchase orders data from API:', {
+                raw: purchaseOrdersData,
+                firstItem: purchaseOrdersData[0],
+                firstItemOrderedBy: purchaseOrdersData[0]?.orderedBy,
+                firstItemOrderedByName: purchaseOrdersData[0]?.orderedBy?.name
+            });
+
             // Transform purchase orders data
             const purchaseOrderApprovals: PurchaseOrderApproval[] = purchaseOrdersData
                 .filter((po: any) => po._type === 'PurchaseOrder')
-                .map((po: any) => ({
-                    _id: po._id,
-                    _type: 'PurchaseOrder' as const,
-                    poNumber: po.poNumber || 'Unknown',
-                    title: po.title || `Purchase Order ${po.poNumber}`,
-                    description: po.description || 'Purchase order for items',
-                    status: 'pending-approval' as const,
-                    orderedItems: po.orderedItems || [],
-                    site: po.site || { _id: 'unknown', name: po.siteName || 'Unknown Site' },
-                    createdAt: po.createdAt || po._createdAt || new Date().toISOString(),
-                    priority: po.priority || 'medium',
-                    orderedByName: po.orderedByName,
-                    supplierNames: po.supplierNames,
-                }));
+                .map((po: any) => {
+                    console.log('Mapping PO:', {
+                        poNumber: po.poNumber,
+                        orderedBy: po.orderedBy,
+                        orderedByName: po.orderedBy?.name,
+                        hasOrderedBy: !!po.orderedBy
+                    });
+
+                    return {
+                        _id: po._id,
+                        _type: 'PurchaseOrder' as const,
+                        poNumber: po.poNumber || 'Unknown',
+                        title: po.title || `Purchase Order ${po.poNumber}`,
+                        description: po.description || 'Purchase order for items',
+                        status: 'pending-approval' as const,
+                        orderedItems: po.orderedItems || [],
+                        site: po.site || { _id: 'unknown', name: po.siteName || 'Unknown Site' },
+                        createdAt: po.createdAt || po._createdAt || new Date().toISOString(),
+                        priority: po.priority || 'medium',
+                        orderedBy: po.orderedBy, // Store the full orderedBy object
+                        supplierNames: po.supplierNames,
+                    };
+                });
 
             // Combine all approvals
             const allApprovals = [...transferApprovals, ...purchaseOrderApprovals];
@@ -428,7 +450,6 @@ export default function ApprovalsPage() {
         return false;
     };
 
-    // Helper function to get display information based on approval type with null checks
     const getApprovalDisplayInfo = (approval: ApprovalAction) => {
         if (approval._type === 'InternalTransfer') {
             return {
@@ -436,15 +457,20 @@ export default function ApprovalsPage() {
                 title: `Transfer: ${approval.transferNumber || 'Unknown'}`,
                 description: `Transfer from ${approval.fromBin?.name || 'Unknown'} to ${approval.toBin?.name || 'Unknown'}`,
                 siteName: approval.fromBin?.site?.name || 'Unknown Site',
-                requestedBy: approval.transferredBy?.name || 'Unknown User',
+                requestedBy: approval.transferredBy?.name || approval.transferredBy?.email || 'Unknown User',
             };
         } else {
+            // For PurchaseOrder
+            const po = approval as PurchaseOrderApproval;
+            // Try name first, then email as fallback
+            const requestedBy = po.orderedBy?.name || po.orderedBy?.email || 'Unknown';
+
             return {
-                referenceNumber: approval.poNumber || 'Unknown',
-                title: approval.title || 'Unknown Title',
-                description: approval.description || 'No description',
-                siteName: approval.site.name || 'Unknown Site',
-                requestedBy: 'Unknown',
+                referenceNumber: po.poNumber || 'Unknown',
+                title: po.title || 'Unknown Title',
+                description: po.description || 'No description',
+                siteName: po.site.name || 'Unknown Site',
+                requestedBy: requestedBy,
             };
         }
     };
@@ -507,7 +533,10 @@ export default function ApprovalsPage() {
                 isSortable: true,
                 cell: (row: any) => {
                     if (row._type === 'InternalTransfer') {
-                        return row.transferredBy?.name || 'Unknown';
+                        return row.transferredBy?.name || row.transferredBy?.email || 'Unknown';
+                    } else if (row._type === 'PurchaseOrder') {
+                        const po = row as PurchaseOrderApproval;
+                        return po.orderedBy?.name || po.orderedBy?.email || 'Unknown';
                     }
                     return 'Unknown';
                 }
@@ -643,8 +672,9 @@ export default function ApprovalsPage() {
                                     <Text fontWeight="bold" color={primaryTextColor}>Requested By:</Text>
                                     <Text color={primaryTextColor}>
                                         {selectedApproval?._type === 'InternalTransfer'
-                                            ? selectedApproval.transferredBy?.name || 'Unknown User'
-                                            : 'Unknown'
+                                            ? selectedApproval.transferredBy?.name || selectedApproval.transferredBy?.email || 'Unknown User'
+                                            : (selectedApproval as PurchaseOrderApproval)?.orderedBy?.name ||
+                                            (selectedApproval as PurchaseOrderApproval)?.orderedBy?.email || 'Unknown User'
                                         }
                                     </Text>
                                 </Box>

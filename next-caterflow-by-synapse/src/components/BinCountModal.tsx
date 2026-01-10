@@ -37,8 +37,13 @@ import {
     CardBody,
     useColorModeValue,
     Divider,
+    InputGroup,
+    InputLeftElement,
+    InputRightElement,
+    Flex,
+    Spinner,
 } from '@chakra-ui/react';
-import { FiPlus, FiTrash2, FiSearch, FiCheck, FiSave, FiRefreshCw } from 'react-icons/fi';
+import { FiPlus, FiTrash2, FiSearch, FiCheck, FiSave, FiRefreshCw, FiX, FiFilter } from 'react-icons/fi';
 import BinSelectorModal from './BinSelectorModal';
 import StockItemSelectorModal from './StockItemSelectorModal';
 import { useSession } from 'next-auth/react';
@@ -50,13 +55,13 @@ interface CountedItem {
         _id: string;
         name: string;
         sku: string;
-        unitPrice?: number; // ADD THIS
+        unitPrice?: number;
     };
     countedQuantity: number;
     systemQuantityAtCountTime?: number;
     variance?: number;
-    varianceCost?: number; // ADD THIS
-    unitPrice?: number; // ADD THIS
+    varianceCost?: number;
+    unitPrice?: number;
     _key?: string;
 }
 
@@ -66,7 +71,7 @@ interface StockItemForSelector {
     sku: string;
     itemType: 'food' | 'nonFood';
     unitOfMeasure: string;
-    unitPrice?: number; // ADD THIS
+    unitPrice?: number;
     description?: string;
     category?: {
         _id: string;
@@ -115,6 +120,10 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
     const [countDate, setCountDate] = useState(new Date().toISOString().split('T')[0]);
     const [notes, setNotes] = useState('');
     const [countedItems, setCountedItems] = useState<CountedItem[]>([]);
+    const [searchTerm, setSearchTerm] = useState('');
+    const [isSearching, setIsSearching] = useState(false);
+    const [currentSearchIndex, setCurrentSearchIndex] = useState(-1);
+    const [searchResults, setSearchResults] = useState<number[]>([]);
 
     const isViewMode = binCount?.status === 'completed' || binCount?.status === 'adjusted';
 
@@ -129,11 +138,73 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
         return countedItems.map(item => item.stockItem._id);
     }, [countedItems]);
 
+    // Filter items based on search term
+    const filteredItems = useMemo(() => {
+        if (!searchTerm.trim()) return countedItems;
+
+        const term = searchTerm.toLowerCase();
+        return countedItems.filter(item =>
+            item.stockItem.name.toLowerCase().includes(term) ||
+            item.stockItem.sku.toLowerCase().includes(term)
+        );
+    }, [countedItems, searchTerm]);
+
+    // Find search results
+    useEffect(() => {
+        if (!searchTerm.trim()) {
+            setSearchResults([]);
+            setCurrentSearchIndex(-1);
+            return;
+        }
+
+        const term = searchTerm.toLowerCase();
+        const results = countedItems
+            .map((item, index) => ({
+                index,
+                matches: item.stockItem.name.toLowerCase().includes(term) ||
+                    item.stockItem.sku.toLowerCase().includes(term)
+            }))
+            .filter(item => item.matches)
+            .map(item => item.index);
+
+        setSearchResults(results);
+        setCurrentSearchIndex(results.length > 0 ? 0 : -1);
+    }, [countedItems, searchTerm]);
+
+    const highlightNextSearchResult = () => {
+        if (searchResults.length === 0) return;
+
+        const nextIndex = (currentSearchIndex + 1) % searchResults.length;
+        setCurrentSearchIndex(nextIndex);
+
+        // Scroll to the highlighted item
+        const itemIndex = searchResults[nextIndex];
+        const elementId = `item-${countedItems[itemIndex]._key}`;
+        const element = document.getElementById(elementId);
+        if (element) {
+            element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+    };
+
+    const highlightPrevSearchResult = () => {
+        if (searchResults.length === 0) return;
+
+        const prevIndex = (currentSearchIndex - 1 + searchResults.length) % searchResults.length;
+        setCurrentSearchIndex(prevIndex);
+
+        // Scroll to the highlighted item
+        const itemIndex = searchResults[prevIndex];
+        const elementId = `item-${countedItems[itemIndex]._key}`;
+        const element = document.getElementById(elementId);
+        if (element) {
+            element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+    };
+
     const fetchBulkCurrentStock = async (itemIds: string[], binId: string): Promise<Record<string, number>> => {
         if (itemIds.length === 0 || !binId) return {};
 
         try {
-            // For small numbers of items, we could use individual requests as fallback
             const response = await fetch('/api/stock/bulk-current', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -158,18 +229,13 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
             }
         } catch (error) {
             console.error('❌ Error in bulk current stock fetch:', error);
-
-            // Fallback to individual requests
-            console.log('🔄 Falling back to individual requests...');
             return await fetchIndividualCurrentStock(itemIds, binId);
         }
     };
 
-    // Fallback function for individual requests
     const fetchIndividualCurrentStock = async (itemIds: string[], binId: string): Promise<Record<string, number>> => {
         const results: Record<string, number> = {};
 
-        // Process items in batches to avoid too many concurrent requests
         const batchSize = 5;
         for (let i = 0; i < itemIds.length; i += batchSize) {
             const batch = itemIds.slice(i, i + batchSize);
@@ -200,16 +266,14 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
         return results;
     };
 
-    // Single optimized useEffect for initial setup
     useEffect(() => {
-        if (!isOpen) return; // Only run when modal is open
+        if (!isOpen) return;
 
         if (binCount) {
             setSelectedBin(binCount.bin || null);
             setCountDate(new Date(binCount.countDate).toISOString().split('T')[0]);
             setNotes(binCount.notes || '');
 
-            // Process countedItems with proper validation
             const validCountedItems = (binCount.countedItems || [])
                 .filter(item => item && item.stockItem)
                 .map(item => ({
@@ -230,14 +294,11 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
         }
     }, [isOpen, binCount, isViewMode]);
 
-    // Optimized system quantities useEffect - BATCH VERSION
     useEffect(() => {
         const fetchSystemQuantities = async () => {
-            // Only fetch for draft counts with items and selected bin
             if (binCount && !isViewMode && selectedBin && countedItems.length > 0) {
                 setLoading(true);
                 try {
-                    // Collect item IDs that need fetching
                     const itemsToFetch = countedItems.filter(item =>
                         (typeof item.systemQuantityAtCountTime === 'undefined' ||
                             item.systemQuantityAtCountTime === null) &&
@@ -245,11 +306,9 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
                     );
 
                     if (itemsToFetch.length > 0) {
-                        // Use batch fetch
                         const itemIds = itemsToFetch.map(item => item.stockItem._id);
                         const bulkResults = await fetchBulkCurrentStock(itemIds, selectedBin._id);
 
-                        // Update items with fetched quantities
                         const updatedItems = countedItems.map(item => {
                             if (bulkResults[item.stockItem._id] !== undefined) {
                                 return {
@@ -260,7 +319,6 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
                             return item;
                         });
 
-                        // Only update if items actually changed
                         const hasChanges = updatedItems.some((newItem, index) =>
                             newItem.systemQuantityAtCountTime !== countedItems[index]?.systemQuantityAtCountTime
                         );
@@ -284,21 +342,21 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
             }
         };
 
-        // Add a small delay to prevent rapid successive calls
         const timer = setTimeout(fetchSystemQuantities, 100);
         return () => clearTimeout(timer);
     }, [binCount, isViewMode, selectedBin, countedItems, toast]);
 
-    // Cleanup effect
     useEffect(() => {
         return () => {
-            // Reset state when component unmounts or modal closes
             if (!isOpen) {
                 setSelectedBin(null);
                 setCountDate(new Date().toISOString().split('T')[0]);
                 setNotes('');
                 setCountedItems([]);
                 setIsProcessing(false);
+                setSearchTerm('');
+                setCurrentSearchIndex(-1);
+                setSearchResults([]);
             }
         };
     }, [isOpen]);
@@ -308,8 +366,7 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
 
         setLoading(true);
         try {
-            // Fetch all stock items WITH unitPrice
-            const response = await fetch('/api/procurement/stock-items'); // Updated path based on your structure
+            const response = await fetch('/api/procurement/stock-items');
             if (!response.ok) throw new Error('Failed to fetch stock items');
 
             const allStockItems: StockItemForSelector[] = await response.json();
@@ -325,10 +382,7 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
                 return;
             }
 
-            // Get all item IDs
             const itemIds = allStockItems.map(item => item._id);
-
-            // Use batch fetch for all items
             const bulkResults = await fetchBulkCurrentStock(itemIds, selectedBin._id);
 
             const itemsWithQuantities = allStockItems.map((item) => {
@@ -345,8 +399,8 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
                     },
                     countedQuantity: 0,
                     systemQuantityAtCountTime: systemQuantity,
-                    variance: 0 - systemQuantity, // Initial variance (0 counted - system qty)
-                    varianceCost: (0 - systemQuantity) * unitPrice, // Initial variance cost
+                    variance: 0 - systemQuantity,
+                    varianceCost: (0 - systemQuantity) * unitPrice,
                     unitPrice: unitPrice,
                 };
             });
@@ -375,22 +429,17 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
         }
     }, [selectedBin, binCount, toast]);
 
-
-    // Update the useEffect that handles bin selection
     useEffect(() => {
         if (selectedBin && !binCount) {
-            // Auto-load all stock items when a bin is selected for new counts
             const timer = setTimeout(() => {
                 loadAllStockItems();
-            }, 500); // Small delay to prevent rapid calls
+            }, 500);
 
             return () => clearTimeout(timer);
         }
     }, [selectedBin, binCount, loadAllStockItems]);
 
-    // Add this useEffect after the other useEffects in BinCountModal.tsx
     useEffect(() => {
-        // Update variance and varianceCost when countedItems change
         const updatedItems = countedItems.map(item => {
             const counted = item.countedQuantity || 0;
             const system = item.systemQuantityAtCountTime || 0;
@@ -405,7 +454,6 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
             };
         });
 
-        // Only update if there are changes
         const hasChanges = updatedItems.some((item, index) =>
             item.variance !== countedItems[index]?.variance ||
             item.varianceCost !== countedItems[index]?.varianceCost
@@ -421,7 +469,6 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
 
         setIsProcessing(true);
         try {
-            // Fetch the broken count using the main GET endpoint and find it
             const response = await fetch('/api/bin-counts');
             if (!response.ok) throw new Error('Failed to fetch bin counts');
 
@@ -439,7 +486,6 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
                 return;
             }
 
-            // Construct a clean, valid payload for the Sanity PUT request
             const fixedPayload = {
                 countNumber: brokenCount.countNumber,
                 countDate: brokenCount.countDate,
@@ -457,7 +503,6 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
                     })),
             };
 
-            // Save the fixed count
             const saveResponse = await fetch('/api/bin-counts', {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
@@ -496,7 +541,6 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
         setSelectedBin(bin);
         setIsBinModalOpen(false);
 
-        // Don't auto-load if we're editing an existing count
         if (!binCount) {
             // The useEffect above will handle the auto-loading
         }
@@ -516,7 +560,6 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
             return;
         }
 
-        // Filter out duplicates
         const existingItemIds = new Set(countedItems.map(i => i.stockItem._id));
         const newItems = items.filter(item => !existingItemIds.has(item._id));
 
@@ -534,10 +577,7 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
         setLoading(true);
 
         try {
-            // Get item IDs for batch fetch
             const newItemIds = newItems.map(item => item._id);
-
-            // Use batch fetch for new items
             const bulkResults = await fetchBulkCurrentStock(newItemIds, selectedBin._id);
 
             const itemsWithQuantities = newItems.map((item) => {
@@ -554,8 +594,8 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
                     },
                     countedQuantity: 0,
                     systemQuantityAtCountTime: systemQuantity,
-                    variance: 0 - systemQuantity, // Initial variance
-                    varianceCost: (0 - systemQuantity) * unitPrice, // Initial variance cost
+                    variance: 0 - systemQuantity,
+                    varianceCost: (0 - systemQuantity) * unitPrice,
                     unitPrice: unitPrice,
                 };
             });
@@ -608,10 +648,7 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
 
         setLoading(true);
         try {
-            // Get all item IDs for batch fetch
             const itemIds = countedItems.map(item => item.stockItem._id);
-
-            // Use batch fetch for all items
             const bulkResults = await fetchBulkCurrentStock(itemIds, selectedBin._id);
 
             const updatedItems = countedItems.map((item) => {
@@ -677,14 +714,10 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
 
     const totalVarianceCost = useMemo(() => {
         return countedItems.reduce((sum, item) => {
-            // Calculate variance for this item
             const counted = item.countedQuantity || 0;
             const system = item.systemQuantityAtCountTime || 0;
             const variance = counted - system;
-
-            // Get unit price - prefer item.unitPrice, fall back to stockItem.unitPrice
             const unitPrice = item.unitPrice || item.stockItem?.unitPrice || 0;
-
             return sum + (variance * unitPrice);
         }, 0);
     }, [countedItems]);
@@ -692,7 +725,6 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
     const handleSave = async (isFinalize: boolean = false) => {
         if (isProcessing) return;
 
-        // Validate we have items to save
         if (countedItems.length === 0) {
             toast({
                 title: 'No Items',
@@ -704,7 +736,6 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
             return;
         }
 
-        // Validate we have a bin selected
         if (!selectedBin) {
             toast({
                 title: 'No Bin Selected',
@@ -716,7 +747,6 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
             return;
         }
 
-        // Filter out invalid items
         const validCountedItems = countedItems.filter(item =>
             item.stockItem &&
             item.stockItem._id &&
@@ -735,7 +765,6 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
             });
         }
 
-        // Build items with proper structure
         const itemsWithVariance = validCountedItems.map((item, index) => {
             const variance = item.variance || 0;
             const unitPrice = item.unitPrice || item.stockItem.unitPrice || 0;
@@ -743,18 +772,17 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
 
             return {
                 _key: item._key || `item-${index}-${Date.now()}`,
-                stockItem: item.stockItem._id, // Just the ID string
+                stockItem: item.stockItem._id,
                 countedQuantity: item.countedQuantity || 0,
                 systemQuantityAtCountTime: item.systemQuantityAtCountTime || 0,
                 variance: (item.countedQuantity || 0) - (item.systemQuantityAtCountTime || 0),
-                varianceCost: varianceCost, // ADD THIS
+                varianceCost: varianceCost,
                 unitPrice: unitPrice
             };
         });
 
         console.log(`📦 Processing ${itemsWithVariance.length} valid items`);
 
-        // Determine status
         let status;
         if (isFinalize) {
             status = 'completed';
@@ -762,11 +790,9 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
             status = binCount?.status || 'draft';
         }
 
-        // Build payload
         const totalVarianceCost = itemsWithVariance.reduce((sum, item) => sum + (item.varianceCost || 0), 0);
         const totalVariance = itemsWithVariance.reduce((sum, item) => sum + (item.variance || 0), 0);
 
-        // Update the payload
         const payload: any = {
             countDate: new Date(countDate).toISOString(),
             bin: selectedBin._id,
@@ -774,21 +800,18 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
             countedItems: itemsWithVariance,
             status: status,
             totalVariance: totalVariance,
-            totalVarianceCost: totalVarianceCost, // ADD THIS
+            totalVarianceCost: totalVarianceCost,
         };
 
-        // Add countedBy if we have a user
         if (session?.user?.id) {
             payload.countedBy = session.user.id;
         }
 
-        // For updates, include the ID
         if (binCount) {
             payload._id = binCount._id;
         }
 
         console.log('📤 Sending payload with', itemsWithVariance.length, 'items');
-        console.log('Sample item:', itemsWithVariance[0]);
 
         try {
             const method = binCount ? 'PUT' : 'POST';
@@ -813,7 +836,6 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
                     errorData = { error: `HTTP ${response.status}: ${response.statusText}` };
                 }
 
-                // Provide more specific error messages
                 let errorMessage = 'Failed to save bin count';
                 if (errorData?.details) {
                     errorMessage = errorData.details;
@@ -914,7 +936,72 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
                             </FormControl>
 
                             <Box w="100%" mt={8}>
-                                <Heading size="md" mb={4}>Counted Items</Heading>
+                                <Heading size="md" mb={4}>Counted Items ({countedItems.length} items)</Heading>
+
+                                {/* Search Bar */}
+                                <Box mb={4}>
+                                    <InputGroup>
+                                        <InputLeftElement pointerEvents="none">
+                                            <Icon as={FiSearch} color="neutral.light.text-secondary" />
+                                        </InputLeftElement>
+                                        <Input
+                                            placeholder="Search items by name or SKU..."
+                                            value={searchTerm}
+                                            onChange={(e) => setSearchTerm(e.target.value)}
+                                            isDisabled={countedItems.length === 0}
+                                        />
+                                        {searchTerm && (
+                                            <InputRightElement width="auto">
+                                                <HStack spacing={1} mr={2}>
+                                                    {searchResults.length > 0 && (
+                                                        <>
+                                                            <Text fontSize="sm" color="neutral.light.text-secondary">
+                                                                {currentSearchIndex + 1}/{searchResults.length}
+                                                            </Text>
+                                                            <IconButton
+                                                                aria-label="Previous result"
+                                                                icon={<FiFilter />}
+                                                                size="xs"
+                                                                variant="ghost"
+                                                                onClick={highlightPrevSearchResult}
+                                                                colorScheme="brand"
+                                                            />
+                                                            <IconButton
+                                                                aria-label="Next result"
+                                                                icon={<FiFilter />}
+                                                                size="xs"
+                                                                variant="ghost"
+                                                                onClick={highlightNextSearchResult}
+                                                                colorScheme="brand"
+                                                                transform="rotate(180deg)"
+                                                            />
+                                                        </>
+                                                    )}
+                                                    <IconButton
+                                                        aria-label="Clear search"
+                                                        icon={<FiX />}
+                                                        size="xs"
+                                                        variant="ghost"
+                                                        onClick={() => setSearchTerm('')}
+                                                    />
+                                                </HStack>
+                                            </InputRightElement>
+                                        )}
+                                    </InputGroup>
+                                    {searchTerm && (
+                                        <Flex justifyContent="space-between" mt={2}>
+                                            <Text fontSize="sm" color="neutral.light.text-secondary">
+                                                Found {filteredItems.length} of {countedItems.length} items
+                                            </Text>
+                                            {searchResults.length > 0 && (
+                                                <Text fontSize="sm" color="brand.500">
+                                                    Press Enter to find next
+                                                </Text>
+                                            )}
+                                        </Flex>
+                                    )}
+                                </Box>
+
                                 <Card bg={cardBg} shadow="md" borderWidth="1px" borderColor={borderColor}>
                                     <CardBody p={{ base: 2, md: 4 }}>
                                         {/* Desktop View: Table */}
@@ -937,56 +1024,91 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
                                                     </Tr>
                                                 </Thead>
                                                 <Tbody>
-                                                    {countedItems.map((item) => (
-                                                        <Tr key={item._key}>
-                                                            <Td>
-                                                                <VStack align="start" spacing={0}>
-                                                                    <Text fontWeight="bold">{item.stockItem.name}</Text>
-                                                                    <Text fontSize="xs" color="neutral.light.text-secondary">{item.stockItem.sku}</Text>
-                                                                </VStack>
-                                                            </Td>
-                                                            <Td>{item.systemQuantityAtCountTime}</Td>
-                                                            <Td>
-                                                                {isViewMode ? (
-                                                                    <Text>{item.countedQuantity}</Text>
+                                                    {filteredItems.length > 0 ? (
+                                                        filteredItems.map((item, index) => {
+                                                            const isHighlighted = searchResults.includes(
+                                                                countedItems.findIndex(i => i._key === item._key)
+                                                            ) && searchResults[currentSearchIndex] === countedItems.findIndex(i => i._key === item._key);
+
+                                                            return (
+                                                                <Tr
+                                                                    key={item._key}
+                                                                    id={`item-${item._key}`}
+                                                                    bg={isHighlighted ? 'yellow.100' : 'transparent'}
+                                                                    _dark={{ bg: isHighlighted ? 'yellow.900' : 'transparent' }}
+                                                                >
+                                                                    <Td>
+                                                                        <VStack align="start" spacing={0}>
+                                                                            <Text fontWeight="bold">{item.stockItem.name}</Text>
+                                                                            <Text fontSize="xs" color="neutral.light.text-secondary">{item.stockItem.sku}</Text>
+                                                                        </VStack>
+                                                                    </Td>
+                                                                    <Td>{item.systemQuantityAtCountTime}</Td>
+                                                                    <Td>
+                                                                        {isViewMode ? (
+                                                                            <Text>{item.countedQuantity}</Text>
+                                                                        ) : (
+                                                                            <Input
+                                                                                type="number"
+                                                                                step="0.01"
+                                                                                min="0"
+                                                                                value={item.countedQuantity === 0 ? '' : item.countedQuantity}
+                                                                                onChange={(e) => handleCountedQuantityChange(item._key!, e.target.value)}
+                                                                                placeholder="0"
+                                                                                size="sm"
+                                                                                onKeyDown={(e) => {
+                                                                                    if (e.key === 'Enter' && searchTerm) {
+                                                                                        e.preventDefault();
+                                                                                        highlightNextSearchResult();
+                                                                                    }
+                                                                                }}
+                                                                                autoFocus={isHighlighted}
+                                                                            />
+                                                                        )}
+                                                                    </Td>
+                                                                    <Td isNumeric>
+                                                                        <VStack align="flex-end" spacing={1}>
+                                                                            <Badge
+                                                                                colorScheme={item.variance === 0 ? 'green' : 'red'}
+                                                                            >
+                                                                                {item.variance?.toFixed(2) || 0}
+                                                                            </Badge>
+                                                                            <Text fontSize="xs" color="neutral.light.text-secondary">
+                                                                                {item.varianceCost ? `E ${Math.abs(item.varianceCost).toFixed(2)}` : 'E 0.00'}
+                                                                            </Text>
+                                                                        </VStack>
+                                                                    </Td>
+                                                                    {!isViewMode && (
+                                                                        <Td>
+                                                                            <IconButton
+                                                                                aria-label="Remove item"
+                                                                                icon={<FiTrash2 />}
+                                                                                size="sm"
+                                                                                variant="ghost"
+                                                                                colorScheme="red"
+                                                                                onClick={() => handleRemoveItem(item._key!)}
+                                                                            />
+                                                                        </Td>
+                                                                    )}
+                                                                </Tr>
+                                                            );
+                                                        })
+                                                    ) : (
+                                                        <Tr>
+                                                            <Td colSpan={5} textAlign="center" py={8}>
+                                                                {searchTerm ? (
+                                                                    <VStack spacing={2}>
+                                                                        <Text>No items found for "{searchTerm}"</Text>
+                                                                        <Button size="sm" onClick={() => setSearchTerm('')}>
+                                                                            Clear Search
+                                                                        </Button>
+                                                                    </VStack>
                                                                 ) : (
-                                                                    <Input
-                                                                        type="number"
-                                                                        step="0.01"
-                                                                        min="0"
-                                                                        value={item.countedQuantity === 0 ? '' : item.countedQuantity}
-                                                                        onChange={(e) => handleCountedQuantityChange(item._key!, e.target.value)}
-                                                                        placeholder="0"
-                                                                        size="sm"
-                                                                    />
+                                                                    <Text>No items added yet.</Text>
                                                                 )}
                                                             </Td>
-                                                            <Td isNumeric>
-                                                                <VStack align="flex-end" spacing={1}>
-                                                                    <Badge
-                                                                        colorScheme={item.variance === 0 ? 'green' : 'red'}
-                                                                    >
-                                                                        {item.variance?.toFixed(2) || 0}
-                                                                    </Badge>
-                                                                    <Text fontSize="xs" color="neutral.light.text-secondary">
-                                                                        {item.varianceCost ? `E ${Math.abs(item.varianceCost).toFixed(2)}` : 'E 0.00'}
-                                                                    </Text>
-                                                                </VStack>
-                                                            </Td>
-                                                            {!isViewMode && (
-                                                                <Td>
-                                                                    <IconButton
-                                                                        aria-label="Remove item"
-                                                                        icon={<FiTrash2 />}
-                                                                        size="sm"
-                                                                        variant="ghost"
-                                                                        colorScheme="red"
-                                                                        onClick={() => handleRemoveItem(item._key!)}
-                                                                    />
-                                                                </Td>
-                                                            )}
                                                         </Tr>
-                                                    ))}
+                                                    )}
                                                 </Tbody>
                                             </Table>
                                         </TableContainer>
@@ -1000,67 +1122,89 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
                                             overflowY="auto"
                                             pr={2}
                                         >
-                                            {countedItems.length > 0 ? (
-                                                countedItems.map((item) => (
-                                                    <Card key={item._key} bg={cardBg} variant="outline" borderColor={borderColor}>
-                                                        <CardBody p={4}>
-                                                            <VStack align="stretch" spacing={2}>
-                                                                <HStack justifyContent="space-between">
-                                                                    <VStack align="start" spacing={0}>
-                                                                        <Text fontWeight="bold">{item.stockItem.name}</Text>
-                                                                        <Text fontSize="sm" color="gray.500">{item.stockItem.sku}</Text>
-                                                                    </VStack>
-                                                                    {!isViewMode && (
-                                                                        <IconButton
-                                                                            aria-label="Remove item"
-                                                                            icon={<FiTrash2 />}
-                                                                            size="sm"
-                                                                            variant="ghost"
-                                                                            colorScheme="red"
-                                                                            onClick={() => handleRemoveItem(item._key!)}
-                                                                        />
-                                                                    )}
-                                                                </HStack>
-                                                                <Divider />
-                                                                <HStack justifyContent="space-between" pt={2}>
-                                                                    <Text fontSize="sm" fontWeight="medium">System Qty:</Text>
-                                                                    <Text fontSize="sm">{item.systemQuantityAtCountTime}</Text>
-                                                                </HStack>
-                                                                <HStack justifyContent="space-between">
-                                                                    <Text fontSize="sm" fontWeight="medium">Counted Qty:</Text>
-                                                                    <Box w="100px">
-                                                                        <Input
-                                                                            value={item.countedQuantity === 0 ? '' : item.countedQuantity}
-                                                                            onChange={(e) => handleCountedQuantityChange(item._key!, e.target.value)}
-                                                                            type="number"
-                                                                            step="0.1"
-                                                                            min="0"
-                                                                            isDisabled={isViewMode}
-                                                                            placeholder="0"
-                                                                            width="100px"
-                                                                            size="sm"
-                                                                        />
-                                                                    </Box>
-                                                                </HStack>
-                                                                <HStack justifyContent="space-between">
-                                                                    <Text fontSize="sm" fontWeight="medium">Variance:</Text>
-                                                                    <VStack align="flex-end" spacing={0}>
-                                                                        <Badge
-                                                                            colorScheme={item.variance === 0 ? 'green' : 'red'}
-                                                                        >
-                                                                            {item.variance?.toFixed(2) || 0}
-                                                                        </Badge>
-                                                                        <Text fontSize="xs" color="gray.500">
-                                                                            {item.varianceCost ? `E ${Math.abs(item.varianceCost).toFixed(2)}` : 'E 0.00'}
-                                                                        </Text>
-                                                                    </VStack>
-                                                                </HStack>
-                                                            </VStack>
-                                                        </CardBody>
-                                                    </Card>
-                                                ))
+                                            {filteredItems.length > 0 ? (
+                                                filteredItems.map((item) => {
+                                                    const isHighlighted = searchResults.includes(
+                                                        countedItems.findIndex(i => i._key === item._key)
+                                                    ) && searchResults[currentSearchIndex] === countedItems.findIndex(i => i._key === item._key);
+
+                                                    return (
+                                                        <Card
+                                                            key={item._key}
+                                                            bg={isHighlighted ? 'yellow.100' : cardBg}
+                                                            _dark={{ bg: isHighlighted ? 'yellow.900' : cardBg }}
+                                                            variant="outline"
+                                                            borderColor={borderColor}
+                                                            id={`item-${item._key}`}
+                                                        >
+                                                            <CardBody p={4}>
+                                                                <VStack align="stretch" spacing={2}>
+                                                                    <HStack justifyContent="space-between">
+                                                                        <VStack align="start" spacing={0}>
+                                                                            <Text fontWeight="bold">{item.stockItem.name}</Text>
+                                                                            <Text fontSize="sm" color="gray.500">{item.stockItem.sku}</Text>
+                                                                        </VStack>
+                                                                        {!isViewMode && (
+                                                                            <IconButton
+                                                                                aria-label="Remove item"
+                                                                                icon={<FiTrash2 />}
+                                                                                size="sm"
+                                                                                variant="ghost"
+                                                                                colorScheme="red"
+                                                                                onClick={() => handleRemoveItem(item._key!)}
+                                                                            />
+                                                                        )}
+                                                                    </HStack>
+                                                                    <Divider />
+                                                                    <HStack justifyContent="space-between" pt={2}>
+                                                                        <Text fontSize="sm" fontWeight="medium">System Qty:</Text>
+                                                                        <Text fontSize="sm">{item.systemQuantityAtCountTime}</Text>
+                                                                    </HStack>
+                                                                    <HStack justifyContent="space-between">
+                                                                        <Text fontSize="sm" fontWeight="medium">Counted Qty:</Text>
+                                                                        <Box w="100px">
+                                                                            <Input
+                                                                                value={item.countedQuantity === 0 ? '' : item.countedQuantity}
+                                                                                onChange={(e) => handleCountedQuantityChange(item._key!, e.target.value)}
+                                                                                type="number"
+                                                                                step="0.1"
+                                                                                min="0"
+                                                                                isDisabled={isViewMode}
+                                                                                placeholder="0"
+                                                                                width="100px"
+                                                                                size="sm"
+                                                                                onKeyDown={(e) => {
+                                                                                    if (e.key === 'Enter' && searchTerm) {
+                                                                                        e.preventDefault();
+                                                                                        highlightNextSearchResult();
+                                                                                    }
+                                                                                }}
+                                                                                autoFocus={isHighlighted}
+                                                                            />
+                                                                        </Box>
+                                                                    </HStack>
+                                                                    <HStack justifyContent="space-between">
+                                                                        <Text fontSize="sm" fontWeight="medium">Variance:</Text>
+                                                                        <VStack align="flex-end" spacing={0}>
+                                                                            <Badge
+                                                                                colorScheme={item.variance === 0 ? 'green' : 'red'}
+                                                                            >
+                                                                                {item.variance?.toFixed(2) || 0}
+                                                                            </Badge>
+                                                                            <Text fontSize="xs" color="gray.500">
+                                                                                {item.varianceCost ? `E ${Math.abs(item.varianceCost).toFixed(2)}` : 'E 0.00'}
+                                                                            </Text>
+                                                                        </VStack>
+                                                                    </HStack>
+                                                                </VStack>
+                                                            </CardBody>
+                                                        </Card>
+                                                    );
+                                                })
                                             ) : (
-                                                <Text textAlign="center" color="neutral.light.text-secondary" py={4}>No items added yet.</Text>
+                                                <Text textAlign="center" color="neutral.light.text-secondary" py={4}>
+                                                    {searchTerm ? `No items found for "${searchTerm}"` : 'No items added yet.'}
+                                                </Text>
                                             )}
                                         </VStack>
                                     </CardBody>
