@@ -60,6 +60,7 @@ const SidebarContent = ({ onItemClick }: { onItemClick?: () => void }) => {
     // Theme-aware colors
     const sidebarBg = useColorModeValue(theme.colors.neutral.light['bg-secondary'], theme.colors.neutral.dark['bg-secondary']);
     const activeBg = useColorModeValue(theme.colors.brand['100'], theme.colors.brand['500']);
+    const hBg = useColorModeValue(theme.colors.brand['100'], theme.colors.brand['100']);
     const borderColor = useColorModeValue(theme.colors.neutral.light['border-color'], theme.colors.neutral.dark['border-color']);
     const iconColor = useColorModeValue('neutral.light.text-primary', 'neutral.dark.text-primary');
     const textSecondaryColor = useColorModeValue('neutral.light.text-secondary', 'neutral.dark.text-secondary');
@@ -241,9 +242,8 @@ const SidebarContent = ({ onItemClick }: { onItemClick?: () => void }) => {
                                             leftIcon={<Icon as={item.icon} boxSize={5} />}
                                             color={pathname === item.href ? theme.colors.brand['500'] : iconColor}
                                             border="1px"
-
                                             borderColor={pathname === item.href ? activeBg : 'transparent'}
-                                            _hover={{ bg: activeBg }}
+                                            _hover={{ bg: hBg }}
                                             onClick={() => handleItemClick(item.href)}
                                         >
                                             {item.label}
@@ -281,7 +281,7 @@ const SidebarContent = ({ onItemClick }: { onItemClick?: () => void }) => {
                         variant="ghost"
                         justifyContent="flex-start"
                         leftIcon={<Icon as={FiUser} />}
-                        _hover={{ bg: activeBg }}
+                        _hover={{ bg: hBg }}
 
                         onClick={() => handleItemClick("/profile")}
                     >
