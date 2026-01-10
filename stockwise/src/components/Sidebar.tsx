@@ -240,7 +240,9 @@ const SidebarContent = ({ onItemClick }: { onItemClick?: () => void }) => {
                                             w="full"
                                             leftIcon={<Icon as={item.icon} boxSize={5} />}
                                             color={pathname === item.href ? theme.colors.brand['500'] : iconColor}
-                                            bg={pathname === item.href ? activeBg : 'transparent'}
+                                            border="1px"
+
+                                            borderColor={pathname === item.href ? activeBg : 'transparent'}
                                             _hover={{ bg: activeBg }}
                                             onClick={() => handleItemClick(item.href)}
                                         >
