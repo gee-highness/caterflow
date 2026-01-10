@@ -1092,11 +1092,11 @@ export default function GoodsReceiptModal({
                                                                 borderColor={borderColor}
                                                                 placeholder="0.00"
                                                             />
-                                                            {item.receivedQuantity > 0 && (
+                                                            {/*item.receivedQuantity > 0 && (
                                                                 <Text fontSize="xs" color={secondaryTextColor} mt={1}>
                                                                     Auto: E {((item.stockItem.unitPrice || 0) * item.receivedQuantity).toFixed(2)}
                                                                 </Text>
-                                                            )}
+                                                            )*/}
                                                         </Td>
                                                         <Td isNumeric borderColor={borderColor}>
                                                             <Text fontSize="sm">

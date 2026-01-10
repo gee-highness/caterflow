@@ -56,28 +56,41 @@ export async function GET() {
         const userSiteInfo = await getUserSiteInfo();
         const siteFilter = buildTransactionSiteFilter(userSiteInfo);
 
+        // FIXED QUERY: Properly expand all references including nested ones
         const query = groq`*[_type == "GoodsReceipt" ${siteFilter}] | order(receiptDate desc) {
             _id,
             receiptNumber,
             receiptDate,
             status,
             notes,
+            // FIX: Properly expand purchaseOrder with all necessary fields
             "purchaseOrder": purchaseOrder->{
                 _id,
                 poNumber,
                 status,
                 orderDate,
                 totalAmount,
+                // FIX: Ensure supplier is properly expanded
                 "supplier": supplier->{
                     _id,
-                    name
+                    name,
+                    contactPerson,
+                    phoneNumber,
+                    email
                 },
-                "orderedItems": orderedItems[]{
+                // FIX: Ensure site is properly expanded
+                "site": site->{
+                    _id,
+                    name,
+                    location,
+                    contactNumber
+                },
+                orderedItems[]{
                     _key,
                     orderedQuantity,
                     unitPrice,
                     totalPrice,
-                    "stockItem": stockItem->{
+                    stockItem->{
                         _id,
                         name,
                         sku,
@@ -156,9 +169,6 @@ export async function POST(request: Request) {
         const payload = await request.json();
         const { _id, ...createData } = payload;
 
-        // Remove the site permission check entirely
-        // Users can now create goods receipts for any site
-
         const newDoc = {
             ...createData,
             _type: 'GoodsReceipt',
@@ -170,7 +180,7 @@ export async function POST(request: Request) {
 
         const result = await writeClient.create(newDoc);
 
-        // ✅ FIX: Update stock if receipt is created as 'completed'
+        // ✅ FIX: Update stock if receipt is created as 'Completed'
         if (result.status === 'Completed') {
             console.log('📦 Updating stock for newly created completed goods receipt:', result.receiptNumber);
             await updateStockForTransaction('procurement', result._id);

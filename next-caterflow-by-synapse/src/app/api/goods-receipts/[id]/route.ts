@@ -21,7 +21,7 @@ export async function GET(
             );
         }
 
-        // In /api/goods-receipts/[id]/route.ts - Fix the GROQ query
+        // FIXED: Updated query to properly expand supplier and site
         const query = groq`*[_type == "GoodsReceipt" && _id == $id][0] {
     _id,
     _type,
@@ -29,18 +29,26 @@ export async function GET(
     receiptDate,
     status,
     notes,
+    // FIX: Properly expand purchaseOrder with supplier and site
     purchaseOrder->{
         _id,
         poNumber,
         status,
         orderDate,
+        // FIX: Ensure supplier is properly expanded
         supplier->{
             _id,
-            name
+            name,
+            contactPerson,
+            phoneNumber,
+            email
         },
+        // FIX: Ensure site is properly expanded
         site->{
             _id,
-            name
+            name,
+            location,
+            contactNumber
         },
         orderedItems[] {
             _key,

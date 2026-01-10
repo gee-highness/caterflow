@@ -57,6 +57,17 @@ const getStatusColor = (status: string) => {
     }
 };
 
+// Helper function to calculate total amount from received items
+const calculateTotalAmount = (receivedItems: any[]): number => {
+    if (!receivedItems || receivedItems.length === 0) return 0;
+
+    return receivedItems.reduce((total: number, item: any) => {
+        // Calculate item total: either use totalPrice if available, or calculate from unitPrice * receivedQuantity
+        const itemTotal = item.totalPrice || ((item.unitPrice || 0) * (item.receivedQuantity || 0));
+        return total + (itemTotal || 0);
+    }, 0);
+};
+
 export default function GoodsReceiptsPage() {
     const { data: session, status } = useSession();
     const [goodsReceipts, setGoodsReceipts] = useState<GoodsReceipt[]>([]);
@@ -262,7 +273,7 @@ export default function GoodsReceiptsPage() {
             isSortable: true, // Enable sorting for dates
             cell: (row: any) => <Text color={secondaryTextColor}>{new Date(row.receiptDate).toLocaleDateString()}</Text>,
         },
-        {
+/*        {
             accessorKey: 'supplier.name',
             header: 'Supplier',
             isSortable: true, // Enable sorting for supplier names
@@ -271,7 +282,7 @@ export default function GoodsReceiptsPage() {
                 return <Text color={secondaryTextColor}>{supplierName || 'N/A'}</Text>;
             },
         },
-        {
+  */      {
             accessorKey: 'site.name',
             header: 'Site',
             isSortable: true, // Enable sorting for site names
@@ -293,7 +304,11 @@ export default function GoodsReceiptsPage() {
             accessorKey: 'totalAmount',
             header: 'Total Amount',
             isSortable: true, // Enable sorting for amounts
-            cell: (row: any) => <Text color={primaryTextColor}>E {(row.totalAmount || 0).toFixed(2)}</Text>
+            cell: (row: any) => {
+                // Calculate total from received items
+                const totalAmount = calculateTotalAmount(row.receivedItems);
+                return <Text color={primaryTextColor}>E {totalAmount.toFixed(2)}</Text>
+            }
         }
     ];
 
