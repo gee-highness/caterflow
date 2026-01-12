@@ -17,6 +17,7 @@ interface FooterProps {
   appName?: string;
 }
 
+
 export function Footer({ appName = 'StockWise' }: FooterProps) {
   const theme = useTheme();
 
