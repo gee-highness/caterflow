@@ -67,7 +67,7 @@ export async function POST(request: Request) {
 
         // 4. IMPORTANT: Update stock snapshots using the new system
         console.log('🔄 Updating stock snapshots for procurement...');
-        //await updateStockForTransaction('procurement', receiptId);
+        await updateStockForTransaction('procurement', receiptId);
 
         // Update evidence status after transaction
         await updateEvidenceStatus(receiptId, attachmentIds);

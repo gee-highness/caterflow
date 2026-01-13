@@ -222,14 +222,9 @@ export async function PUT(
         // ✅ FIX: Only update stock if status changed TO 'completed'
         // (Not when editing a completed receipt)
         if (isStatusChangeToCompleted) {
-            console.log('📦 Updating stock for status change to completed:', existingReceipt.receiptNumber);
-            await updateStockForTransaction('procurement', id);
+            //  console.log('📦 Updating stock for status change to completed:', existingReceipt.receiptNumber);
+            //await updateStockForTransaction('procurement', id);
         }
-        // ❌ REMOVE: Don't update stock for regular edits of completed receipts
-        // else if (wasCompleted && willBeCompleted) {
-        //   console.log('🔄 Editing completed receipt, updating stock:', existingReceipt.receiptNumber);
-        //   await updateStockForTransaction('procurement', id);
-        // }
 
         await logSanityInteraction(
             'update',

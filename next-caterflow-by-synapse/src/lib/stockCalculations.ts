@@ -1727,6 +1727,25 @@ export async function updateStockForTransaction(
               bin: item.binId
             });
 
+            // In updateStockForTransaction, inside the mutex.runExclusive block:
+
+            console.log(`🔍 DEBUG updateStockForTransaction:`, {
+              transactionType,
+              transactionId,
+              item: {
+                stockItemId: item.stockItemId,
+                binId: item.binId,
+                quantity: item.quantity
+              },
+              currentSnapshot: currentSnapshot ? {
+                quantity: currentSnapshot.quantity,
+                lastUpdated: currentSnapshot.lastUpdated
+              } : 'NO SNAPSHOT',
+              calculatedStockFromTransactions: await calculateStockFromTransactions(item.stockItemId, item.binId, false)
+            });
+
+            // Then the existing logic...
+
             // Validate no negative stock (except for special cases)
             if (newStock < 0) {
               console.warn(`⚠️ Negative stock detected for ${item.stockItemId} in ${item.binId}:`, {
