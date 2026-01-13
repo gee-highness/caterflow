@@ -89,12 +89,8 @@ export async function POST(request: Request) {
             { receiptId }
         );
 
-        if (receiptBeforeUpdate?.status !== 'completed') {
-            console.log('🔄 Updating stock snapshots for procurement...');
-            await updateStockForTransaction('procurement', receiptId);
-        } else {
-            console.log('⚠️ Skipping stock update - receipt already completed');
-        }
+        console.log('🔄 Updating stock snapshots for procurement...');
+        await updateStockForTransaction('procurement', receiptId);
 
         // Update evidence status after transaction
         await updateEvidenceStatus(receiptId, attachmentIds);
