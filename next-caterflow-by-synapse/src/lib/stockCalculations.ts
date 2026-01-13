@@ -466,6 +466,20 @@ const calculateStockFromTransactions = async (
       asOfDate: asOfDateStr
     });
 
+    console.log(`📊 Found ${data.allEvents?.length || 0} events`);
+
+    // Log each goods receipt to check for duplicates
+    data.allEvents?.forEach((event: any, index: number) => {
+      if (event._type === 'GoodsReceipt') {
+        console.log(`📝 Goods Receipt ${index}: ${event._id}`);
+        event.receivedItems?.forEach((item: any) => {
+          if (item.itemId === stockItemId) {
+            console.log(`   Item: ${item.itemId}, Quantity: ${item.quantity}`);
+          }
+        });
+      }
+    });
+
     let stock = new Decimal(0);
     let lastCountDate: Date | null = null;
 
@@ -2671,30 +2685,69 @@ const calculateStockFromTransactionsFixed = async (
   }
 
   try {
-    // Get ALL transactions in proper chronological order
+    // Get ALL transactions in proper chronological order WITH STATUS FILTERING
     const query = groq`{
-      "allEvents": *[_type in ["GoodsReceipt", "DispatchLog", "InternalTransfer", "InventoryCount"] && 
-        ((_type == "GoodsReceipt" && receivingBin._ref == $binId) ||
-         (_type == "DispatchLog" && sourceBin._ref == $binId) ||
-         (_type == "InternalTransfer" && (fromBin._ref == $binId || toBin._ref == $binId)) ||
-         (_type == "InventoryCount" && bin._ref == $binId))
-      ] | order(date asc) {
-        _type,
-        "date": coalesce(receiptDate, dispatchDate, transferDate, countDate),
-        "fromBinId": ^.fromBin._ref,
-        "toBinId": ^.toBin._ref,
+      // Get goods receipts (only completed/processed)
+      "goodsReceipts": *[
+        _type == "GoodsReceipt" && 
+        receivingBin._ref == $binId &&
+        status in ["completed", "processed"]
+      ] | order(receiptDate asc) {
+        _id,
+        receiptDate,
+        receiptNumber,
+        status,
         receivedItems[] {
           "itemId": stockItem._ref,
           "quantity": receivedQuantity
-        },
+        }
+      },
+      
+      // Get dispatches (only completed/processed)
+      "dispatches": *[
+        _type == "DispatchLog" && 
+        sourceBin._ref == $binId &&
+        status in ["completed", "processed"]
+      ] | order(dispatchDate asc) {
+        _id,
+        dispatchDate,
+        dispatchNumber,
+        evidenceStatus,
+        status,
         dispatchedItems[] {
           "itemId": stockItem._ref,
           "quantity": dispatchedQuantity
-        },
+        }
+      },
+      
+      // Get transfers (only completed)
+      "transfers": *[
+        _type == "InternalTransfer" && 
+        status == "completed" &&
+        (fromBin._ref == $binId || toBin._ref == $binId)
+      ] | order(transferDate asc) {
+        _id,
+        transferDate,
+        transferNumber,
+        status,
+        "fromBinId": fromBin._ref,
+        "toBinId": toBin._ref,
         transferredItems[] {
           "itemId": stockItem._ref,
           "quantity": transferredQuantity
-        },
+        }
+      },
+      
+      // Get inventory counts (only completed)
+      "inventoryCounts": *[
+        _type == "InventoryCount" && 
+        bin._ref == $binId &&
+        status == "completed"
+      ] | order(countDate asc) {
+        _id,
+        countDate,
+        countNumber,
+        status,
         countedItems[] {
           "itemId": stockItem._ref,
           "quantity": countedQuantity
@@ -2704,73 +2757,217 @@ const calculateStockFromTransactionsFixed = async (
 
     const data = await client.fetch(query, { binId, stockItemId });
 
-    let stock = new Decimal(0);
-    let lastCountDate: Date | null = null;
+    // Debug: Log what we found
+    if (verbose) {
+      console.log(`📊 Found events:`);
+      console.log(`  Goods receipts: ${data.goodsReceipts?.length || 0}`);
+      console.log(`  Dispatches: ${data.dispatches?.length || 0}`);
+      console.log(`  Transfers: ${data.transfers?.length || 0}`);
+      console.log(`  Inventory counts: ${data.inventoryCounts?.length || 0}`);
 
-    // Process in strict chronological order
-    data.allEvents?.forEach((event: any) => {
-      const eventDate = new Date(event.date);
-
-      // Skip if before last inventory count
-      if (lastCountDate && eventDate < lastCountDate) {
-        return;
-      }
-
-      // Process goods receipts
-      event.receivedItems?.forEach((item: any) => {
-        if (item.itemId === stockItemId) {
-          stock = stock.plus(item.quantity || 0);
+      // Log specific receipts for debugging
+      data.goodsReceipts?.forEach((receipt: any, index: number) => {
+        const item = receipt.receivedItems?.find((i: any) => i.itemId === stockItemId);
+        if (item) {
+          console.log(`  Receipt ${index}: ${receipt.receiptNumber} - ${item.quantity} units (${receipt.status})`);
         }
       });
+    }
 
-      // Process dispatches
-      event.dispatchedItems?.forEach((item: any) => {
-        if (item.itemId === stockItemId) {
-          // Prevent negative stock
-          const dispatchQty = new Decimal(item.quantity || 0);
-          stock = stock.minus(dispatchQty);
-        }
-      });
+    // Combine all events into one timeline
+    const allEvents: Array<{
+      _id: string;
+      type: 'goodsReceipt' | 'dispatch' | 'transferOut' | 'transferIn' | 'inventoryCount';
+      date: Date;
+      documentNumber: string;
+      status: string;
+      itemQuantity: number;
+      fromBinId?: string;
+      toBinId?: string;
+    }> = [];
 
-      // Process transfers
-      event.transferredItems?.forEach((item: any) => {
-        if (item.itemId === stockItemId) {
-          // Transfer OUT from this bin
-          if (event.fromBinId === binId) {
-            const transferQty = new Decimal(item.quantity || 0);
-            stock = stock.minus(transferQty);
-          }
-          // Transfer IN to this bin
-          if (event.toBinId === binId) {
-            stock = stock.plus(item.quantity || 0);
-          }
-        }
-      });
-
-      // Process inventory counts
-      event.countedItems?.forEach((item: any) => {
-        if (item.itemId === stockItemId) {
-          // Count SETS the absolute stock
-          stock = new Decimal(item.quantity || 0);
-          lastCountDate = eventDate;
+    // Add goods receipts
+    data.goodsReceipts?.forEach((receipt: any) => {
+      receipt.receivedItems?.forEach((item: any) => {
+        if (item.itemId === stockItemId && item.quantity > 0) {
+          allEvents.push({
+            _id: receipt._id,
+            type: 'goodsReceipt',
+            date: new Date(receipt.receiptDate),
+            documentNumber: receipt.receiptNumber,
+            status: receipt.status,
+            itemQuantity: item.quantity || 0
+          });
         }
       });
     });
 
+    // Add dispatches
+    data.dispatches?.forEach((dispatch: any) => {
+      dispatch.dispatchedItems?.forEach((item: any) => {
+        if (item.itemId === stockItemId && item.quantity > 0) {
+          allEvents.push({
+            _id: dispatch._id,
+            type: 'dispatch',
+            date: new Date(dispatch.dispatchDate),
+            documentNumber: dispatch.dispatchNumber,
+            status: dispatch.evidenceStatus || dispatch.status,
+            itemQuantity: -(item.quantity || 0) // Negative for outbound
+          });
+        }
+      });
+    });
+
+    // Add transfers
+    data.transfers?.forEach((transfer: any) => {
+      transfer.transferredItems?.forEach((item: any) => {
+        if (item.itemId === stockItemId && item.quantity > 0) {
+          // Transfer OUT from this bin
+          if (transfer.fromBinId === binId) {
+            allEvents.push({
+              _id: transfer._id,
+              type: 'transferOut',
+              date: new Date(transfer.transferDate),
+              documentNumber: transfer.transferNumber,
+              status: transfer.status,
+              itemQuantity: -(item.quantity || 0), // Negative for outbound
+              fromBinId: transfer.fromBinId,
+              toBinId: transfer.toBinId
+            });
+          }
+
+          // Transfer IN to this bin
+          if (transfer.toBinId === binId) {
+            allEvents.push({
+              _id: transfer._id,
+              type: 'transferIn',
+              date: new Date(transfer.transferDate),
+              documentNumber: transfer.transferNumber,
+              status: transfer.status,
+              itemQuantity: item.quantity || 0, // Positive for inbound
+              fromBinId: transfer.fromBinId,
+              toBinId: transfer.toBinId
+            });
+          }
+        }
+      });
+    });
+
+    // Add inventory counts
+    data.inventoryCounts?.forEach((count: any) => {
+      count.countedItems?.forEach((item: any) => {
+        if (item.itemId === stockItemId) {
+          allEvents.push({
+            _id: count._id,
+            type: 'inventoryCount',
+            date: new Date(count.countDate),
+            documentNumber: count.countNumber,
+            status: count.status,
+            itemQuantity: item.quantity || 0
+          });
+        }
+      });
+    });
+
+    // Sort all events by date
+    allEvents.sort((a, b) => a.date.getTime() - b.date.getTime());
+
+    if (verbose && allEvents.length > 0) {
+      console.log(`📅 Timeline of ${allEvents.length} events:`);
+      allEvents.forEach((event, index) => {
+        const dateStr = event.date.toISOString().split('T')[0];
+        console.log(`  ${index + 1}. ${dateStr} - ${event.type} ${event.documentNumber}: ${event.itemQuantity > 0 ? '+' : ''}${event.itemQuantity}`);
+      });
+    }
+
+    let stock = new Decimal(0);
+    let lastCountDate: Date | null = null;
+    let lastCountStock: number = 0;
+
+    // Track processed event IDs to avoid duplicates
+    const processedEventIds = new Set<string>();
+
+    // Process in strict chronological order
+    for (const event of allEvents) {
+      // Skip if we've already processed this event
+      if (processedEventIds.has(event._id)) {
+        if (verbose) {
+          console.log(`⚠️ Skipping duplicate event: ${event.type} ${event.documentNumber} (${event._id})`);
+        }
+        continue;
+      }
+
+      processedEventIds.add(event._id);
+
+      // Skip if before last inventory count (unless it's another count)
+      if (lastCountDate && event.date < lastCountDate && event.type !== 'inventoryCount') {
+        if (verbose) {
+          console.log(`⏭️ Skipping event before last count: ${event.type} ${event.documentNumber} (${event.date.toISOString().split('T')[0]}) < ${lastCountDate.toISOString().split('T')[0]}`);
+        }
+        continue;
+      }
+
+      const stockBefore = stock.toNumber();
+
+      switch (event.type) {
+        case 'goodsReceipt':
+        case 'transferIn':
+          stock = stock.plus(event.itemQuantity);
+          if (verbose) {
+            console.log(`📥 ${event.type} ${event.documentNumber}: +${event.itemQuantity} units (${stockBefore} → ${stock.toNumber()})`);
+          }
+          break;
+
+        case 'dispatch':
+        case 'transferOut':
+          const dispatchQty = new Decimal(Math.abs(event.itemQuantity));
+          if (stock.greaterThanOrEqualTo(dispatchQty)) {
+            stock = stock.minus(dispatchQty);
+          } else {
+            if (verbose) {
+              console.warn(`⚠️ ${event.type} would cause negative stock. Available: ${stock.toNumber()}, ${event.type}: ${dispatchQty.toNumber()}`);
+            }
+            stock = new Decimal(0);
+          }
+
+          if (verbose) {
+            console.log(`📤 ${event.type} ${event.documentNumber}: ${event.itemQuantity} units (${stockBefore} → ${stock.toNumber()})`);
+          }
+          break;
+
+        case 'inventoryCount':
+          // Count SETS the absolute stock
+          stock = new Decimal(event.itemQuantity);
+          lastCountDate = event.date;
+          lastCountStock = event.itemQuantity;
+
+          if (verbose) {
+            console.log(`📋 Inventory Count ${event.documentNumber}: SET to ${event.itemQuantity} units (was ${stockBefore})`);
+          }
+          break;
+      }
+    }
+
     const finalStock = stock.toNumber();
 
     if (verbose) {
-      console.log(`✅ Fixed calculation: ${finalStock}`);
+      console.log(`✅ Fixed calculation result: ${finalStock}`);
       if (lastCountDate !== null && lastCountDate !== undefined) {
         const date: Date = lastCountDate;
 
         // Check if it's a valid date before calling toISOString
         if (!isNaN(date.getTime())) {
-          console.log(`   📅 Last inventory count: ${date.toISOString().split('T')[0]}`);
+          console.log(`   📅 Last inventory count: ${date.toISOString().split('T')[0]} (stock: ${lastCountStock})`);
         } else {
           console.log(`   📅 Last inventory count: Invalid date`);
         }
       }
+
+      // Summary
+      console.log(`📊 Processing Summary:`);
+      console.log(`   Total events: ${allEvents.length}`);
+      console.log(`   Processed events: ${processedEventIds.size}`);
+      console.log(`   Final stock: ${finalStock}`);
     }
 
     return finalStock;

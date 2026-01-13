@@ -204,6 +204,20 @@ export async function POST(request: Request) {
         const payload = await request.json();
         const { _id, ...createData } = payload;
 
+        console.log('goods-receipt/route.ts - 📥 Receiving goods receipt creation with payload:', {
+            status: payload.status,
+            receiptNumber: payload.receiptNumber,
+            hasStatus: 'status' in payload
+        });
+
+        console.log('📝 Creating with data:', {
+            statusInCreateData: createData.status,
+            allKeys: Object.keys(createData)
+        });
+
+        console.log("id", { _id });
+        console.log('data', { createData });
+
         const newDoc = {
             ...createData,
             _type: 'GoodsReceipt',

@@ -367,6 +367,10 @@ export default function GoodsReceiptModal({
     };
 
     const saveReceipt = async (status: string = 'draft'): Promise<any> => {
+
+        console.log(`💾 saveReceipt called with status: ${status}`);
+        console.log('📦 Payload status will be:', status);
+
         setIsSaving(true);
         if (!formData.purchaseOrder?._id || !formData.receivingBin?._id) {
             toast({

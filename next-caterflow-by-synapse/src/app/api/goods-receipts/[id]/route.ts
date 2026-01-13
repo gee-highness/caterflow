@@ -173,6 +173,20 @@ export async function PUT(
 
         const { id } = await params;
 
+
+        const payload = await request.json();
+        console.log('[id]/route.ts - 📥 Receiving goods receipt creation with payload:', {
+            status: payload.status,
+            receiptNumber: payload.receiptNumber,
+            hasStatus: 'status' in payload
+        });
+
+        const { rec_id, ...createData } = payload;
+        console.log('📝 Creating with data:', {
+            statusInCreateData: createData.status,
+            allKeys: Object.keys(createData)
+        });
+
         if (!id) {
             return NextResponse.json(
                 { error: 'Goods receipt ID is required' },
