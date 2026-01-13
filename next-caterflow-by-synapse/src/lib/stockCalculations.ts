@@ -1145,47 +1145,53 @@ export const calculateBulkStock = async (
     onProgress?.({ stage: 'Calculating missing data...', percentage: 50 });
 
     // Calculate missing snapshots in BULK
+    // Create zero snapshots for ALL missing combinations first
     if (itemsWithoutSnapshots.length > 0) {
-      console.log(`📊 ${itemsWithoutSnapshots.length} items need calculation`);
+      console.log(`📊 Creating ${itemsWithoutSnapshots.length} zero stock snapshots...`);
 
-      // Group by bin to calculate more efficiently
-      const itemsByBin: { [binId: string]: string[] } = {};
-      itemsWithoutSnapshots.forEach(({ itemId, binId }) => {
-        if (!itemsByBin[binId]) itemsByBin[binId] = [];
-        itemsByBin[binId].push(itemId);
-      });
+      const now = new Date().toISOString();
+      const batchSize = 50;
 
-      // Calculate in parallel for each bin with progress
-      const binPromises = Object.entries(itemsByBin).map(async ([binId, itemIds], index) => {
-        const binProgress = (percentage: number) => {
-          const base = 50;
-          const range = 40;
-          const binPercentage = base + ((percentage / 100) * range * (index + 1) / Object.keys(itemsByBin).length);
-          onProgress?.({
-            stage: `Calculating bin ${binId}...`,
-            percentage: Math.min(90, binPercentage)
+      for (let i = 0; i < itemsWithoutSnapshots.length; i += batchSize) {
+        const batch = itemsWithoutSnapshots.slice(i, i + batchSize);
+
+        const transaction = writeClient.transaction();
+
+        batch.forEach(({ itemId, binId }) => {
+          // Create zero stock snapshot
+          transaction.create({
+            _type: 'stockSnapshot',
+            stockItem: { _type: 'reference', _ref: itemId },
+            bin: { _type: 'reference', _ref: binId },
+            quantity: 0,
+            lastUpdated: now,
+            transactionType: 'auto_init',
+            transactionId: null,
+            createdAt: now
           });
-        };
 
-        const binTimerKey = `🧮 Calculating bin ${binId}`;
-        if (!calculationManager.hasActiveTimer(binTimerKey)) {
-          calculationManager.startTimer(binTimerKey);
+          // Set result to 0
+          results[`${itemId}-${binId}`] = 0;
+        });
+
+        try {
+          await transaction.commit();
+          console.log(`✅ Created batch ${Math.floor(i / batchSize) + 1}`);
+        } catch (error) {
+          console.error(`❌ Failed to create batch:`, error);
         }
 
-        const binResults = await calculateStockForBin(binId, itemIds, binProgress);
+        // Update progress
+        if (onProgress) {
+          const percentage = 50 + Math.min(40, Math.round((i / itemsWithoutSnapshots.length) * 40));
+          onProgress({ stage: `Creating snapshots...`, percentage });
+        }
+      }
 
-        calculationManager.endTimer(binTimerKey);
-        return binResults;
-      });
+      console.log(`✅ Created ${itemsWithoutSnapshots.length} zero stock snapshots`);
 
-      const allBinResults = await Promise.all(binPromises);
-
-      // Merge results
-      allBinResults.forEach(binResult => {
-        Object.assign(results, binResult);
-      });
-
-      console.log(`✅ Calculated ${itemsWithoutSnapshots.length} missing snapshots`);
+      // Clear the itemsWithoutSnapshots array since we just created them
+      itemsWithoutSnapshots.length = 0;
     }
 
     onProgress?.({ stage: 'Finalizing results...', percentage: 95 });
