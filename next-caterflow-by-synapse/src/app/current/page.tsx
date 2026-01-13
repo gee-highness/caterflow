@@ -438,9 +438,9 @@ export default function CurrentStockPage() {
         }
         // Set default site for admins/auditors only if no site is selected and sites are available
         if ((user?.role === 'admin' || user?.role === 'auditor' || user?.role === 'procurer') && sites.length > 0 && !selectedSiteId) {
-            setSelectedSiteId(sites[0]._id);
+            // setSelectedSiteId(sites[0]._id);
         }
-    }, [isAuthReady, isAuthenticated, sites, user, selectedSiteId]);
+    }, [isAuthReady, isAuthenticated, sites, user]);
 
     // Calculate stock when site selection changes
     useEffect(() => {
