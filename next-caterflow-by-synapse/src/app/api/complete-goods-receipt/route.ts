@@ -7,21 +7,7 @@ import { updateStockForTransaction } from '@/lib/stockCalculations';
 export async function POST(request: Request) {
     try {
         const { receiptId, poId, attachmentIds } = await request.json();
-
-
-        const payload = await request.json();
-        console.log('complete-goods-receipt/route.ts - 📥 Receiving goods receipt creation with payload:', {
-            status: payload.status,
-            receiptNumber: payload.receiptNumber,
-            hasStatus: 'status' in payload
-        });
-
-        const { _id, ...createData } = payload;
-        console.log('📝 Creating with data:', {
-            statusInCreateData: createData.status,
-            allKeys: Object.keys(createData)
-        });
-
+        g
         console.log("id", { receiptId });
         console.log('poid', { poId });
         console.log('atta', attachmentIds);

@@ -174,18 +174,6 @@ export async function PUT(
         const { id } = await params;
 
 
-        const payload = await request.json();
-        console.log('[id]/route.ts - 📥 Receiving goods receipt creation with payload:', {
-            status: payload.status,
-            receiptNumber: payload.receiptNumber,
-            hasStatus: 'status' in payload
-        });
-
-        const { rec_id, ...createData } = payload;
-        console.log('📝 Creating with data:', {
-            statusInCreateData: createData.status,
-            allKeys: Object.keys(createData)
-        });
 
         if (!id) {
             return NextResponse.json(
@@ -195,6 +183,19 @@ export async function PUT(
         }
 
         const updateData = await request.json();
+
+
+        console.log('[id]/route.ts - 📥 Receiving goods receipt creation with payload:', {
+            status: updateData.status,
+            receiptNumber: updateData.receiptNumber,
+            hasStatus: 'status' in updateData
+        });
+
+        const { rec_id, ...createData } = updateData;
+        console.log('📝 Creating with data:', {
+            statusInCreateData: createData.status,
+            allKeys: Object.keys(createData)
+        });
 
         // Remove _id from update data to avoid conflicts
         const { _id, ...dataToUpdate } = updateData;
