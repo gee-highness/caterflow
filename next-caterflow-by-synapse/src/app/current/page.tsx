@@ -200,6 +200,7 @@ export default function CurrentStockPage() {
                 });
 
             // Process results and create a separate entry for each item-bin combination with stock
+            // Process results and create a separate entry for each item-bin combination
             setProgress({ stage: 'Processing results...', percentage: 80 });
             console.log('📊 Processing results and creating individual entries for each bin...');
             const itemsWithCalculatedStock: CurrentStockItem[] = [];
@@ -210,42 +211,41 @@ export default function CurrentStockPage() {
                 siteMap.set(site._id, site.name);
             });
 
-            // For EACH item and EACH bin combination
+            // For EACH item and EACH bin combination - ALWAYS create entry
             stockItems.forEach(item => {
                 bins.forEach((bin: any) => {
                     const key = `${item._id}-${bin._id}`;
-                    const quantity = stockResults[key] || 0;
+                    const quantity = stockResults[key] || 0;  // Default to 0 if undefined
 
-                    // *** CRITICAL CHANGE: Only create entry if there's ACTUAL stock ***
-                    if (quantity >= 0) {
-                        let stockStatus: 'in-stock' | 'low-stock' | 'out-of-stock' = 'in-stock';
-                        if (quantity <= item.minimumStockLevel) {
-                            stockStatus = 'low-stock';
-                        }
-
-                        // Get site name - handle both object and reference formats
-                        let siteName = "Unknown site";
-                        if (bin.site) {
-                            if (typeof bin.site === 'object' && bin.site.name) {
-                                siteName = bin.site.name;
-                            } else if (typeof bin.site === 'string') {
-                                siteName = siteMap.get(bin.site) || "Unknown site";
-                            }
-                        }
-
-                        // Create a UNIQUE ID for this item-bin combination
-                        const uniqueId = `${item._id}-${bin._id}`;
-
-                        itemsWithCalculatedStock.push({
-                            ...item,
-                            _id: uniqueId, // ← CRITICAL: Override with unique ID
-                            currentStock: quantity,
-                            stockStatus,
-                            siteName,
-                            binName: bin.name,
-                            lastUpdated: new Date().toISOString(),
-                        });
+                    let stockStatus: 'in-stock' | 'low-stock' | 'out-of-stock' = 'in-stock';
+                    if (quantity <= 0) {
+                        stockStatus = 'out-of-stock';
+                    } else if (quantity <= item.minimumStockLevel) {
+                        stockStatus = 'low-stock';
                     }
+
+                    // Get site name - handle both object and reference formats
+                    let siteName = "Unknown site";
+                    if (bin.site) {
+                        if (typeof bin.site === 'object' && bin.site.name) {
+                            siteName = bin.site.name;
+                        } else if (typeof bin.site === 'string') {
+                            siteName = siteMap.get(bin.site) || "Unknown site";
+                        }
+                    }
+
+                    // Create a UNIQUE ID for this item-bin combination
+                    const uniqueId = `${item._id}-${bin._id}`;
+
+                    itemsWithCalculatedStock.push({
+                        ...item,
+                        _id: uniqueId, // ← CRITICAL: Override with unique ID
+                        currentStock: quantity,
+                        stockStatus,
+                        siteName,
+                        binName: bin.name,
+                        lastUpdated: new Date().toISOString(),
+                    });
                 });
             });
 
