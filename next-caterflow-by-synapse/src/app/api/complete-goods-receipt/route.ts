@@ -7,7 +7,7 @@ import { updateStockForTransaction } from '@/lib/stockCalculations';
 export async function POST(request: Request) {
     try {
         const { receiptId, poId, attachmentIds } = await request.json();
-        g
+
         console.log("id", { receiptId });
         console.log('poid', { poId });
         console.log('atta', attachmentIds);
