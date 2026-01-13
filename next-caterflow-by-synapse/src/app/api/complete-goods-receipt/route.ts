@@ -1,6 +1,6 @@
 // app/api/complete-goods-receipt/route.ts
 import { NextResponse } from 'next/server';
-import { writeClient } from '@/lib/sanity';
+import { client, writeClient } from '@/lib/sanity';
 import { groq } from 'next-sanity';
 import { updateStockForTransaction } from '@/lib/stockCalculations';
 
@@ -65,9 +65,18 @@ export async function POST(request: Request) {
         // Execute the transaction
         const result = await transaction.commit();
 
-        // 4. IMPORTANT: Update stock snapshots using the new system
-        console.log('🔄 Updating stock snapshots for procurement...');
-        await updateStockForTransaction('procurement', receiptId);
+        // Only update stock if receipt is being completed (not already completed)
+        const receiptBeforeUpdate = await client.fetch(
+            groq`*[_type == "GoodsReceipt" && _id == $receiptId][0] { status }`,
+            { receiptId }
+        );
+
+        if (receiptBeforeUpdate?.status !== 'completed') {
+            console.log('🔄 Updating stock snapshots for procurement...');
+            await updateStockForTransaction('procurement', receiptId);
+        } else {
+            console.log('⚠️ Skipping stock update - receipt already completed');
+        }
 
         // Update evidence status after transaction
         await updateEvidenceStatus(receiptId, attachmentIds);
