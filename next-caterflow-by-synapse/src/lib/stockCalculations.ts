@@ -1716,6 +1716,31 @@ export async function updateStockForTransaction(
             // Inventory counts set the absolute quantity
             newStock = item.quantity;
             console.log(`📋 Inventory count sets stock to ${newStock} for ${item.stockItemId}-${item.binId}`);
+          } else if (transactionType === 'procurement') {
+            // ========== FIX FOR PROCUREMENT DOUBLE COUNTING ==========
+            // Problem: When no snapshot exists OR snapshot is 0,
+            // calculateStockFromTransactions might already include the new receipt
+            // causing double counting when we do: currentStock + item.quantity
+
+            const calculatedStock = await calculateStockFromTransactions(item.stockItemId, item.binId, false);
+
+            // Check if calculated stock is approximately equal to (snapshot + received)
+            // This would indicate the new receipt is already included
+            const expectedIfReceiptIncluded = currentStock + item.quantity;
+            const difference = Math.abs(calculatedStock - expectedIfReceiptIncluded);
+
+            if (difference < 0.01 && calculatedStock > 0) {
+              // Calculated stock already includes the new receipt
+              // Use the calculated value directly to avoid double counting
+              newStock = calculatedStock;
+              console.log(`📊 Procurement FIX: Using calculated stock ${calculatedStock} (includes new receipt)`);
+            } else {
+              // Calculated stock doesn't match expected - receipt not included yet
+              // Use snapshot + received quantity
+              newStock = currentStock + item.quantity;
+              console.log(`📊 Procurement: Adding ${item.quantity} to snapshot ${currentStock} = ${newStock}`);
+            }
+            // ========== END FIX ==========
           } else {
             // Other transactions adjust the quantity
             newStock = currentStock + item.quantity;
