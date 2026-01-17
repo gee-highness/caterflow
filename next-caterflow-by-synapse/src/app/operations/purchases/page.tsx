@@ -30,8 +30,8 @@ import {
 import { FiPlus, FiSearch, FiEye, FiFilter, FiEdit, FiXCircle, FiCheckCircle } from 'react-icons/fi'; // Added missing icons
 import DataTable from '@/app/actions/DataTable';
 import { useSession } from 'next-auth/react';
-import CreatePurchaseOrderModal from '@/app/actions/CreatePurchaseOrderModal';
-import PurchaseOrderModal, { PurchaseOrderDetails } from '@/app/actions/PurchaseOrderModal';
+import CreatePurchaseOrderModal from '@/components/CreatePurchaseOrderModal';
+import PurchaseOrderModal, { PurchaseOrderDetails } from '@/components/PurchaseOrderModal';
 import { PendingAction } from '@/app/actions/types';
 import { StockItem, Category, Site } from '@/lib/sanityTypes';
 import { FaCheck } from 'react-icons/fa';

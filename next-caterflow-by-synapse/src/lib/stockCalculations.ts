@@ -1146,52 +1146,45 @@ export const calculateBulkStock = async (
 
     // Calculate missing snapshots in BULK
     // Create zero snapshots for ALL missing combinations first
+    // In calculateBulkStock function, replace the section that creates zero snapshots:
+
     if (itemsWithoutSnapshots.length > 0) {
       console.log(`📊 Creating ${itemsWithoutSnapshots.length} zero stock snapshots...`);
 
       const now = new Date().toISOString();
       const batchSize = 50;
 
-      for (let i = 0; i < itemsWithoutSnapshots.length; i += batchSize) {
-        const batch = itemsWithoutSnapshots.slice(i, i + batchSize);
-
-        const transaction = writeClient.transaction();
-
-        batch.forEach(({ itemId, binId }) => {
-          // Create zero stock snapshot
-          transaction.create({
-            _type: 'stockSnapshot',
-            stockItem: { _type: 'reference', _ref: itemId },
-            bin: { _type: 'reference', _ref: binId },
-            quantity: 0,
-            lastUpdated: now,
-            transactionType: 'auto_init',
-            transactionId: null,
-            createdAt: now
-          });
-
-          // Set result to 0
-          results[`${itemId}-${binId}`] = 0;
+      // Instead of directly using writeClient, call the API
+      try {
+        const response = await fetch('/api/stock-snapshots/create-zero-snapshots', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            items: itemsWithoutSnapshots
+          }),
         });
 
-        try {
-          await transaction.commit();
-          console.log(`✅ Created batch ${Math.floor(i / batchSize) + 1}`);
-        } catch (error) {
-          console.error(`❌ Failed to create batch:`, error);
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.error || 'Failed to create zero snapshots');
         }
 
-        // Update progress
-        if (onProgress) {
-          const percentage = 50 + Math.min(40, Math.round((i / itemsWithoutSnapshots.length) * 40));
-          onProgress({ stage: `Creating snapshots...`, percentage });
-        }
+        const result = await response.json();
+        console.log(`✅ ${result.message}`);
+
+      } catch (error) {
+        console.error(`❌ Failed to create zero snapshots:`, error);
+        // Don't throw, just continue with 0 values
       }
 
-      console.log(`✅ Created ${itemsWithoutSnapshots.length} zero stock snapshots`);
+      // Set results to 0 for all items without snapshots
+      itemsWithoutSnapshots.forEach(({ itemId, binId }) => {
+        results[`${itemId}-${binId}`] = 0;
+      });
 
-      // Clear the itemsWithoutSnapshots array since we just created them
-      itemsWithoutSnapshots.length = 0;
+      console.log(`✅ Created ${itemsWithoutSnapshots.length} zero stock snapshots`);
     }
 
     onProgress?.({ stage: 'Finalizing results...', percentage: 95 });
@@ -1591,6 +1584,21 @@ export async function updateStockForTransaction(
           return;
         }
 
+        // Make sure the transfer has status 'completed'
+        if (transaction.status !== 'completed') {
+          console.warn(`⚠️ Transfer ${transactionId} is not completed (status: ${transaction.status}). Stock won't be updated.`);
+          return;
+        }
+
+        // After fetching the transfer data, add this debug log:
+        console.log('🔍 TRANSFER DEBUG:', {
+          transactionId,
+          fromBin: transaction.fromBin,
+          toBin: transaction.toBin,
+          transferredItems: transaction.transferredItems,
+          status: transaction.status
+        });
+
         // Create items for both source and destination bins
         items = [];
         (transaction.transferredItems || []).forEach((item: any) => {
@@ -1640,18 +1648,19 @@ export async function updateStockForTransaction(
         }));
         break;
 
-      case 'procurement':  // ADD THIS CASE FOR GOODS RECEIPTS
+      case 'procurement':
         transaction = await client.fetch(
           groq`*[_type == "GoodsReceipt" && _id == $id][0] {
-            _id,
-            receiptNumber,
-            status,
-            "receivingBin": receivingBin._ref,
-            "receivedItems": receivedItems[]{
-                "stockItemId": stockItem._ref,
-                receivedQuantity
-            }
-          }`,
+              _id,
+              receiptNumber,
+              status,
+              // Get item-level bins, not document-level
+              "receivedItems": receivedItems[]{
+                  "stockItemId": stockItem._ref,
+                  receivedQuantity,
+                  "binId": receivingBin._ref  // ← CRITICAL: Get bin at item level
+              }
+            }`,
           { id: transactionId }
         );
 
@@ -1660,20 +1669,30 @@ export async function updateStockForTransaction(
           return;
         }
 
-        if (!transaction.receivingBin) {
-          console.error(`❌ Goods receipt ${transactionId} has no receiving bin`);
+        if (!transaction.receivedItems || transaction.receivedItems.length === 0) {
+          console.error(`❌ Goods receipt ${transaction.receiptNumber} has no received items`);
           return;
         }
 
+        // Process each item with its own bin
         items = (transaction.receivedItems || []).map((item: any) => ({
           stockItemId: item.stockItemId,
           quantity: item.receivedQuantity || 0,
-          binId: transaction.receivingBin  // Use the receipt-level receiving bin
-        })).filter((item: { stockItemId: any; quantity: number }) =>
-          item.stockItemId && item.quantity > 0
-        );
+          binId: item.binId  // Use item-level binId
+        })).filter((item: { stockItemId: any; quantity: number; binId: any }) => {
+          const isValid = item.stockItemId && item.quantity > 0 && item.binId;
+          if (!isValid) {
+            console.warn('⚠️ Skipping item:', {
+              stockItemId: item.stockItemId,
+              quantity: item.quantity,
+              binId: item.binId,
+              receiptNumber: transaction?.receiptNumber
+            });
+          }
+          return isValid;
+        });
 
-        console.log(`📋 Processing ${items.length} procurement items for bin ${transaction.receivingBin}`);
+        console.log(`📋 Processing ${items.length} procurement items for receipt ${transaction.receiptNumber}`);
         break;
 
       case 'adjustment':
@@ -2726,16 +2745,15 @@ const calculateStockFromTransactionsFixed = async (
         }
       },
       
-      // Get transfers (only completed)
+      // Get transfers (only completed)          
       "transfers": *[
         _type == "InternalTransfer" && 
-        status == "completed" &&
+        (status == "completed" || _id == $currentTransferId) &&  // ADD THIS LINE
         (fromBin._ref == $binId || toBin._ref == $binId)
       ] | order(transferDate asc) {
-        _id,
+        _type,
+        _id,  // Make sure _id is included
         transferDate,
-        transferNumber,
-        status,
         "fromBinId": fromBin._ref,
         "toBinId": toBin._ref,
         transferredItems[] {

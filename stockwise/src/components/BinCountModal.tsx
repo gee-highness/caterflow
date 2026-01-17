@@ -1254,11 +1254,7 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
                                         </Text>
                                         <Text fontWeight="bold">
                                             Total Variance (Cost): <Badge colorScheme={totalVarianceCost !== 0 ? (totalVarianceCost > 0 ? 'orange' : 'green') : 'gray'}>
-                                                {new Intl.NumberFormat('en-US', {
-                                                    style: 'currency',
-                                                    currency: 'USD',
-                                                }).format(Math.abs(totalVarianceCost))}
-                                                {totalVarianceCost > 0 ? ' (Over)' : totalVarianceCost < 0 ? ' (Under)' : ''}
+                                                E {totalVarianceCost > 0 ? ' (Over)' : totalVarianceCost < 0 ? ' (Under)' : ''}
                                             </Badge>
                                         </Text>
                                     </VStack>

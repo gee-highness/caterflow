@@ -269,13 +269,8 @@ class OptimizedSnapshotCache {
   }>();
   private readonly MAX_SIZE = 1000;
   private readonly TTL = 30000; // 30 seconds
-  private cleanupInterval: NodeJS.Timeout;
 
   constructor() {
-    // Start periodic cleanup
-    this.cleanupInterval = setInterval(() => {
-      this.cleanupExpired();
-    }, 60000); // Clean up every minute
   }
 
   private cleanupExpired(): void {
@@ -429,30 +424,65 @@ const calculateStockFromTransactions = async (
     const dateFilter = asOfDate ? `&& date <= $asOfDate` : '';
     const asOfDateStr = asOfDate?.toISOString();
 
+    // Get ALL relevant transactions
     const query = groq`{
-      "allEvents": *[_type in ["GoodsReceipt", "DispatchLog", "InternalTransfer", "InventoryCount"] && 
-        ((_type == "GoodsReceipt" && receivingBin._ref == $binId && status in ["completed", "processed"]) ||
-         (_type == "DispatchLog" && sourceBin._ref == $binId && status in ["completed", "processed"]) ||
-         (_type == "InternalTransfer" && status == "completed" && (fromBin._ref == $binId || toBin._ref == $binId)) ||
-         (_type == "InventoryCount" && bin._ref == $binId && status == "completed"))
+      "goodsReceipts": *[
+        _type == "GoodsReceipt" && 
+        status in ["completed", "processed"]
         ${dateFilter}
-      ] | order(date asc) {
+      ] | order(receiptDate asc) {
         _type,
-        "date": coalesce(receiptDate, dispatchDate, transferDate, countDate),
+        "date": receiptDate,
+        // For old receipts: document-level bin
+        "documentBinId": receivingBin._ref,
         receivedItems[] {
           "itemId": stockItem._ref,
-          "quantity": receivedQuantity
-        },
+          "quantity": receivedQuantity,
+          // Item-level bin (new) or document bin (old)
+          "binId": coalesce(receivingBin._ref, ^.receivingBin._ref)
+        }
+      },
+      
+      "dispatches": *[
+        _type == "DispatchLog" && 
+        status in ["completed", "processed"]
+        ${dateFilter}
+      ] | order(dispatchDate asc) {
+        _type,
+        "date": dispatchDate,
+        // For old dispatches: document-level bin
+        "documentBinId": sourceBin._ref,
         dispatchedItems[] {
           "itemId": stockItem._ref,
-          "quantity": dispatchedQuantity
-        },
+          "quantity": dispatchedQuantity,
+          // Item-level bin (new) or document bin (old)
+          "binId": coalesce(sourceBin._ref, ^.sourceBin._ref)
+        }
+      },
+      
+      "transfers": *[
+        _type == "InternalTransfer" && 
+        status == "completed"
+        ${dateFilter}
+      ] | order(transferDate asc) {
+        _type,
+        "date": transferDate,
+        "fromBinId": fromBin._ref,
+        "toBinId": toBin._ref,
         transferredItems[] {
           "itemId": stockItem._ref,
-          "quantity": transferredQuantity,
-          "fromBinId": ^.fromBin._ref,
-          "toBinId": ^.toBin._ref
-        },
+          "quantity": transferredQuantity
+        }
+      },
+      
+      "inventoryCounts": *[
+        _type == "InventoryCount" && 
+        status == "completed"
+        ${dateFilter}
+      ] | order(countDate asc) {
+        _type,
+        "date": countDate,
+        "countBinId": bin._ref,
         countedItems[] {
           "itemId": stockItem._ref,
           "quantity": countedQuantity
@@ -469,8 +499,16 @@ const calculateStockFromTransactions = async (
     let stock = new Decimal(0);
     let lastCountDate: Date | null = null;
 
+    // Combine all events and sort chronologically
+    const allEvents = [
+      ...(data.goodsReceipts || []).map((e: any) => ({ ...e, _type: 'GoodsReceipt' })),
+      ...(data.dispatches || []).map((e: any) => ({ ...e, _type: 'DispatchLog' })),
+      ...(data.transfers || []).map((e: any) => ({ ...e, _type: 'InternalTransfer' })),
+      ...(data.inventoryCounts || []).map((e: any) => ({ ...e, _type: 'InventoryCount' }))
+    ].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
     // Process events in chronological order
-    data.allEvents?.forEach((event: any) => {
+    allEvents.forEach((event: any) => {
       const eventDate = event.date ? new Date(event.date) : null;
 
       // Check if we should skip this event
@@ -478,71 +516,76 @@ const calculateStockFromTransactions = async (
         return; // Skip transactions that happened before the last count
       }
 
-      // Process goods receipts
-      event.receivedItems?.forEach((item: any) => {
-        if (item.itemId === stockItemId) {
-          stock = stock.plus(item.quantity || 0);
-        }
-      });
-
-      // Process dispatches - ONLY if status is "completed" or "processed"
-      event.dispatchedItems?.forEach((item: any) => {
-        if (item.itemId === stockItemId) {
-          // Make sure we don't go negative
-          const dispatchQty = new Decimal(item.quantity || 0);
-          if (stock.greaterThanOrEqualTo(dispatchQty)) {
-            stock = stock.minus(dispatchQty);
-          } else {
-            // If dispatch quantity is more than available stock, set to 0
-            // This should be logged as an issue
-            console.warn(`⚠️ Dispatch would cause negative stock for ${stockItemId} in ${binId}. Available: ${stock.toNumber()}, Dispatch: ${dispatchQty.toNumber()}`);
-            stock = new Decimal(0);
-          }
-        }
-      });
-
-      // Process transfers
-      event.transferredItems?.forEach((item: any) => {
-        if (item.itemId === stockItemId) {
-          // Transfer OUT from this bin
-          if (event.fromBinId === binId) {
-            const transferQty = new Decimal(item.quantity || 0);
-            if (stock.greaterThanOrEqualTo(transferQty)) {
-              stock = stock.minus(transferQty);
-            } else {
-              console.warn(`⚠️ Transfer out would cause negative stock for ${stockItemId} in ${binId}. Available: ${stock.toNumber()}, Transfer: ${transferQty.toNumber()}`);
-              stock = new Decimal(0);
+      switch (event._type) {
+        case 'GoodsReceipt':
+          // Process goods receipts - only add if item matches AND bin matches
+          event.receivedItems?.forEach((item: any) => {
+            if (item.itemId === stockItemId && item.binId === binId) {
+              stock = stock.plus(item.quantity || 0);
+              if (verbose) {
+                console.log(`   ➕ Goods receipt: +${item.quantity} (bin: ${item.binId})`);
+              }
             }
-          }
-          // Transfer IN to this bin
-          if (event.toBinId === binId) {
-            stock = stock.plus(item.quantity || 0);
-          }
-        }
-      });
+          });
+          break;
 
-      // Process inventory counts - these SET the stock level
-      event.countedItems?.forEach((item: any) => {
-        if (item.itemId === stockItemId) {
-          stock = new Decimal(item.quantity || 0);
-          if (eventDate) {
-            lastCountDate = eventDate;
+        case 'DispatchLog':
+          // Process dispatches - only subtract if item matches AND bin matches
+          event.dispatchedItems?.forEach((item: any) => {
+            if (item.itemId === stockItemId && item.binId === binId) {
+              stock = stock.minus(item.quantity || 0);
+              if (verbose) {
+                console.log(`   ➖ Dispatch: -${item.quantity} (bin: ${item.binId})`);
+              }
+            }
+          });
+          break;
+
+        case 'InternalTransfer':
+          // Process transfers
+          event.transferredItems?.forEach((item: any) => {
+            if (item.itemId === stockItemId) {
+              // Transfer OUT from this bin
+              if (event.fromBinId === binId) {
+                stock = stock.minus(item.quantity || 0);
+                if (verbose) {
+                  console.log(`   ➖ Transfer out: -${item.quantity}`);
+                }
+              }
+              // Transfer IN to this bin
+              if (event.toBinId === binId) {
+                stock = stock.plus(item.quantity || 0);
+                if (verbose) {
+                  console.log(`   ➕ Transfer in: +${item.quantity}`);
+                }
+              }
+            }
+          });
+          break;
+
+        case 'InventoryCount':
+          // Process inventory counts - these SET the stock level
+          if (event.countBinId === binId) {
+            event.countedItems?.forEach((item: any) => {
+              if (item.itemId === stockItemId) {
+                stock = new Decimal(item.quantity || 0);
+                if (eventDate) {
+                  lastCountDate = eventDate;
+                }
+                if (verbose) {
+                  console.log(`   🔄 Inventory count: set to ${item.quantity}`);
+                }
+              }
+            });
           }
-        }
-      });
+          break;
+      }
     });
 
     const duration = Date.now() - startTime;
 
     if (verbose) {
       console.log(`✅ Calculated stock for ${stockItemId} in ${binId}: ${stock.toNumber()} (${duration}ms)`);
-
-      if (lastCountDate !== null && lastCountDate !== undefined) {
-        const date: Date = lastCountDate;
-        if (!isNaN(date.getTime())) {
-          console.log(`   📅 Last inventory count: ${date.toISOString().split('T')[0]}`);
-        }
-      }
     }
 
     return stock.toNumber();
@@ -1617,6 +1660,61 @@ export async function updateStockForTransaction(
           quantity: item.countedQuantity || 0,
           binId: transaction.bin
         }));
+        break;
+
+      // Find the 'procurement' case in the updateStockForTransaction function (around line 2290)
+      // Replace it with:
+
+      case 'procurement':
+        transaction = await client.fetch(
+          groq`*[_type == "GoodsReceipt" && _id == $id][0] {
+              _id,
+              receiptNumber,
+              status,
+              // For old receipts: fallback to document-level receivingBin
+              "documentBinId": receivingBin._ref,
+              "receivedItems": receivedItems[]{
+                  "stockItemId": stockItem._ref,
+                  receivedQuantity,
+                  // Item-level bin (new), fallback to document bin (old)
+                  "receivingBinId": coalesce(receivingBin._ref, ^.receivingBin._ref)
+              }
+            }`,
+          { id: transactionId }
+        );
+
+        console.log(`📋 Processing procurement transaction:`, {
+          transactionId,
+          receiptNumber: transaction?.receiptNumber,
+          status: transaction?.status,
+          itemCount: transaction?.receivedItems?.length || 0,
+          hasDocumentBin: !!transaction?.documentBinId
+        });
+
+        // Validate and create items array
+        items = (transaction.receivedItems || []).map((item: any) => {
+          // Use item-level bin or fallback to document bin
+          const binId = item.receivingBinId || transaction?.documentBinId;
+
+          return {
+            stockItemId: item.stockItemId,
+            quantity: item.receivedQuantity || 0,
+            binId: binId
+          };
+        }).filter((item: { stockItemId: any; quantity: number; binId: any }) => {
+          const isValid = item.stockItemId && item.quantity > 0 && item.binId;
+          if (!isValid) {
+            console.warn('⚠️ Skipping item without bin or quantity:', {
+              stockItemId: item.stockItemId,
+              quantity: item.quantity,
+              binId: item.binId,
+              receiptNumber: transaction?.receiptNumber
+            });
+          }
+          return isValid;
+        });
+
+        console.log(`📦 Valid items for stock update: ${items.length} out of ${transaction?.receivedItems?.length || 0}`);
         break;
 
       default:

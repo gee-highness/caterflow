@@ -12,7 +12,7 @@ export const OptimisticLoading = ({ message = "Saving changes..." }: OptimisticL
             top="50%"
             left="50%"
             transform="translate(-50%, -50%)"
-            bg="rgba(255, 255, 255, 0.9)"
+            bg="rgba(255, 255, 255, 0.1)"
             p={4}
             borderRadius="md"
             boxShadow="lg"

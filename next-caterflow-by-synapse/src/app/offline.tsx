@@ -15,7 +15,7 @@ export default function Offline() {
       textAlign="center"
     >
       <Box
-        bg="white"
+        bg='transparent'
         p={3}
         borderRadius="xl"
         boxShadow="md"

@@ -25,9 +25,9 @@ import {
 } from '@chakra-ui/react';
 import { useSession } from 'next-auth/react'
 import { FiPackage, FiEdit, FiEye, FiCheckCircle, FiTruck, FiClipboard, FiRepeat } from 'react-icons/fi';
-import PurchaseOrderModal, { PurchaseOrderDetails } from './PurchaseOrderModal';
+import PurchaseOrderModal, { PurchaseOrderDetails } from '../../components/PurchaseOrderModal';
 import DataTable from './DataTable';
-import GoodsReceiptModal from '@/app/actions/GoodsReceiptModal';
+import GoodsReceiptModal from '@/components/GoodsReceiptModal';
 import TransferModal from '@/components/TransferModal';
 import BinCountModal from '@/components/BinCountModal';
 import DispatchModal from '@/components/DispatchModal';

@@ -50,7 +50,7 @@ import { useSession } from 'next-auth/react'
 import { FiPlusCircle, FiArrowLeft, FiArrowRight, FiSearch, FiRefreshCw, FiFilter, FiDownload, FiAlertTriangle, FiInfo } from 'react-icons/fi';
 import { MdOutlineLowPriority } from 'react-icons/md';
 import DataTable, { Column } from '@/components/DataTable';
-import CreatePurchaseOrderModal from '@/app/actions/CreatePurchaseOrderModal';
+import CreatePurchaseOrderModal from '@/components/CreatePurchaseOrderModal';
 import { Site, Supplier, StockItem } from '@/lib/sanityTypes';
 import { calculateBulkStock } from '@/lib/stockCalculations';
 

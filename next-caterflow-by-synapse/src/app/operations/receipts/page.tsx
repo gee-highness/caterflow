@@ -29,7 +29,7 @@ import {
 import { FiSearch, FiEye, FiFilter, FiCheckCircle, FiPlus, FiPackage } from 'react-icons/fi';
 import DataTable from '@/app/actions/DataTable';
 import { useSession } from 'next-auth/react';
-import GoodsReceiptModal from '@/app/actions/GoodsReceiptModal';
+import GoodsReceiptModal from '@/components/GoodsReceiptModal';
 import { GoodsReceipt, Reference } from '@/lib/sanityTypes';
 import { v4 as uuidv4 } from 'uuid';
 

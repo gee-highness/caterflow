@@ -190,6 +190,15 @@ export interface ReceivedItem {
     batchNumber?: string;
     expiryDate?: string;
     condition: 'good' | 'damaged' | 'short-shipped' | 'over-shipped';
+    receivingBin?: {
+        _id: string;
+        name: string;
+        binType: string;
+        site?: {
+            _id: string;
+            name: string;
+        };
+    };
 }
 
 // schemas/sanityTypes.ts

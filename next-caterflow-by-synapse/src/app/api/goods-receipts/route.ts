@@ -7,7 +7,6 @@ import { v4 as uuidv4 } from 'uuid';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { getUserSiteInfo, buildTransactionSiteFilter } from '@/lib/siteFiltering';
-import { updateStockForTransaction } from '@/lib/stockCalculations';
 
 const getNextReceiptNumber = async (): Promise<string> => {
     try {
@@ -67,6 +66,17 @@ const extractSupplierNames = (orderedItems: any[]): string => {
     return `${uniqueSupplierNames.slice(0, 2).join(', ')} +${uniqueSupplierNames.length - 2} more`;
 };
 
+// Helper function to resolve references
+const resolveRef = (val: any): string | null => {
+    if (!val && val !== 0) return null;
+    if (typeof val === 'string') return val;
+    if (typeof val === 'object') {
+        if (typeof val._ref === 'string') return val._ref;
+        if (typeof val._id === 'string') return val._id;
+    }
+    return null;
+};
+
 export async function GET() {
     try {
         const userSiteInfo = await getUserSiteInfo();
@@ -77,7 +87,11 @@ export async function GET() {
             receiptNumber,
             receiptDate,
             status,
+            evidenceStatus,
             notes,
+            createdAt,
+            updatedAt,
+            completedAt,
             "purchaseOrder": purchaseOrder->{
                 _id,
                 poNumber,
@@ -119,7 +133,8 @@ export async function GET() {
                     }
                 }
             },
-            "receivingBin": receivingBin->{
+            // Document-level receivingBin (legacy support)
+            receivingBin->{
                 _id,
                 name,
                 "site": site->{
@@ -135,6 +150,17 @@ export async function GET() {
                 expiryDate,
                 condition,
                 unitPrice,
+                totalPrice,
+                // ✅ CRITICAL: Include receivingBin at item level
+                receivingBin->{
+                    _id,
+                    name,
+                    binType,
+                    "site": site->{
+                        _id,
+                        name
+                    }
+                },
                 "stockItem": stockItem->{
                     _id,
                     name,
@@ -167,12 +193,21 @@ export async function GET() {
 
         const goodsReceipts = await client.fetch(query);
 
-        // Process receipts to add supplier names
+        // Process receipts to add supplier names and ensure item-level bins
         const processedReceipts = goodsReceipts.map((receipt: any) => {
             // Extract supplier names from purchase order's ordered items
             const supplierNames = receipt.purchaseOrder?.orderedItems
                 ? extractSupplierNames(receipt.purchaseOrder.orderedItems)
                 : 'No suppliers';
+
+            // Transform old receipts to include item-level bins if missing
+            if (receipt.receivingBin && !receipt.receivedItems?.every((item: any) => item.receivingBin)) {
+                // This is an old receipt with document-level bin but not at item level
+                receipt.receivedItems = (receipt.receivedItems || []).map((item: any) => ({
+                    ...item,
+                    receivingBin: item.receivingBin || receipt.receivingBin
+                }));
+            }
 
             return {
                 ...receipt,
@@ -207,34 +242,76 @@ export async function POST(request: Request) {
         console.log('goods-receipt/route.ts - 📥 Receiving goods receipt creation with payload:', {
             status: payload.status,
             receiptNumber: payload.receiptNumber,
-            hasStatus: 'status' in payload
+            hasStatus: 'status' in payload,
+            receivedItemsCount: payload.receivedItems?.length || 0
         });
 
-        console.log('📝 Creating with data:', {
-            statusInCreateData: createData.status,
-            allKeys: Object.keys(createData)
+        // ✅ CRITICAL: Process receivedItems to include receivingBin references at item level
+        const processedReceivedItems = (createData.receivedItems || []).map((item: any) => {
+            const processedItem: any = {
+                _key: item._key || uuidv4(),
+                stockItem: {
+                    _type: 'reference',
+                    _ref: resolveRef(item.stockItem) || resolveRef(item.stockItem?._id) || null
+                },
+                orderedQuantity: Number(item.orderedQuantity) || 0,
+                receivedQuantity: Number(item.receivedQuantity) || 0,
+                totalPrice: Number(item.totalPrice) || 0,
+                unitPrice: Number(item.unitPrice) || 0,
+                condition: item.condition || 'good',
+                batchNumber: item.batchNumber || '',
+                expiryDate: item.expiryDate || ''
+            };
+
+            // ✅ ADD RECEIVING BIN AT ITEM LEVEL
+            if (item.receivingBin) {
+                const binRef = resolveRef(item.receivingBin) || resolveRef(item.receivingBin?._id);
+                if (binRef) {
+                    processedItem.receivingBin = {
+                        _type: 'reference',
+                        _ref: binRef
+                    };
+                }
+            }
+
+            return processedItem;
         });
 
-        console.log("id", { _id });
-        console.log('data', { createData });
+        console.log('📦 Processed items with bins:', {
+            totalItems: processedReceivedItems.length,
+            itemsWithBins: processedReceivedItems.filter((item: any) => item.receivingBin).length,
+            itemsWithoutBins: processedReceivedItems.filter((item: any) => !item.receivingBin).length
+        });
+
+        // ✅ Remove document-level receivingBin if it exists (we're using item-level now)
+        const { receivingBin, ...dataWithoutDocBin } = createData;
 
         const newDoc = {
-            ...createData,
+            ...dataWithoutDocBin,
+            receivedItems: processedReceivedItems, // ✅ Use processed items with item-level bins
             _type: 'GoodsReceipt',
             receiptNumber: await getNextReceiptNumber(),
             _id: uuidv4(),
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
+            evidenceStatus: 'pending',
         };
+
+        console.log('📄 Final document to create:', {
+            receiptNumber: newDoc.receiptNumber,
+            itemCount: newDoc.receivedItems?.length || 0,
+            itemsWithBins: processedReceivedItems.filter((item: any) => item.receivingBin).length,
+            status: newDoc.status
+        });
 
         const result = await writeClient.create(newDoc);
 
         await logSanityInteraction(
             'create',
-            `Created new goods receipt: ${newDoc.receiptNumber}`,
+            `Created new goods receipt: ${newDoc.receiptNumber} with ${processedReceivedItems.length} items`,
             'GoodsReceipt',
             result._id,
-            'system',
+            session.user.email || 'system',
             true
         );
 

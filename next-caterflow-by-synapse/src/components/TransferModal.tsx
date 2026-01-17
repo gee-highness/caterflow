@@ -503,14 +503,35 @@ export default function TransferModal({ isOpen, onClose, transfer, onSave }: Tra
     };
 
     // Add this function to your TransferModal component
+    // Replace the exportTransferPDF function in TransferModal.tsx
     const exportTransferPDF = () => {
         if (!transfer) return;
+
+        // Extract the data with proper null checks
+        const transferNumber = transfer.transferNumber || 'N/A';
+        const transferDate = transfer.transferDate ? new Date(transfer.transferDate).toLocaleDateString() : 'N/A';
+        const status = transfer.status || 'draft';
+
+        // Handle fromBin data with proper null checks
+        const fromBinName = transfer.fromBin?.name || 'N/A';
+        const fromSiteName = transfer.fromBin?.site?.name || 'N/A';
+
+        // Handle toBin data with proper null checks
+        const toBinName = transfer.toBin?.name || 'N/A';
+        const toSiteName = transfer.toBin?.site?.name || 'N/A';
+
+        // Handle user data
+        const transferredByName = transfer.transferredBy?.name || 'Not specified';
+        const approvedByName = transfer.approvedBy?.name || 'Pending approval';
+
+        // Handle items with proper null checks
+        const items = transfer.transferredItems || [];
 
         const htmlContent = `
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Transfer Document - ${transfer.transferNumber}</title>
+    <title>Transfer Document - ${transferNumber}</title>
     <style>
         body { 
             font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; 
@@ -650,13 +671,13 @@ export default function TransferModal({ isOpen, onClose, transfer, onSave }: Tra
         <div class="header-content">
             <h1>INTERNAL TRANSFER DOCUMENT</h1>
             <p style="font-size: 16px; margin: 5px 0;">
-                Transfer Number: <strong>${transfer.transferNumber}</strong>
-                <span class="status-badge status-${transfer.status}">
-                    ${transfer.status.toUpperCase()}
+                Transfer Number: <strong>${transferNumber}</strong>
+                <span class="status-badge status-${status}">
+                    ${status.toUpperCase()}
                 </span>
             </p>
             <p style="font-size: 14px; margin: 5px 0;">
-                Date: ${new Date(transfer.transferDate).toLocaleDateString()}
+                Date: ${transferDate}
             </p>
         </div>
     </div>
@@ -666,29 +687,21 @@ export default function TransferModal({ isOpen, onClose, transfer, onSave }: Tra
             <div>
                 <div class="info-item">
                     <span class="info-label">From Bin:</span>
-                    <span> ${transfer.fromBin.name}</span>
+                    <span> ${fromBinName}</span>
                 </div>
                 <div class="info-item">
                     <span class="info-label">Site:</span>
-                    <span> ${transfer.fromBin.site.name}</span>
-                </div>
-                <div class="info-item">
-                    <span class="info-label">Transferred By:</span>
-                    <span> ${transfer.transferredBy?.name || 'Not specified'}</span>
+                    <span> ${fromSiteName}</span>
                 </div>
             </div>
             <div>
                 <div class="info-item">
                     <span class="info-label">To Bin:</span>
-                    <span> ${transfer.toBin.name}</span>
+                    <span> ${toBinName}</span>
                 </div>
                 <div class="info-item">
                     <span class="info-label">Site:</span>
-                    <span> ${transfer.toBin.site.name}</span>
-                </div>
-                <div class="info-item">
-                    <span class="info-label">Approved By:</span>
-                    <span> ${transfer.approvedBy?.name || 'Pending approval'}</span>
+                    <span> ${toSiteName}</span>
                 </div>
             </div>
         </div>
@@ -701,28 +714,38 @@ export default function TransferModal({ isOpen, onClose, transfer, onSave }: Tra
         </div>
     ` : ''}
 
-    <table class="table">
-        <thead>
-            <tr>
-                <th>Item Name</th>
-                <th>SKU</th>
-                <th>Quantity</th>
-                <th>Unit</th>
-                <th>Notes</th>
-            </tr>
-        </thead>
-        <tbody>
-            ${transfer.transferredItems.map(item => `
+    ${items.length > 0 ? `
+        <table class="table">
+            <thead>
                 <tr>
-                    <td><strong>${item.stockItem.name}</strong></td>
-                    <td>${item.stockItem.sku || 'N/A'}</td>
-                    <td>${item.transferredQuantity}</td>
-                    <td>${item.stockItem.unitOfMeasure || 'Each'}</td>
-                    <td>${item.notes || '-'}</td>
+                    <th>Item Name</th>
+                    <th>SKU</th>
+                    <th>Quantity</th>
+                    <th>Unit</th>
+                    <th>Notes</th>
                 </tr>
-            `).join('')}
-        </tbody>
-    </table>
+            </thead>
+            <tbody>
+                ${items.map(item => {
+            const itemName = item.stockItem?.name || 'N/A';
+            const itemSku = item.stockItem?.sku || 'N/A';
+            const quantity = item.transferredQuantity || 0;
+            const unit = item.stockItem?.unitOfMeasure || 'Each';
+            const itemNotes = item.notes || '-';
+
+            return `
+                        <tr>
+                            <td><strong>${itemName}</strong></td>
+                            <td>${itemSku}</td>
+                            <td>${quantity}</td>
+                            <td>${unit}</td>
+                            <td>${itemNotes}</td>
+                        </tr>
+                    `;
+        }).join('')}
+            </tbody>
+        </table>
+    ` : '<p style="text-align: center; color: #718096; padding: 20px;">No items in this transfer</p>'}
 
     <div class="signature-section">
         <!-- Sender Signature -->
@@ -789,10 +812,9 @@ export default function TransferModal({ isOpen, onClose, transfer, onSave }: Tra
         </div>
     </div>
 
-    
     <div class="footer">
         <p style="margin: 0 0 8px 0;">Generated on ${new Date().toLocaleDateString()} at ${new Date().toLocaleTimeString()}</p>
-        <p style="margin: 0 0 8px 0;">This is a system-generated purchase order. Please provide your quotation for the requested items.</p>
+        <p style="margin: 0 0 8px 0;">This is a system-generated internal transfer document.</p>
         <div class="caterflow-brand">
             <a href="https://synapse-digital.vercel.app/" target="_blank" style="color: #0067FF; text-decoration: none; cursor: pointer;">
                 Caterflow by Synapse
@@ -811,12 +833,13 @@ export default function TransferModal({ isOpen, onClose, transfer, onSave }: Tra
         // Add status badge styling
         const statusBadge = document.querySelector('.status-badge');
         if (statusBadge) {
-            const status = '${transfer.status}';
+            const status = '${status}';
             const statusClasses = {
                 'completed': 'status-completed',
                 'approved': 'status-approved', 
                 'pending-approval': 'status-pending',
-                'draft': 'status-draft'
+                'draft': 'status-draft',
+                'cancelled': 'status-draft'
             };
             statusBadge.classList.add(statusClasses[status] || 'status-draft');
         }
@@ -828,7 +851,12 @@ export default function TransferModal({ isOpen, onClose, transfer, onSave }: Tra
         if (exportWindow) {
             exportWindow.document.write(htmlContent);
             exportWindow.document.close();
-            exportWindow.document.title = `Transfer - ${transfer.transferNumber}`;
+            exportWindow.document.title = `Transfer - ${transferNumber}`;
+
+            // Optional: Auto-print after a short delay
+            setTimeout(() => {
+                exportWindow.print();
+            }, 500);
         }
     };
 

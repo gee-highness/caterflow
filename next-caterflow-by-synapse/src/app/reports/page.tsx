@@ -2757,7 +2757,7 @@ export default function ComprehensiveReportsPage() {
                 </Flex>
 
                 {/* VAT Rate Display */}
-                <Card bg="blue.50" borderColor="blue.200">
+                <Card bg={bgCard} borderColor="blue.200">
                     <CardBody>
                         <HStack justify="space-between">
                             <HStack>
@@ -3071,7 +3071,7 @@ export default function ComprehensiveReportsPage() {
                                                         </SimpleGrid>
 
                                                         {/* Add calculation explanation with VAT */}
-                                                        <Box mt={4} p={3} borderRadius="md" bg="gray.50">
+                                                        <Box mt={4} p={3} borderRadius="md" border="1px" borderColor={CHART_COLORS.primary[0]} bg={'transparent'}>
                                                             <Text fontSize="sm" fontWeight="medium">Calculation Method (With VAT):</Text>
                                                             <Text fontSize="sm">• Opening Stock: Reconstructed from transaction history</Text>
                                                             <Text fontSize="sm">• Goods Received: Actual receipts in period (SZL {analyticsData?.financial?.periodPurchases?.toLocaleString()})</Text>

@@ -223,6 +223,7 @@ export default function DispatchModal({
     const evidenceSectionBg = useColorModeValue('gray.50', 'gray.800');
     const evidenceCardBg = useColorModeValue('white', 'gray.700');
     const fallbackBg = useColorModeValue('gray.100', 'gray.600');
+    const errorBg = useColorModeValue('red.50', 'red.700');
 
     const existingItemIds = dispatchedItems
         .filter(item => item.stockItem && item.sourceBin?._id === selectedBinForItems?._id)
@@ -1659,7 +1660,7 @@ export default function DispatchModal({
                                                     {Object.entries(itemsByBin).map(([binId, items]) => (
                                                         <TabPanel key={binId} p={0} mt={4}>
                                                             {isLoadingStock && items.length > 0 && (
-                                                                <HStack p={2} bg="blue.50" borderRadius="md" mb={2}>
+                                                                <HStack p={2} bg='transparent' borderRadius="md" mb={2}>
                                                                     <Spinner size="sm" color="blue.500" />
                                                                     <Text fontSize="sm" color="blue.700">Loading stock levels...</Text>
                                                                 </HStack>
@@ -1907,8 +1908,8 @@ export default function DispatchModal({
                                                     onClick={() => dispatch?._id && onToggleEvidence?.(dispatch._id)}
                                                     width="full"
                                                     justifyContent="space-between"
-                                                    bg="gray.50"
-                                                    _hover={{ bg: "gray.100" }}
+                                                    bg='transparent'
+                                                    _hover={{ bg: "gray.500" }}
                                                 >
                                                     <HStack>
                                                         <Text fontWeight="medium">Evidence Photos</Text>
@@ -1920,7 +1921,7 @@ export default function DispatchModal({
                                                 </Button>
 
                                                 {isEvidenceExpanded && (
-                                                    <VStack spacing={4} mt={4} p={4} bg="gray.50" borderRadius="md">
+                                                    <VStack spacing={4} mt={4} p={4} bg='transparent' borderRadius="md">
                                                         <Text fontSize="sm" color={textSecondaryColor} alignSelf="flex-start">
                                                             Proof of dispatch completion
                                                         </Text>
@@ -1935,7 +1936,7 @@ export default function DispatchModal({
                                                                         borderWidth="1px"
                                                                         borderRadius="lg"
                                                                         overflow="hidden"
-                                                                        bg="white"
+                                                                        bg='transparent'
                                                                         boxShadow="sm"
                                                                     >
                                                                         {isImage ? (
@@ -1949,7 +1950,7 @@ export default function DispatchModal({
                                                                         ) : (
                                                                             <Box
                                                                                 height="200px"
-                                                                                bg="gray.100"
+                                                                                bg='transparent'
                                                                                 display="flex"
                                                                                 alignItems="center"
                                                                                 justifyContent="center"
@@ -1985,7 +1986,7 @@ export default function DispatchModal({
 
                                     {/* Stock Validation Warnings */}
                                     {!stockValidation.isValid && stockValidation.overDispatchingItems.length > 0 && (
-                                        <VStack align="stretch" mt={4} p={4} borderRadius="md" borderWidth="1px" borderColor="red.200" bg="red.50">
+                                        <VStack align="stretch" mt={4} p={4} borderRadius="md" borderWidth="1px" borderColor="red.200" bg={errorBg}>
                                             <HStack>
                                                 <Icon as={FiAlertTriangle} color="red.500" boxSize={5} />
                                                 <Heading size="sm" color="red.700">Stock Insufficient</Heading>
@@ -1995,7 +1996,7 @@ export default function DispatchModal({
                                             </Text>
                                             <VStack align="stretch" spacing={2}>
                                                 {stockValidation.overDispatchingItems.map((item, index) => (
-                                                    <Box key={index} p={2} bg="white" borderRadius="md" borderWidth="1px" borderColor="red.100">
+                                                    <Box key={index} p={2} bg='transparent' borderRadius="md" borderWidth="1px" borderColor="red.100">
                                                         <HStack justify="space-between">
                                                             <Text fontWeight="medium" color="red.700">{item.itemName}</Text>
                                                             <Badge colorScheme="red" variant="solid">
@@ -2020,14 +2021,14 @@ export default function DispatchModal({
 
                                     {/* Stock Check Status */}
                                     {isCheckingStock && (
-                                        <HStack p={3} bg="blue.50" borderRadius="md" borderWidth="1px" borderColor="blue.200">
+                                        <HStack p={3} bg='transparent' borderRadius="md" borderWidth="1px" borderColor="blue.200">
                                             <Spinner size="sm" color="blue.500" />
                                             <Text fontSize="sm" color="blue.700">Checking stock availability...</Text>
                                         </HStack>
                                     )}
 
                                     {stockValidation.isValid && stockValidation.lastChecked && !isCheckingStock && dispatchedItems.length > 0 && (
-                                        <HStack p={3} bg="green.50" borderRadius="md" borderWidth="1px" borderColor="green.200">
+                                        <HStack p={3} bg='transparent' borderRadius="md" borderWidth="1px" borderColor="green.200">
                                             <Icon as={FiCheck} color="green.500" boxSize={4} />
                                             <Text fontSize="sm" color="green.700">
                                                 Stock check passed • {stockValidation.overDispatchingItems.length === 0 ? 'All items in stock' : 'Ready to save'}
@@ -2043,16 +2044,27 @@ export default function DispatchModal({
                             <ModalFooter
                                 position="sticky"
                                 bottom="0"
-                                bg="white"
+                                bg={tableBg}
                                 borderTop="1px solid"
                                 borderTopColor="gray.200"
                                 zIndex="sticky"
                                 py={4}
                                 px={4}
+                                flexWrap="wrap"
+                                gap={2}
                             >
-                                <Button variant="outline" mr={3} onClick={onClose} isDisabled={isSaving || loading || isCheckingStock}>
+                                {/* Cancel Button */}
+                                <Button
+                                    variant="outline"
+                                    onClick={onClose}
+                                    isDisabled={isSaving || loading || isCheckingStock}
+                                    size={{ base: "sm", md: "md" }}
+                                    flexShrink={0}
+                                >
                                     Cancel
                                 </Button>
+
+                                {/* Export PDF Button */}
                                 <Button
                                     colorScheme="blue"
                                     variant="outline"
@@ -2061,24 +2073,37 @@ export default function DispatchModal({
                                     isLoading={isExporting}
                                     loadingText="Exporting..."
                                     leftIcon={<FiFileText />}
+                                    size={{ base: "sm", md: "md" }}
+                                    flexShrink={0}
                                 >
-                                    Export PDF
+                                    <Text as="span" display={{ base: "none", sm: "inline" }}>Export PDF</Text>
+                                    <Text as="span" display={{ base: "inline", sm: "none" }}>Export</Text>
                                 </Button>
+
+                                {/* Editable Buttons */}
                                 {isEditable ? (
                                     <>
+                                        {/* Create/Update Button */}
                                         <Button
                                             colorScheme="blue"
                                             type="submit"
                                             isLoading={isSaving || isCheckingStock}
                                             isDisabled={isSubmitDisabled || !stockValidation.isValid || isCheckingStock}
                                             loadingText={isCheckingStock ? "Checking stock..." : (dispatch ? "Updating..." : "Creating...")}
-                                            mr={3}
-                                            ml={3}
                                             title={!stockValidation.isValid ? "Stock insufficient - adjust quantities" : ""}
+                                            size={{ base: "sm", md: "md" }}
+                                            flexShrink={0}
+                                            flex={{ base: 1, sm: "initial" }}
                                         >
-                                            {dispatch ? 'Update Dispatch' : 'Create Dispatch'}
+                                            <Text as="span" display={{ base: "none", sm: "inline" }}>
+                                                {dispatch ? 'Update Dispatch' : 'Create Dispatch'}
+                                            </Text>
+                                            <Text as="span" display={{ base: "inline", sm: "none" }}>
+                                                {dispatch ? 'Update' : 'Create'}
+                                            </Text>
                                         </Button>
 
+                                        {/* Complete Button */}
                                         <Button
                                             colorScheme="green"
                                             onClick={handleCompleteDispatch}
@@ -2086,12 +2111,22 @@ export default function DispatchModal({
                                             isDisabled={!isFullyDispatched || dispatchedItems.length === 0 || isSaving || !stockValidation.isValid || isCheckingStock}
                                             loadingText={isCheckingStock ? "Checking stock..." : (isSaving ? "Saving..." : "Completing...")}
                                             title={!stockValidation.isValid ? "Stock insufficient - adjust quantities" : ""}
+                                            size={{ base: "sm", md: "md" }}
+                                            flexShrink={0}
+                                            flex={{ base: 1, sm: "initial" }}
                                         >
-                                            {isNew ? 'Save & Upload Evidence' : 'Upload Evidence & Complete'}
+                                            <Text as="span" display={{ base: "none", md: "inline" }}>
+                                                {isNew ? 'Save & Upload Evidence' : 'Upload Evidence & Complete'}
+                                            </Text>
+                                            <Text as="span" display={{ base: "inline", md: "none" }}>
+                                                Complete
+                                            </Text>
                                         </Button>
                                     </>
                                 ) : (
-                                    <Text color={textSecondaryColor} fontSize="sm">Dispatch is completed — read-only.</Text>
+                                    <Text color={textSecondaryColor} fontSize="sm" flex="1" textAlign="center">
+                                        Dispatch is completed — read-only.
+                                    </Text>
                                 )}
                             </ModalFooter>
                         </form>

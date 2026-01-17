@@ -55,8 +55,8 @@ import {
 import { FiPlus, FiSearch, FiEye, FiFilter, FiEdit, FiInfo, FiCheck, FiFileText } from 'react-icons/fi';
 import DataTable from '@/app/actions/DataTable';
 import { useSession } from 'next-auth/react';
-import CreatePurchaseOrderModal from '@/app/actions/CreatePurchaseOrderModal';
-import PurchaseOrderModal, { PurchaseOrderDetails } from '@/app/actions/PurchaseOrderModal';
+import CreatePurchaseOrderModal from '@/components/CreatePurchaseOrderModal';
+import PurchaseOrderModal, { PurchaseOrderDetails } from '@/components/PurchaseOrderModal';
 import { PendingAction } from '@/app/actions/types';
 import { StockItem, Category, Site } from '@/lib/sanityTypes';
 

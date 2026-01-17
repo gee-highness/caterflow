@@ -1642,7 +1642,7 @@ export default function EnhancedRequisitionSummaryPage() {
 										bg="white"
 										_dark={{ bg: 'gray.700' }}
 										borderColor={borderColor}
-										_hover={{ borderColor: accentColor }}
+										_hover={{ borderColor: accentColor, bg: hoverColor }}
 										leftIcon={<Icon as={FiCalendar} />}
 									>
 										{startDate && endDate
@@ -2129,7 +2129,7 @@ export default function EnhancedRequisitionSummaryPage() {
 													<Accordion allowMultiple>
 														{siteGroup.itemsByCategory.map((categoryGroup) => (
 															<AccordionItem key={categoryGroup.category} border="1px" borderColor={borderColor} borderRadius="md" mb={3}>
-																<AccordionButton py={3} _hover={{ bg: 'gray.50' }}>
+																<AccordionButton py={3} _hover={{ bg: hoverColor }}>
 																	<HStack flex="1" justify="space-between">
 																		<HStack>
 																			<AccordionIcon />

@@ -1198,8 +1198,8 @@ export default function GoodsReceiptModal({
                                             onClick={() => setIsEvidenceExpanded(!isEvidenceExpanded)}
                                             width="full"
                                             justifyContent="space-between"
-                                            bg="gray.50"
-                                            _hover={{ bg: "gray.100" }}
+                                            bg='transparent'
+                                            _hover={{ bg: "gray.500" }}
                                         >
                                             <HStack>
                                                 <Text fontWeight="medium">Evidence Files & Invoices</Text>
