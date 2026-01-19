@@ -364,6 +364,44 @@ const VAT_CONFIG = {
     }
 };
 
+// Add these helper functions after VAT_CONFIG
+
+// Helper to get site from dispatch (compatibility layer)
+const getDispatchSite = (dispatch: any): any => {
+    // Try to get site from first item's bin
+    const firstItemBin = dispatch.dispatchedItems?.[0]?.sourceBin;
+    if (firstItemBin?.site) {
+        return firstItemBin.site;
+    }
+
+    // Fallback to old structure
+    return dispatch.sourceSite || dispatch.sourceBin?.site || { name: 'Unknown Site' };
+};
+
+// Helper to get bin from goods receipt (compatibility layer)
+const getGoodsReceiptBin = (receipt: any): any => {
+    // Try to get bin from first item
+    const firstItemBin = receipt.receivedItems?.[0]?.receivingBin;
+    if (firstItemBin) {
+        return firstItemBin;
+    }
+
+    // Fallback to old structure
+    return receipt.receivingBin || { name: 'Unknown Bin' };
+};
+
+// Helper to get site from goods receipt (compatibility layer)
+const getGoodsReceiptSite = (receipt: any): any => {
+    // Try to get site from first item's bin
+    const firstItemBin = receipt.receivedItems?.[0]?.receivingBin;
+    if (firstItemBin?.site) {
+        return firstItemBin.site;
+    }
+
+    // Fallback to purchase order site
+    return receipt.receivingBin?.site || receipt.purchaseOrder?.site || { name: 'Unknown Site' };
+};
+
 // ADD THIS HELPER FUNCTION HERE
 const getEmptyAnalyticsData = (): EnhancedAnalyticsData => ({
     summary: {
@@ -693,7 +731,9 @@ export default function ComprehensiveReportsPage() {
             let totalWithVAT = 0;
 
             const itemsWithVAT = po.orderedItems?.map((item: any) => {
-                const isVATApplicable = item.stockItem?.isVATApplicable !== false; // Default to true if not specified
+                // DEFENSIVE: Check if VAT field exists
+                const isVATApplicable = item.stockItem?.isVATApplicable !== false &&
+                    item.stockItem?.isVATApplicable !== undefined;
                 const itemTotal = (item.orderedQuantity || 0) * (item.unitPrice || 0);
                 const { vatAmount, totalWithVAT: itemTotalWithVAT } = VAT_CONFIG.calculateVAT(itemTotal, isVATApplicable);
 
@@ -703,7 +743,8 @@ export default function ComprehensiveReportsPage() {
                 return {
                     ...item,
                     vatAmount,
-                    totalWithVAT: itemTotalWithVAT
+                    totalWithVAT: itemTotalWithVAT,
+                    isVATApplicable // Add this for clarity
                 };
             }) || [];
 
@@ -711,12 +752,14 @@ export default function ComprehensiveReportsPage() {
                 ...po,
                 orderedItems: itemsWithVAT,
                 vatAmount: totalVAT,
-                totalWithVAT: totalWithVAT || po.totalAmount
+                totalWithVAT: totalWithVAT || po.totalAmount,
+                hasVATCalculations: true // Flag to track
             };
         });
     }, []);
 
     // Calculate VAT for goods receipt items
+    // Replace the existing calculateGoodsReceiptVAT function with this:
     const calculateGoodsReceiptVAT = useCallback((goodsReceipts: any[]): any[] => {
         return goodsReceipts.map(gr => {
             let totalVAT = 0;
@@ -747,6 +790,7 @@ export default function ComprehensiveReportsPage() {
     }, []);
 
     // Calculate VAT for dispatch items
+    // Replace the existing calculateDispatchVAT function with this:
     const calculateDispatchVAT = useCallback((dispatches: any[]): any[] => {
         return dispatches.map(dispatch => {
             let totalVAT = 0;
@@ -767,9 +811,12 @@ export default function ComprehensiveReportsPage() {
                 };
             }) || [];
 
-            // Calculate VAT on sales
-            const salesVAT = VAT_CONFIG.calculateVAT(dispatch.totalSales || 0, true).vatAmount;
-            const salesWithVAT = (dispatch.totalSales || 0) + salesVAT;
+            // Calculate VAT on sales - get selling price from dispatchType
+            const sellingPrice = dispatch.dispatchType?.sellingPrice || dispatch.sellingPrice || 0;
+            const peopleFed = dispatch.peopleFed || 0;
+            const totalSales = sellingPrice * peopleFed;
+            const salesVAT = VAT_CONFIG.calculateVAT(totalSales, true).vatAmount;
+            const salesWithVAT = totalSales + salesVAT;
 
             return {
                 ...dispatch,
@@ -777,7 +824,8 @@ export default function ComprehensiveReportsPage() {
                 vatAmount: totalVAT,
                 totalWithVAT: totalWithVAT,
                 salesVAT: salesVAT,
-                salesWithVAT: salesWithVAT
+                salesWithVAT: salesWithVAT,
+                totalSales: totalSales
             };
         });
     }, []);
@@ -920,71 +968,87 @@ export default function ComprehensiveReportsPage() {
     // SIMPLIFIED VERSION: Uses the same endpoint as current stock page
     // SIMPLIFIED opening stock calculation - using current stock as fallback
     // CORRECTED: Use the same calculation as other pages
+    // Replace the existing calculateOpeningStockForDate function with this CORRECTED version:
     const calculateOpeningStockForDate = useCallback(async (
         targetDate: Date,
         currentStockItems: any[],
         allGoodsReceipts: any[],
-        allDispatches: any[],
-        allBinCounts: any[]
+        allDispatches: any[]
     ): Promise<number> => {
         try {
-            console.log('🔍 Calculating opening stock for:', targetDate.toDateString());
-            console.log('📊 Current stock items count:', currentStockItems?.length || 0);
+            console.log('💰 Calculating opening stock for:', targetDate.toISOString().split('T')[0]);
 
-            // Format date for API call
-            const formattedDate = targetDate.toISOString().split('T')[0];
-
-            // Use the SAME calculation as current stock page by calling the low-stock API
-            const response = await fetch(`/api/low-stock/calculate?siteId=all&date=${formattedDate}`);
-
-            if (response.ok) {
-                const data = await response.json();
-                const openingStockValue = data.summary?.totalInventoryValue || 0;
-                console.log('💰 Opening stock from API:', openingStockValue);
-                console.log('📈 API Response summary:', data.summary);
-                console.log('🔍 Debug info from API:', data.debug);
-
-                // If API returns 0, try to calculate manually from current stock
-                if (openingStockValue === 0) {
-                    console.log('⚠️ API returned 0, calculating manually...');
-                    return calculateManualOpeningStock(targetDate, currentStockItems, allGoodsReceipts, allDispatches);
-                }
-
-                return openingStockValue;
-            } else {
-                // Log error details
-                const errorText = await response.text();
-                console.error('❌ API Error:', response.status, errorText);
-            }
-
-            // Fallback: Calculate from current stock items
-            console.log('🔄 Using current stock as fallback');
-            if (!Array.isArray(currentStockItems) || currentStockItems.length === 0) {
-                console.log('⚠️ No current stock items available');
-                return 0;
-            }
-
-            const totalValue = currentStockItems.reduce((sum, item) => {
+            // Get current stock value (as of TODAY)
+            const currentStockValue = currentStockItems.reduce((sum, item) => {
                 const currentStock = item?.currentStock || 0;
                 const unitPrice = item?.unitPrice || 0;
-                const stockValue = currentStock * unitPrice;
-
-                // Debug individual items
-                if (stockValue > 0) {
-                    console.log(`📦 ${item?.name}: ${currentStock} × ${unitPrice} = ${stockValue}`);
-                }
-
-                return sum + stockValue;
+                return sum + (currentStock * unitPrice);
             }, 0);
 
-            console.log('💰 Calculated total value from current stock:', totalValue);
-            return totalValue;
+            console.log('📊 Current stock value:', currentStockValue);
 
+            // Filter transactions BEFORE the target date
+            const receiptsBeforeDate = allGoodsReceipts.filter(gr => {
+                try {
+                    const receiptDate = new Date(gr.receiptDate);
+                    return receiptDate < targetDate;
+                } catch {
+                    return false;
+                }
+            });
+
+            const dispatchesBeforeDate = allDispatches.filter(d => {
+                try {
+                    const dispatchDate = new Date(d.dispatchDate);
+                    return dispatchDate < targetDate;
+                } catch {
+                    return false;
+                }
+            });
+
+            console.log(`📦 Transactions before ${targetDate.toISOString().split('T')[0]}:`);
+            console.log(`  - Receipts: ${receiptsBeforeDate.length}`);
+            console.log(`  - Dispatches: ${dispatchesBeforeDate.length}`);
+
+            // Calculate total receipts value BEFORE target date
+            const receiptsValue = receiptsBeforeDate.reduce((sum, gr) => {
+                return sum + (gr.receivedItems?.reduce((itemSum: number, item: any) => {
+                    const unitPrice = item.unitPrice || item.stockItem?.unitPrice || 0;
+                    const quantity = item.receivedQuantity || 0;
+                    return itemSum + (quantity * unitPrice);
+                }, 0) || 0);
+            }, 0);
+
+            // Calculate total dispatches value BEFORE target date
+            const dispatchesValue = dispatchesBeforeDate.reduce((sum, d) => {
+                return sum + (d.dispatchedItems?.reduce((itemSum: number, item: any) => {
+                    const cost = item.totalCost || (item.dispatchedQuantity || 0) * (item.unitPrice || 0);
+                    return itemSum + cost;
+                }, 0) || 0);
+            }, 0);
+
+            console.log('💰 Transaction values before date:', {
+                receiptsValue,
+                dispatchesValue
+            });
+
+            // CORRECT FORMULA: Opening Stock = Current Stock + Dispatches (out) - Receipts (in)
+            // Because to go back in time: we subtract what came in and add what went out
+            const openingStock = currentStockValue + dispatchesValue - receiptsValue;
+
+            console.log('✅ Opening stock calculation:', {
+                currentStockValue,
+                receiptsValue,
+                dispatchesValue,
+                openingStock
+            });
+
+            return Math.max(0, openingStock); // Don't return negative stock
         } catch (error) {
-            console.error('❌ Error in simplified opening stock:', error);
+            console.error('❌ Error in opening stock:', error);
             return 0;
         }
-    }, [calculateManualOpeningStock]);
+    }, []);
 
 
     // UPDATED processAnalyticsData function with VAT calculations - CORRECTED VERSION
@@ -1117,6 +1181,26 @@ export default function ComprehensiveReportsPage() {
                 grossProfitBeforeVAT,
                 profitPercentage: profitPercentage.toFixed(1) + '%'
             });
+            // In processAnalyticsData function, add validation:
+            console.log('🔍 VALIDATING Financial Calculations:', {
+                dispatchesCount: periodDispatches.length,
+                totalDispatchedItems: periodDispatches.reduce((sum, d) => sum + (d.dispatchedItems?.length || 0), 0),
+                totalDispatchedCost: periodDispatches.reduce((sum, d) => sum + (d.totalCost || 0), 0),
+                totalPeopleFed: periodDispatches.reduce((sum, d) => sum + (d.peopleFed || 0), 0),
+                avgSellingPrice: periodDispatches[0]?.dispatchType?.sellingPrice || periodDispatches[0]?.sellingPrice
+            });
+
+            // Validate consumption calculation
+            const validatedConsumption = periodDispatches.reduce((sum: number, d: any) => {
+                const dispatchCost = d.dispatchedItems?.reduce((itemSum: number, item: any) => {
+                    // Make sure we're using actual cost, not calculated
+                    return itemSum + (item.totalCost || (item.dispatchedQuantity || 0) * (item.unitPrice || 0));
+                }, 0) || 0;
+                console.log(`📊 Dispatch ${d.dispatchNumber}: Cost = ${dispatchCost}, Items = ${d.dispatchedItems?.length}`);
+                return sum + dispatchCost;
+            }, 0);
+
+            console.log('✅ Validated Consumption:', validatedConsumption);
 
             // Helper functions
             const getStatusBreakdown = (items: any[]) => {
@@ -1128,16 +1212,38 @@ export default function ComprehensiveReportsPage() {
                 return Object.entries(statusCounts).map(([name, value]) => ({ name, value }));
             };
 
+            // Replace the existing getSiteBreakdown function with this:
             const getSiteBreakdown = (items: any[]) => {
                 const siteCounts: { [key: string]: number } = {};
                 items.forEach(item => {
-                    const siteName = item.site?.name ||
-                        item.purchaseOrder?.site?.name ||
-                        item.sourceBin?.site?.name ||
-                        item.receivingBin?.site?.name ||
-                        item.fromBin?.site?.name ||
-                        item.bin?.site?.name ||
-                        'Unknown Site';
+                    let siteName = 'Unknown Site';
+
+                    // Determine site based on item type
+                    if (item._type === 'DispatchLog' || item.dispatchType) {
+                        // Dispatch - use compatibility helper
+                        siteName = getDispatchSite(item).name || 'Unknown Site';
+                    }
+                    else if (item._type === 'GoodsReceipt' || item.receiptNumber) {
+                        // Goods receipt - use compatibility helper
+                        siteName = getGoodsReceiptSite(item).name || 'Unknown Site';
+                    }
+                    else if (item.site?.name) {
+                        // Direct site reference (purchase orders)
+                        siteName = item.site.name;
+                    }
+                    else if (item.purchaseOrder?.site?.name) {
+                        // Through purchase order
+                        siteName = item.purchaseOrder.site.name;
+                    }
+                    else if (item.sourceBin?.site?.name) {
+                        // Old dispatch structure
+                        siteName = item.sourceBin.site.name;
+                    }
+                    else if (item.receivingBin?.site?.name) {
+                        // Old goods receipt structure
+                        siteName = item.receivingBin.site.name;
+                    }
+
                     siteCounts[siteName] = (siteCounts[siteName] || 0) + 1;
                 });
                 return Object.entries(siteCounts).map(([name, value]) => ({ name, value }));
@@ -1221,8 +1327,18 @@ export default function ComprehensiveReportsPage() {
             // Process inventory with VAT data
             // Get stock items from data - make sure we have the array
             const stockItemsArray = stockValues?.items || Array.isArray(stockValues) ? stockValues : [];
-            const inventoryByCategory = (Array.isArray(stockItemsArray) ? stockItemsArray : []).reduce((acc: any[], item: any) => {
-                const category = item.category?.title || 'Uncategorized';
+            // Add debugging:
+            console.log('📦 Stock Items for Categories:', {
+                hasStockValues: !!stockValues,
+                stockItemsArrayType: typeof stockItemsArray,
+                stockItemsArrayLength: Array.isArray(stockItemsArray) ? stockItemsArray.length : 'not array',
+                sampleItem: Array.isArray(stockItemsArray) ? stockItemsArray[0] : null
+            });
+
+            // Ensure we have data
+            const inventoryByCategory = ((stockValues?.items || stockItemsArray || [])).reduce((acc: any[], item: any) => {
+                if (!item) return acc;
+                const category = item.category?.title || item.category?.name || 'Uncategorized';
                 const existing = acc.find(cat => cat.name === category);
                 if (existing) {
                     existing.value++;
@@ -2050,20 +2166,27 @@ export default function ComprehensiveReportsPage() {
             // 4. GOODS RECEIPTS SHEET WITH VAT
             console.log('📝 Creating Goods Receipts sheet with VAT...');
             const periodGoodsReceipts = filterDataByDateRange(rawData.goodsReceipts || [], 'receiptDate');
-            const grData = periodGoodsReceipts.map((gr: any) => ({
-                'Receipt Number': gr.receiptNumber || 'N/A',
-                'Receipt Date': gr.receiptDate ? format(new Date(gr.receiptDate), 'MM/dd/yyyy') : 'N/A',
-                'Status': gr.status || 'N/A',
-                'PO Number': gr.purchaseOrder?.poNumber || 'N/A',
-                'Receiving Bin': gr.receivingBin?.name || 'N/A',
-                'Site': gr.receivingBin?.site?.name || 'N/A',
-                'Total Value (excl. VAT)': gr.receivedItems?.reduce((sum: number, item: any) =>
-                    sum + ((item.receivedQuantity || 0) * (item.unitPrice || 0)), 0) || 0,
-                'VAT Amount': gr.vatAmount || 0,
-                'Total Value (incl. VAT)': gr.totalWithVAT || 0,
-                'Evidence Status': gr.evidenceStatus || 'N/A',
-                'Item Count': gr.receivedItems?.length || 0
-            }));
+            // Update the grData mapping:
+            const grData = periodGoodsReceipts.map((gr: any) => {
+                // Get site and bin using compatibility helpers
+                const site = getGoodsReceiptSite(gr);
+                const bin = getGoodsReceiptBin(gr);
+
+                return {
+                    'Receipt Number': gr.receiptNumber || 'N/A',
+                    'Receipt Date': gr.receiptDate ? format(new Date(gr.receiptDate), 'MM/dd/yyyy') : 'N/A',
+                    'Status': gr.status || 'N/A',
+                    'PO Number': gr.purchaseOrder?.poNumber || 'N/A',
+                    'Receiving Bin': bin.name || 'N/A',
+                    'Site': site.name || 'N/A',
+                    'Total Value (excl. VAT)': gr.receivedItems?.reduce((sum: number, item: any) =>
+                        sum + ((item.receivedQuantity || 0) * (item.unitPrice || 0)), 0) || 0,
+                    'VAT Amount': gr.vatAmount || 0,
+                    'Total Value (incl. VAT)': gr.totalWithVAT || 0,
+                    'Evidence Status': gr.evidenceStatus || 'N/A',
+                    'Item Count': gr.receivedItems?.length || 0
+                };
+            });
 
             if (grData.length > 0) {
                 const grSheet = XLSX.utils.json_to_sheet(grData);
@@ -2074,24 +2197,32 @@ export default function ComprehensiveReportsPage() {
             // 5. DISPATCHES SHEET WITH VAT
             console.log('📝 Creating Dispatches sheet with VAT...');
             const periodDispatches = filterDataByDateRange(rawData.dispatches || [], 'dispatchDate');
-            const dispatchData = periodDispatches.map((dispatch: any) => ({
-                'Dispatch Number': dispatch.dispatchNumber || 'N/A',
-                'Dispatch Date': dispatch.dispatchDate ? format(new Date(dispatch.dispatchDate), 'MM/dd/yyyy') : 'N/A',
-                'Dispatch Type': dispatch.dispatchType?.name || 'N/A',
-                'Selling Price Per Person': dispatch.dispatchType?.sellingPrice || dispatch.sellingPrice || 0,
-                'Source Bin': dispatch.sourceBin?.name || 'N/A',
-                'Site': dispatch.sourceBin?.site?.name || 'N/A',
-                'Dispatched By': dispatch.dispatchedBy?.name || 'N/A',
-                'People Fed': dispatch.peopleFed || 0,
-                'Total Cost (excl. VAT)': dispatch.totalCost || 0,
-                'VAT on Cost': dispatch.vatAmount || 0,
-                'Total Cost (incl. VAT)': dispatch.totalWithVAT || 0,
-                'Cost Per Person': dispatch.costPerPerson || 0,
-                'Total Sales (excl. VAT)': (dispatch.dispatchType?.sellingPrice || dispatch.sellingPrice || 0) * (dispatch.peopleFed || 0),
-                'VAT on Sales': dispatch.salesVAT || 0,
-                'Total Sales (incl. VAT)': dispatch.salesWithVAT || 0,
-                'Evidence Status': dispatch.evidenceStatus || 'N/A'
-            }));
+            // In the exportToExcel function, update the dispatchData mapping:
+            const dispatchData = periodDispatches.map((dispatch: any) => {
+                // Get site using compatibility helper
+                const site = getDispatchSite(dispatch);
+                const firstBin = dispatch.dispatchedItems?.[0]?.sourceBin;
+
+                return {
+                    'Dispatch Number': dispatch.dispatchNumber || 'N/A',
+                    'Dispatch Date': dispatch.dispatchDate ? format(new Date(dispatch.dispatchDate), 'MM/dd/yyyy') : 'N/A',
+                    'Dispatch Type': dispatch.dispatchType?.name || 'N/A',
+                    'Selling Price Per Person': dispatch.dispatchType?.sellingPrice || dispatch.sellingPrice || 0,
+                    'Site': site.name || 'N/A',
+                    'Source Bin': firstBin?.name || 'Multiple Bins',
+                    'Dispatched By': dispatch.dispatchedBy?.name || 'N/A',
+                    'People Fed': dispatch.peopleFed || 0,
+                    'Total Cost (excl. VAT)': dispatch.totalCost || 0,
+                    'VAT on Cost': dispatch.vatAmount || 0,
+                    'Total Cost (incl. VAT)': dispatch.totalWithVAT || 0,
+                    'Cost Per Person': dispatch.costPerPerson || 0,
+                    'Total Sales (excl. VAT)': dispatch.totalSales || 0,
+                    'VAT on Sales': dispatch.salesVAT || 0,
+                    'Total Sales (incl. VAT)': dispatch.salesWithVAT || 0,
+                    'Evidence Status': dispatch.evidenceStatus || 'N/A',
+                    'Item Count': dispatch.dispatchedItems?.length || 0
+                };
+            });
 
             if (dispatchData.length > 0) {
                 const dispatchSheet = XLSX.utils.json_to_sheet(dispatchData);
@@ -2299,14 +2430,17 @@ export default function ComprehensiveReportsPage() {
     };
 
     // Helper function to get site from item based on report type
+    // Replace the existing getItemSite function with this:
     const getItemSite = (item: any, reportTitle: string): any => {
         switch (reportTitle) {
             case 'Purchase Orders':
                 return item.site;
             case 'Goods Receipts':
-                return item.purchaseOrder?.site;
+                // Use compatibility helper
+                return getGoodsReceiptSite(item);
             case 'Dispatches':
-                return item.sourceBin?.site;
+                // Use compatibility helper
+                return getDispatchSite(item);
             case 'Transfers':
                 return item.fromBin?.site;
             case 'Bin Counts':
