@@ -7,6 +7,7 @@ import { logSanityInteraction } from '@/lib/sanityLogger';
 import { NextResponse } from 'next/server';
 import { revertPreviousStockChanges, updateStockForTransaction } from '@/lib/stockCalculations';
 import { v4 as uuidv4 } from 'uuid';
+import { getUserSiteInfo, buildGoodsReceiptSiteFilter } from '@/lib/siteFiltering';
 
 // Helper function to extract supplier names
 const extractSupplierNames = (orderedItems: any[]): string => {
@@ -42,6 +43,10 @@ export async function GET(
 ) {
     try {
         const { id } = await params;
+        const userSiteInfo = await getUserSiteInfo();
+        const siteFilter = buildGoodsReceiptSiteFilter(userSiteInfo);
+
+        console.log(`🔍 Getting individual goods receipt ${id} with site filter:`, siteFilter);
 
         if (!id) {
             return NextResponse.json(
@@ -50,7 +55,7 @@ export async function GET(
             );
         }
 
-        const query = groq`*[_type == "GoodsReceipt" && _id == $id][0] {
+        const query = groq`*[_type == "GoodsReceipt" && _id == $id ${siteFilter}][0] {
             _id,
             _type,
             receiptNumber,
@@ -124,7 +129,7 @@ export async function GET(
                 condition,
                 batchNumber,
                 expiryDate,
-                // ✅ CRITICAL: Include receivingBin at item level
+                // ✅ Item-level receiving bin
                 receivingBin->{
                     _id,
                     name,
@@ -156,11 +161,14 @@ export async function GET(
         const goodsReceipt = await client.fetch(query, { id });
 
         if (!goodsReceipt) {
+            console.log(`❌ Goods receipt ${id} not found or user doesn't have access`);
             return NextResponse.json(
-                { error: 'Goods receipt not found' },
+                { error: 'Goods receipt not found or you do not have access' },
                 { status: 404 }
             );
         }
+
+        console.log(`✅ Found goods receipt ${goodsReceipt.receiptNumber} for user`);
 
         // Extract supplier names from purchase order's ordered items
         const supplierNames = goodsReceipt.purchaseOrder?.orderedItems
@@ -169,7 +177,7 @@ export async function GET(
 
         // Transform old receipts to include item-level bins if missing
         if (goodsReceipt.receivingBin && !goodsReceipt.receivedItems?.every((item: any) => item.receivingBin)) {
-            // This is an old receipt with document-level bin but not at item level
+            console.log(`🔄 Transforming old receipt ${goodsReceipt.receiptNumber} to item-level bin structure`);
             goodsReceipt.receivedItems = (goodsReceipt.receivedItems || []).map((item: any) => ({
                 ...item,
                 receivingBin: item.receivingBin || goodsReceipt.receivingBin
@@ -178,7 +186,7 @@ export async function GET(
 
         const processedReceipt = {
             ...goodsReceipt,
-            supplierNames // Add extracted supplier names to the receipt
+            supplierNames
         };
 
         return NextResponse.json(processedReceipt);
@@ -215,6 +223,22 @@ export async function PUT(
             );
         }
 
+        // First check if user has access to this receipt
+        const userSiteInfo = await getUserSiteInfo();
+        const siteFilter = buildGoodsReceiptSiteFilter(userSiteInfo);
+
+        const accessCheck = await client.fetch(
+            groq`count(*[_type == "GoodsReceipt" && _id == $id ${siteFilter}])`,
+            { id }
+        );
+
+        if (accessCheck === 0) {
+            return NextResponse.json(
+                { error: 'Goods receipt not found or you do not have access' },
+                { status: 404 }
+            );
+        }
+
         const updateData = await request.json();
 
         console.log('🔄 PUT goods receipt update:', {
@@ -223,7 +247,7 @@ export async function PUT(
             receivedItemsCount: updateData.receivedItems?.length || 0
         });
 
-        // ✅ Get existing receipt to check previous status
+        // Get existing receipt to check previous status
         const existingReceipt = await client.fetch(
             groq`*[_type == "GoodsReceipt" && _id == $id][0] { 
                 status,
@@ -248,7 +272,7 @@ export async function PUT(
         const willBeCompleted = updateData.status === 'completed';
         const isStatusChangeToCompleted = !wasCompleted && willBeCompleted;
 
-        // ✅ Validate before completing: all items with quantity must have bins
+        // Validate before completing: all items with quantity must have bins
         if (isStatusChangeToCompleted) {
             const itemsWithoutBins = (updateData.receivedItems || []).filter((item: any) =>
                 item.receivedQuantity > 0 && !item.receivingBin
@@ -262,7 +286,7 @@ export async function PUT(
             }
         }
 
-        // ✅ Process receivedItems to include receivingBin references
+        // Process receivedItems to include receivingBin references
         let processedReceivedItems;
         if (updateData.receivedItems) {
             console.log('📦 Processing received items for bins:', updateData.receivedItems.length);
@@ -284,7 +308,7 @@ export async function PUT(
                     expiryDate: item.expiryDate || ''
                 };
 
-                // ✅ ADD RECEIVING BIN AT ITEM LEVEL
+                // ADD RECEIVING BIN AT ITEM LEVEL
                 if (item.receivingBin) {
                     const binRef = resolveRef(item.receivingBin) || resolveRef(item.receivingBin?._id);
                     if (binRef) {
@@ -304,7 +328,7 @@ export async function PUT(
             console.log(`✅ Processed ${processedReceivedItems.length} items, ${processedReceivedItems.filter((item: any) => item.receivingBin).length} with bins`);
         }
 
-        // ✅ Create patch with processed items
+        // Create patch with processed items
         const patchData: any = {
             updatedAt: new Date().toISOString()
         };
@@ -354,7 +378,7 @@ export async function PUT(
             itemsWithBins: processedReceivedItems?.filter((item: any) => item.receivingBin).length || 0
         });
 
-        // ✅ Revert stock if editing completed receipt with new items
+        // Revert stock if editing completed receipt with new items
         if (wasCompleted && updateData.receivedItems) {
             console.log('↩️ Reverting previous stock changes for goods receipt edit:', existingReceipt.receiptNumber);
             await revertPreviousStockChanges(id);
@@ -364,7 +388,7 @@ export async function PUT(
         const patch = writeClient.patch(id).set(patchData);
         const result = await patch.commit();
 
-        // ✅ Update stock if status changed TO 'completed'
+        // Update stock if status changed TO 'completed'
         if (isStatusChangeToCompleted) {
             console.log('📦 Updating stock for status change to completed:', existingReceipt.receiptNumber);
             await updateStockForTransaction('procurement', id);
@@ -413,6 +437,22 @@ export async function DELETE(
             );
         }
 
+        // Check if user has access to this receipt
+        const userSiteInfo = await getUserSiteInfo();
+        const siteFilter = buildGoodsReceiptSiteFilter(userSiteInfo);
+
+        const accessCheck = await client.fetch(
+            groq`count(*[_type == "GoodsReceipt" && _id == $id ${siteFilter}])`,
+            { id }
+        );
+
+        if (accessCheck === 0) {
+            return NextResponse.json(
+                { error: 'Goods receipt not found or you do not have access' },
+                { status: 404 }
+            );
+        }
+
         // Check if receipt is completed before deletion
         const existingReceipt = await client.fetch(
             groq`*[_type == "GoodsReceipt" && _id == $id][0] { 
@@ -428,7 +468,7 @@ export async function DELETE(
             );
         }
 
-        // ✅ Revert stock changes if any were made
+        // Revert stock changes if any were made
         try {
             await revertPreviousStockChanges(id);
         } catch (stockError) {

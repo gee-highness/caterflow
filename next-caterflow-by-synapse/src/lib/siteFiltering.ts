@@ -66,23 +66,43 @@ export function buildTransactionSiteFilter(userSiteInfo: UserSiteInfo): string {
   }
 
   if (userSiteInfo.userSiteId) {
-    const siteId = userSiteInfo.userSiteId;
     return `&& (
-      // Check any bin reference at document level
-      receivingBin->site._ref == "${siteId}" ||
-      fromBin->site._ref == "${siteId}" ||
-      toBin->site._ref == "${siteId}" ||
-      sourceBin->site._ref == "${siteId}" ||
-      sourceSite._ref == "${siteId}" ||
-      bin->site._ref == "${siteId}" ||
-      
-      // Check item-level bins in goods receipts
-      count(receivedItems[receivingBin->site._ref == "${siteId}"]) > 0 ||
-      
-      // Check purchase order site
-      purchaseOrder->site._ref == "${siteId}"
+      receivingBin->site._ref == "${userSiteInfo.userSiteId}" ||
+      fromBin->site._ref == "${userSiteInfo.userSiteId}" ||
+      toBin->site._ref == "${userSiteInfo.userSiteId}" ||
+      sourceBin->site._ref == "${userSiteInfo.userSiteId}" ||
+      sourceSite._ref == "${userSiteInfo.userSiteId}" ||
+      bin->site._ref == "${userSiteInfo.userSiteId}"
     )`;
   }
 
+  return '&& false';
+}
+
+// Add this function to your lib/siteFiltering.ts file
+export function buildGoodsReceiptSiteFilter(userSiteInfo: UserSiteInfo): string {
+  if (userSiteInfo.canAccessMultipleSites) {
+    console.log('🌐 Multi-site user - no filter applied for goods receipts');
+    return ''; // No filter for multi-site users
+  }
+
+  if (userSiteInfo.userSiteId) {
+    const siteId = userSiteInfo.userSiteId;
+
+    console.log(`📍 Building goods receipt filter for site ID: ${siteId}`);
+
+    // Goods receipts should be visible if:
+    // 1. Purchase order is for this site (through PO->site)
+    // 2. OR any item-level receiving bin is for this site
+    const filter = `&& (
+      purchaseOrder->site._ref == "${siteId}" ||
+      count(receivedItems[defined(receivingBin) && receivingBin->site._ref == "${siteId}"]) > 0
+    )`;
+
+    console.log('🔧 Goods receipt site filter:', filter);
+    return filter;
+  }
+
+  console.log('🚫 No site access - returning false filter for goods receipts');
   return '&& false';
 }

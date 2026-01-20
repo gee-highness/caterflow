@@ -6,7 +6,7 @@ import { logSanityInteraction } from '@/lib/sanityLogger';
 import { v4 as uuidv4 } from 'uuid';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
-import { getUserSiteInfo, buildTransactionSiteFilter } from '@/lib/siteFiltering';
+import { getUserSiteInfo, buildGoodsReceiptSiteFilter } from '@/lib/siteFiltering';
 
 const getNextReceiptNumber = async (): Promise<string> => {
     try {
@@ -80,7 +80,15 @@ const resolveRef = (val: any): string | null => {
 export async function GET() {
     try {
         const userSiteInfo = await getUserSiteInfo();
-        const siteFilter = buildTransactionSiteFilter(userSiteInfo);
+        const siteFilter = buildGoodsReceiptSiteFilter(userSiteInfo);
+
+        console.log('🔍 Goods Receipt - User Site Info:', {
+            userId: userSiteInfo.userId,
+            userRole: userSiteInfo.userRole,
+            userSiteId: userSiteInfo.userSiteId,
+            canAccessMultipleSites: userSiteInfo.canAccessMultipleSites,
+            siteFilter
+        });
 
         const query = groq`*[_type == "GoodsReceipt" ${siteFilter}] | order(receiptDate desc) {
             _id,
@@ -98,6 +106,12 @@ export async function GET() {
                 status,
                 orderDate,
                 totalAmount,
+                "site": site->{
+                    _id,
+                    name,
+                    location,
+                    contactNumber
+                },
                 "supplier": supplier->{
                     _id,
                     name,
@@ -105,13 +119,6 @@ export async function GET() {
                     phoneNumber,
                     email
                 },
-                "site": site->{
-                    _id,
-                    name,
-                    location,
-                    contactNumber
-                },
-                // FIX: Include orderedItems with supplier data
                 orderedItems[]{
                     _key,
                     orderedQuantity,
@@ -123,7 +130,6 @@ export async function GET() {
                         sku,
                         unitPrice
                     },
-                    // IMPORTANT: Include supplier from each ordered item
                     supplier->{
                         _id,
                         name,
@@ -151,7 +157,7 @@ export async function GET() {
                 condition,
                 unitPrice,
                 totalPrice,
-                // ✅ CRITICAL: Include receivingBin at item level
+                // ✅ Item-level receiving bin
                 receivingBin->{
                     _id,
                     name,
@@ -173,7 +179,7 @@ export async function GET() {
                     }
                 }
             },
-            attachments[]->{
+            "attachments": attachments[]->{
                 _id,
                 fileName,
                 fileType,
@@ -193,25 +199,40 @@ export async function GET() {
 
         const goodsReceipts = await client.fetch(query);
 
-        // Process receipts to add supplier names and ensure item-level bins
-        const processedReceipts = goodsReceipts.map((receipt: any) => {
-            // Extract supplier names from purchase order's ordered items
+        console.log(`📊 Found ${goodsReceipts?.length || 0} goods receipts after site filtering`);
+
+        // Filter out invalid receipts (missing purchase order)
+        const validReceipts = goodsReceipts.filter((receipt: any) =>
+            receipt.purchaseOrder !== null
+        );
+
+        // Transform old receipts to include item-level bins if missing
+        const transformedReceipts = validReceipts.map((receipt: any) => {
+            // For old receipts with document-level receivingBin but no item-level bins
+            if (receipt.receivingBin && !receipt.receivedItems?.every((item: any) => item.receivingBin)) {
+                console.log(`🔄 Transforming old receipt ${receipt.receiptNumber} to item-level bin structure`);
+
+                return {
+                    ...receipt,
+                    receivedItems: (receipt.receivedItems || []).map((item: any) => ({
+                        ...item,
+                        receivingBin: item.receivingBin || receipt.receivingBin
+                    }))
+                };
+            }
+
+            return receipt;
+        });
+
+        // Add supplier names to receipts
+        const processedReceipts = transformedReceipts.map((receipt: any) => {
             const supplierNames = receipt.purchaseOrder?.orderedItems
                 ? extractSupplierNames(receipt.purchaseOrder.orderedItems)
                 : 'No suppliers';
 
-            // Transform old receipts to include item-level bins if missing
-            if (receipt.receivingBin && !receipt.receivedItems?.every((item: any) => item.receivingBin)) {
-                // This is an old receipt with document-level bin but not at item level
-                receipt.receivedItems = (receipt.receivedItems || []).map((item: any) => ({
-                    ...item,
-                    receivingBin: item.receivingBin || receipt.receivingBin
-                }));
-            }
-
             return {
                 ...receipt,
-                supplierNames // Add extracted supplier names to the receipt
+                supplierNames
             };
         });
 
@@ -246,7 +267,7 @@ export async function POST(request: Request) {
             receivedItemsCount: payload.receivedItems?.length || 0
         });
 
-        // ✅ CRITICAL: Process receivedItems to include receivingBin references at item level
+        // Process receivedItems to include receivingBin references at item level
         const processedReceivedItems = (createData.receivedItems || []).map((item: any) => {
             const processedItem: any = {
                 _key: item._key || uuidv4(),
@@ -263,7 +284,7 @@ export async function POST(request: Request) {
                 expiryDate: item.expiryDate || ''
             };
 
-            // ✅ ADD RECEIVING BIN AT ITEM LEVEL
+            // ✅ ADD ITEM-LEVEL RECEIVING BIN
             if (item.receivingBin) {
                 const binRef = resolveRef(item.receivingBin) || resolveRef(item.receivingBin?._id);
                 if (binRef) {
@@ -283,12 +304,12 @@ export async function POST(request: Request) {
             itemsWithoutBins: processedReceivedItems.filter((item: any) => !item.receivingBin).length
         });
 
-        // ✅ Remove document-level receivingBin if it exists (we're using item-level now)
+        // Remove document-level receivingBin if it exists
         const { receivingBin, ...dataWithoutDocBin } = createData;
 
         const newDoc = {
             ...dataWithoutDocBin,
-            receivedItems: processedReceivedItems, // ✅ Use processed items with item-level bins
+            receivedItems: processedReceivedItems,
             _type: 'GoodsReceipt',
             receiptNumber: await getNextReceiptNumber(),
             _id: uuidv4(),

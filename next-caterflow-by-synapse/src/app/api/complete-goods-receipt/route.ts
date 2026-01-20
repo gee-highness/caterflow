@@ -1,11 +1,23 @@
-// app/api/complete-goods-receipt/route.ts
+// src/app/api/complete-goods-receipt/route.ts
 import { NextResponse } from 'next/server';
 import { client, writeClient } from '@/lib/sanity';
 import { groq } from 'next-sanity';
 import { updateStockForTransaction } from '@/lib/stockCalculations';
+import { getServerSession } from 'next-auth';
+import { authOptions } from '@/lib/auth';
+import { getUserSiteInfo, buildGoodsReceiptSiteFilter } from '@/lib/siteFiltering';
 
 export async function POST(request: Request) {
     try {
+        const session = await getServerSession(authOptions);
+
+        if (!session || !session.user) {
+            return NextResponse.json(
+                { error: 'User not authenticated' },
+                { status: 401 }
+            );
+        }
+
         const { receiptId, poId, attachmentIds } = await request.json();
 
         console.log("🔧 Complete goods receipt request:", {
@@ -21,11 +33,28 @@ export async function POST(request: Request) {
             );
         }
 
-        // ✅ CRITICAL: Validate that all items with quantity have receiving bins
+        // Check if user has access to this receipt
+        const userSiteInfo = await getUserSiteInfo();
+        const siteFilter = buildGoodsReceiptSiteFilter(userSiteInfo);
+
+        const accessCheck = await client.fetch(
+            groq`count(*[_type == "GoodsReceipt" && _id == $receiptId ${siteFilter}])`,
+            { receiptId }
+        );
+
+        if (accessCheck === 0) {
+            return NextResponse.json(
+                { error: 'Goods receipt not found or you do not have access' },
+                { status: 404 }
+            );
+        }
+
+        // CRITICAL: Validate that all items with quantity have receiving bins
         console.log('🔍 Validating receipt items have bins...');
         const validationQuery = groq`*[_type == "GoodsReceipt" && _id == $receiptId][0] {
             receiptNumber,
             status,
+            evidenceStatus,
             "receivedItems": receivedItems[]{
                 "hasBin": defined(receivingBin._ref),
                 "quantity": receivedQuantity,
@@ -44,7 +73,7 @@ export async function POST(request: Request) {
         }
 
         // Check if already completed
-        if (validation.status === 'completed') {
+        if (validation.status === 'completed' || validation.evidenceStatus === 'complete') {
             return NextResponse.json(
                 { error: 'Goods receipt is already completed' },
                 { status: 400 }
@@ -53,11 +82,10 @@ export async function POST(request: Request) {
 
         // Check for items without bins - ONLY if they have quantity
         const itemsWithoutBins = validation.receivedItems?.filter((item: any) =>
-            item.quantity > 0 && !item.hasBin  // Only validate items WITH quantity
+            item.quantity > 0 && !item.hasBin
         ) || [];
 
-        // Also warn about items with 0 quantity
-        // After checking for items without bins, also check for 0 quantity
+        // Check for items with 0 quantity
         const itemsWithZeroQuantity = validation.receivedItems?.filter((item: any) =>
             item.quantity === 0
         ) || [];
@@ -102,6 +130,7 @@ export async function POST(request: Request) {
         transaction.patch(receiptId, (patch) =>
             patch.set({
                 status: 'completed',
+                evidenceStatus: 'complete',
                 completedAt: new Date().toISOString(),
             })
         );
@@ -189,7 +218,7 @@ export async function POST(request: Request) {
     }
 }
 
-// Updated helper function to handle multiple attachments and item-level bins
+// Helper function to handle multiple attachments and item-level bins
 async function updateEvidenceStatus(receiptId: string, attachmentIds: string[] = []) {
     try {
         const receipt = await writeClient.fetch(
@@ -216,7 +245,7 @@ async function updateEvidenceStatus(receiptId: string, attachmentIds: string[] =
             ? itemsWithQuantity.every((item: any) => item.hasBin)
             : true; // If no items with quantity, consider it valid
 
-        // ✅ Updated evidence status logic that considers item-level bins
+        // Updated evidence status logic that considers item-level bins
         if (hasAttachments && hasNotes && allItemsHaveBins) {
             evidenceStatus = 'complete';
         } else if (hasAttachments || allItemsHaveBins) {
