@@ -2,6 +2,8 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
+
+import SimpleCalculationsModal from '@/components/SimpleCalculationsModal';
 import {
     Box,
     Heading,
@@ -55,6 +57,7 @@ interface CurrentStockItem extends StockItem {
     currentStock: number;
     siteName: string;
     binName: string;
+    binId: string;  // ← ADD THIS
     minimumStockLevel: number;
     reorderQuantity: number;
     unitOfMeasure: "kg" | "g" | "l" | "ml" | "each" | "box" | "case" | "bag";
@@ -237,13 +240,16 @@ export default function CurrentStockPage() {
                     // Create a UNIQUE ID for this item-bin combination
                     const uniqueId = `${item._id}-${bin._id}`;
 
+                    // Replace the itemsWithCalculatedStock.push() section with:
+
                     itemsWithCalculatedStock.push({
                         ...item,
-                        _id: uniqueId, // ← CRITICAL: Override with unique ID
+                        _id: uniqueId, // ← Keep unique ID for React keys
                         currentStock: quantity,
                         stockStatus,
                         siteName,
                         binName: bin.name,
+                        binId: bin._id, // ← ADD THIS: Store the actual bin ID
                         lastUpdated: new Date().toISOString(),
                     });
                 });
@@ -623,20 +629,70 @@ export default function CurrentStockPage() {
     };
 
     // Add a handler for opening the calculations modal
-    const handleOpenCalculations = (item: CurrentStockItem) => {
-        // The item._id is in format "itemId-binId" for items with stock
-        // For B-WELL Tangy Mayo, we need to find which bin it's in
-        const itemId = item._id.includes('-') ? item._id.split('-')[0] : item._id;
+    const handleOpenCalculations = async (item: CurrentStockItem) => {
+        console.log('🔍 DEBUG handleOpenCalculations:', {
+            itemName: item.name,
+            itemId: item._id,
+            originalItemId: item._id.includes('-') ? item._id.split('-')[0] : item._id,
+            binName: item.binName,
+            binId: item.binId,
+            currentStock: item.currentStock
+        });
 
-        // Try to extract bin ID from the item's binName
-        // From logs: B-WELL Tangy Mayo is in "main" and "fridge" bins
-        const binName = item.binName;
+        // Get the original item ID (remove bin suffix if present)
+        const originalItemId = item._id.includes('-')
+            ? item._id.split('-')[0]
+            : item._id;
+
+        // Use the stored binId
+        const binId = item.binId;
+
+        if (!binId) {
+            toast({
+                title: 'Error',
+                description: 'Could not determine bin ID',
+                status: 'error',
+                duration: 3000,
+            });
+            return;
+        }
 
         setSelectedItem(item);
+        setIsLoadingHistory(true);
+        setTransactionHistory(null);
 
-        // Fetch available bins for this item first
-        fetchTransactionHistory(itemId, binName); // Pass binName to help identify the bin
-        onOpen();
+        try {
+            console.log(`📊 Fetching calculation for ${originalItemId} in ${binId}`);
+
+            const response = await fetch(
+                `/api/stock/transaction-history?stockItemId=${originalItemId}&binId=${binId}`
+            );
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.error || 'Failed to fetch calculation');
+            }
+
+            const data = await response.json();
+            setTransactionHistory(data);
+            onOpen();
+
+            console.log('✅ Calculation loaded:', {
+                currentStock: data.currentStock,
+                transactionCount: data.transactions?.length
+            });
+
+        } catch (error: any) {
+            console.error('Error fetching calculation:', error);
+            toast({
+                title: 'Error',
+                description: error.message || 'Failed to load calculation',
+                status: 'error',
+                duration: 3000,
+            });
+        } finally {
+            setIsLoadingHistory(false);
+        }
     };
 
     /**
@@ -691,16 +747,7 @@ export default function CurrentStockPage() {
         },
         {
             accessorKey: 'currentStock',
-            header: (
-                <Flex align="center" cursor="pointer" onClick={() => handleSort('currentStock')}>
-                    Current Stock
-                    {sortConfig.key === 'currentStock' && (
-                        <Text ml={2} fontSize="sm">
-                            {sortConfig.direction === 'asc' ? '↑' : '↓'}
-                        </Text>
-                    )}
-                </Flex>
-            ),
+            header: 'Current Stock',
             isSortable: true,
             cell: (row: CurrentStockItem) => (
                 <Flex align="center" gap={2}>
@@ -713,7 +760,24 @@ export default function CurrentStockPage() {
                         {getStockStatusText(row.currentStock, row.minimumStockLevel)}
                     </Badge>
                     <Flex direction="column">
-                        <Text fontWeight="bold">{row.currentStock}</Text>
+                        <Text fontWeight="bold" fontSize="lg">
+                            {row.currentStock}
+                            {row.currentStock < 0 && (
+                                <Text as="span" ml={1} fontSize="xs" color="red.500">
+                                    (NEGATIVE)
+                                </Text>
+                            )}
+                        </Text>
+                        <Button
+                            size="xs"
+                            variant="link"
+                            colorScheme="blue"
+                            onClick={() => handleOpenCalculations(row)}
+                            leftIcon={<FiEye />}
+                            mt={1}
+                        >
+                            View Calculation
+                        </Button>
                     </Flex>
                 </Flex>
             ),
@@ -1372,6 +1436,18 @@ export default function CurrentStockPage() {
                     </Card>
                 )}
             </VStack>
+
+            {/* Replace the commented-out CalculationsModal with: */}
+            <SimpleCalculationsModal
+                isOpen={isOpen}
+                onClose={onClose}
+                stockItemName={selectedItem?.name || ''}
+                binName={selectedItem?.binName || ''}
+                siteName={selectedItem?.siteName || ''}
+                currentStock={selectedItem?.currentStock || 0}
+                isLoading={isLoadingHistory}
+                transactionHistory={transactionHistory}
+            />
 
             {/*<CalculationsModal
                 isOpen={isOpen}
