@@ -28,6 +28,7 @@ import {
 import * as XLSX from 'xlsx';
 import { saveAs } from 'file-saver';
 import { format, subDays, subMonths, startOfMonth, endOfMonth, parseISO, isWithinInterval } from 'date-fns';
+import { calculateBulkStock } from '@/lib/stockCalculations';
 
 // Add this hook at the top of your component file, after imports
 const useChartReady = () => {
@@ -890,7 +891,7 @@ export default function ComprehensiveReportsPage() {
             const receiptsBeforeDate = allGoodsReceipts.filter(gr => {
                 try {
                     const receiptDate = new Date(gr.receiptDate);
-                    return receiptDate < targetDate;
+                    return receiptDate > targetDate;
                 } catch {
                     return false;
                 }
@@ -900,7 +901,7 @@ export default function ComprehensiveReportsPage() {
             const dispatchesBeforeDate = allDispatches.filter(d => {
                 try {
                     const dispatchDate = new Date(d.dispatchDate);
-                    return dispatchDate < targetDate;
+                    return dispatchDate > targetDate;
                 } catch {
                     return false;
                 }
@@ -971,47 +972,99 @@ export default function ComprehensiveReportsPage() {
     // Replace the existing calculateOpeningStockForDate function with this CORRECTED version:
     const calculateOpeningStockForDate = useCallback(async (
         targetDate: Date,
-        currentStockItems: any[],
         allGoodsReceipts: any[],
         allDispatches: any[]
     ): Promise<number> => {
         try {
             console.log('💰 Calculating opening stock for:', targetDate.toISOString().split('T')[0]);
 
-            // Get current stock value (as of TODAY)
-            const currentStockValue = currentStockItems.reduce((sum, item) => {
-                const currentStock = item?.currentStock || 0;
-                const unitPrice = item?.unitPrice || 0;
-                return sum + (currentStock * unitPrice);
-            }, 0);
+            // 1. FIRST: Get ACTUAL current stock value using the SAME method as current stock page
+            console.log('📊 Fetching current stock using current page logic...');
+            let currentStockValue = 0;
 
-            console.log('📊 Current stock value:', currentStockValue);
+            try {
+                // REPLICATE THE EXACT LOGIC FROM CURRENT STOCK PAGE:
+                // Step 1: Fetch all stock items
+                const stockItemsResponse = await fetch('/api/stock-items');
+                if (!stockItemsResponse.ok) {
+                    throw new Error('Failed to fetch stock items');
+                }
+                const stockItems = await stockItemsResponse.json();
+                console.log('✅ Stock items fetched:', stockItems.length, 'items');
 
-            // Filter transactions BEFORE the target date
-            const receiptsBeforeDate = allGoodsReceipts.filter(gr => {
+                if (stockItems.length === 0) {
+                    console.log('⚠️ No stock items found');
+                    return 0;
+                }
+
+                // Step 2: Fetch all bins (no site filtering for reports)
+                const binsResponse = await fetch('/api/bins');
+                if (!binsResponse.ok) {
+                    throw new Error('Failed to fetch bins');
+                }
+                const bins = await binsResponse.json();
+                const binIds = bins.map((bin: any) => bin._id);
+                console.log('✅ Bins fetched:', bins.length, 'bins');
+
+                if (binIds.length === 0) {
+                    console.log('⚠️ No bins found');
+                    return 0;
+                }
+
+                // Step 3: Get all stock item IDs
+                const stockItemIds = stockItems.map((item: any) => item._id);
+                console.log('🔢 Calculating stock for', stockItemIds.length, 'items across', binIds.length, 'bins');
+
+                // Step 4: Calculate current stock for all items in all bins
+                const stockResults = await calculateBulkStock(stockItemIds, binIds);
+
+                console.log('✅ Bulk stock calculation complete. Results:', Object.keys(stockResults).length, 'item-bin pairs');
+
+                // Step 5: Calculate TOTAL current stock value (sum of all item quantities × unit prices)
+                // Process results to get total value
+                stockItems.forEach((item: any) => {
+                    let totalQuantityForItem = 0;
+                    binIds.forEach((binId: string) => {
+                        const key = `${item._id}-${binId}`;
+                        totalQuantityForItem += stockResults[key] || 0;
+                    });
+
+                    const unitPrice = item.unitPrice || 0;
+                    currentStockValue += totalQuantityForItem * unitPrice;
+                });
+
+                console.log('📊 CALCULATED Total current stock value:', currentStockValue);
+
+            } catch (error) {
+                console.error('❌ Failed to fetch/calculate current stock:', error);
+                return 0;
+            }
+
+            // 2. Filter transactions AFTER target date (not before!)
+            const receiptsAfterDate = allGoodsReceipts.filter(gr => {
                 try {
                     const receiptDate = new Date(gr.receiptDate);
-                    return receiptDate < targetDate;
+                    return receiptDate > targetDate;  // > NOT <
                 } catch {
                     return false;
                 }
             });
 
-            const dispatchesBeforeDate = allDispatches.filter(d => {
+            const dispatchesAfterDate = allDispatches.filter(d => {
                 try {
                     const dispatchDate = new Date(d.dispatchDate);
-                    return dispatchDate < targetDate;
+                    return dispatchDate > targetDate;  // > NOT <
                 } catch {
                     return false;
                 }
             });
 
-            console.log(`📦 Transactions before ${targetDate.toISOString().split('T')[0]}:`);
-            console.log(`  - Receipts: ${receiptsBeforeDate.length}`);
-            console.log(`  - Dispatches: ${dispatchesBeforeDate.length}`);
+            console.log(`📦 Transactions AFTER ${targetDate.toISOString().split('T')[0]}:`);
+            console.log(`  - Receipts AFTER: ${receiptsAfterDate.length}`);
+            console.log(`  - Dispatches AFTER: ${dispatchesAfterDate.length}`);
 
-            // Calculate total receipts value BEFORE target date
-            const receiptsValue = receiptsBeforeDate.reduce((sum, gr) => {
+            // 3. Calculate values of transactions AFTER target date
+            const receiptsValueAfter = receiptsAfterDate.reduce((sum: number, gr: any) => {
                 return sum + (gr.receivedItems?.reduce((itemSum: number, item: any) => {
                     const unitPrice = item.unitPrice || item.stockItem?.unitPrice || 0;
                     const quantity = item.receivedQuantity || 0;
@@ -1019,37 +1072,34 @@ export default function ComprehensiveReportsPage() {
                 }, 0) || 0);
             }, 0);
 
-            // Calculate total dispatches value BEFORE target date
-            const dispatchesValue = dispatchesBeforeDate.reduce((sum, d) => {
+            const dispatchesValueAfter = dispatchesAfterDate.reduce((sum: number, d: any) => {
                 return sum + (d.dispatchedItems?.reduce((itemSum: number, item: any) => {
                     const cost = item.totalCost || (item.dispatchedQuantity || 0) * (item.unitPrice || 0);
                     return itemSum + cost;
                 }, 0) || 0);
             }, 0);
 
-            console.log('💰 Transaction values before date:', {
-                receiptsValue,
-                dispatchesValue
+            console.log('💰 Transaction values AFTER date:', {
+                receiptsValueAfter,
+                dispatchesValueAfter
             });
 
-            // CORRECT FORMULA: Opening Stock = Current Stock + Dispatches (out) - Receipts (in)
-            // Because to go back in time: we subtract what came in and add what went out
-            const openingStock = currentStockValue + dispatchesValue - receiptsValue;
+            // 4. CORRECT FORMULA: Opening Stock = Current Stock - Receipts(after) + Dispatches(after)
+            const openingStock = currentStockValue - receiptsValueAfter + dispatchesValueAfter;
 
-            console.log('✅ Opening stock calculation:', {
-                currentStockValue,
-                receiptsValue,
-                dispatchesValue,
+            console.log('✅ FINAL Opening stock calculation:', {
+                actualCurrentStock: currentStockValue,
+                receiptsAfterValue: receiptsValueAfter,
+                dispatchesAfterValue: dispatchesValueAfter,
                 openingStock
             });
 
-            return Math.max(0, openingStock); // Don't return negative stock
+            return Math.max(0, openingStock);
         } catch (error) {
             console.error('❌ Error in opening stock:', error);
             return 0;
         }
     }, []);
-
 
     // UPDATED processAnalyticsData function with VAT calculations - CORRECTED VERSION
     const processAnalyticsData = useCallback(async (data: any, dateRange: { start: Date; end: Date }): Promise<EnhancedAnalyticsData> => {
@@ -1088,20 +1138,41 @@ export default function ComprehensiveReportsPage() {
             const allStockItems = await fetch('/api/stock-items').then(res => res.json());
             const openingStockValue = await calculateOpeningStockForDate(
                 dateRange.start,
-                allStockItems,
                 goodsReceipts,
-                dispatches,
-                binCounts
+                dispatches
             );
 
             // 2. Calculate current stock using the SAME function as current stock page
-            const currentStockValue = await calculateOpeningStockForDate(
-                new Date(), // Current date
-                allStockItems,
-                goodsReceipts,
-                dispatches,
-                binCounts
-            );
+            // Get current stock value using the SAME method as current stock page
+            let currentStockValue = 0;
+            try {
+                // Replicate the exact logic from above
+                const stockItemsResponse = await fetch('/api/stock-items');
+                const stockItems = await stockItemsResponse.json();
+
+                const binsResponse = await fetch('/api/bins');
+                const bins = await binsResponse.json();
+                const binIds = bins.map((bin: any) => bin._id);
+
+                const stockItemIds = stockItems.map((item: any) => item._id);
+                const stockResults = await calculateBulkStock(stockItemIds, binIds);
+
+                // Calculate total value
+                stockItems.forEach((item: any) => {
+                    let totalQuantityForItem = 0;
+                    binIds.forEach((binId: string) => {
+                        const key = `${item._id}-${binId}`;
+                        totalQuantityForItem += stockResults[key] || 0;
+                    });
+
+                    const unitPrice = item.unitPrice || 0;
+                    currentStockValue += totalQuantityForItem * unitPrice;
+                });
+
+                console.log('📊 TODAY Current stock value:', currentStockValue);
+            } catch (error) {
+                console.error('Failed to fetch current stock:', error);
+            }
 
             setCalculatingOpeningStock(false);
 

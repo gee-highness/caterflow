@@ -66,13 +66,21 @@ export function buildTransactionSiteFilter(userSiteInfo: UserSiteInfo): string {
   }
 
   if (userSiteInfo.userSiteId) {
+    const siteId = userSiteInfo.userSiteId;
     return `&& (
-      receivingBin->site._ref == "${userSiteInfo.userSiteId}" ||
-      fromBin->site._ref == "${userSiteInfo.userSiteId}" ||
-      toBin->site._ref == "${userSiteInfo.userSiteId}" ||
-      sourceBin->site._ref == "${userSiteInfo.userSiteId}" ||
-      sourceSite._ref == "${userSiteInfo.userSiteId}" ||
-      bin->site._ref == "${userSiteInfo.userSiteId}"
+      // Check any bin reference at document level
+      receivingBin->site._ref == "${siteId}" ||
+      fromBin->site._ref == "${siteId}" ||
+      toBin->site._ref == "${siteId}" ||
+      sourceBin->site._ref == "${siteId}" ||
+      sourceSite._ref == "${siteId}" ||
+      bin->site._ref == "${siteId}" ||
+      
+      // Check item-level bins in goods receipts
+      count(receivedItems[receivingBin->site._ref == "${siteId}"]) > 0 ||
+      
+      // Check purchase order site
+      purchaseOrder->site._ref == "${siteId}"
     )`;
   }
 
