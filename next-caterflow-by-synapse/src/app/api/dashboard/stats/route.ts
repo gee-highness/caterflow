@@ -9,17 +9,6 @@ import { getUserSiteInfo } from '@/lib/siteFiltering';
 const cache = new Map();
 const CACHE_TTL = 30000; // 30 seconds
 
-// Add this function to calculate total stock count (simple version)
-async function calculateTotalStockCount(siteIds: string[]): Promise<number> {
-    try {
-        const query = groq`count(*[_type == "StockItem"])`;
-        return await client.fetch(query);
-    } catch (error) {
-        console.error('Error counting stock items:', error);
-        return 0;
-    }
-}
-
 // Helper function to get empty stats
 function getEmptyStats() {
     return {
@@ -52,7 +41,7 @@ async function fetchAllUserSites(userSiteInfo: any) {
     return [];
 }
 
-// Main POST function with proper user permission handling
+// Main POST function with legacy support
 export async function POST(request: NextRequest) {
     try {
         const { siteIds } = await request.json();
@@ -224,30 +213,74 @@ async function calculateLowStockCounts(stockItems: any[], bins: any[], siteIds: 
     return [lowStockCount, outOfStockCount];
 }
 
-// Helper functions for counting documents
+// LEGACY-SUPPORTING TRANSACTION FETCH
 async function fetchTransactions(siteIds: string[]) {
     if (siteIds.length === 0) return [];
 
+    // COMPREHENSIVE query that handles ALL cases:
+    // 1. Old GoodsReceipts with only document-level receivingBin
+    // 2. New GoodsReceipts with purchaseOrder->site reference
+    // 3. Old DispatchLogs with only document-level sourceBin
+    // 4. New DispatchLogs with sourceSite reference
+    // 5. InternalTransfers with fromBin/toBin
     const query = groq`*[_type in ["GoodsReceipt", "DispatchLog", "InternalTransfer"] 
-        && (receivingBin->site._ref in $siteIds || sourceBin->site._ref in $siteIds || fromBin->site._ref in $siteIds || toBin->site._ref in $siteIds)
-    ] | order(_updatedAt desc) [0..10] {
-        _id,
-        _type,
-        "createdAt": coalesce(receiptDate, dispatchDate, transferDate),
-        "description": coalesce("Receipt: " + receiptNumber, "Dispatch: " + dispatchNumber, "Transfer: " + transferNumber),
-        "siteName": coalesce(receivingBin->site->name, sourceBin->site->name, fromBin->site->name)
-    }`;
+    && (
+      // CASE 1: Old GoodsReceipts - document-level receivingBin
+      (_type == "GoodsReceipt" && defined(receivingBin) && receivingBin->site._ref in $siteIds) ||
+      
+      // CASE 2: New GoodsReceipts - purchaseOrder->site
+      (_type == "GoodsReceipt" && defined(purchaseOrder) && purchaseOrder->site._ref in $siteIds) ||
+      
+      // CASE 3: Old DispatchLogs - document-level sourceBin
+      (_type == "DispatchLog" && defined(sourceBin) && sourceBin->site._ref in $siteIds) ||
+      
+      // CASE 4: New DispatchLogs - sourceSite reference
+      (_type == "DispatchLog" && defined(sourceSite) && sourceSite._ref in $siteIds) ||
+      
+      // CASE 5: InternalTransfers
+      (_type == "InternalTransfer" && 
+        (fromBin->site._ref in $siteIds || toBin->site._ref in $siteIds))
+    )
+  ] | order(_updatedAt desc) [0..10] {
+    _id,
+    _type,
+    "createdAt": coalesce(receiptDate, dispatchDate, transferDate),
+    "description": coalesce("Receipt: " + receiptNumber, "Dispatch: " + dispatchNumber, "Transfer: " + transferNumber),
+    "siteName": coalesce(
+      // For GoodsReceipts - try purchaseOrder site first, then receivingBin site
+      purchaseOrder->site->name,
+      receivingBin->site->name,
+      // For DispatchLogs - try sourceSite first, then sourceBin site
+      sourceSite->name,
+      sourceBin->site->name,
+      // For InternalTransfers - fromBin site
+      fromBin->site->name
+    )
+  }`;
 
-    return await client.fetch(query, { siteIds });
+    const transactions = await client.fetch(query, { siteIds });
+
+    // Process and deduplicate transactions (some might appear twice due to multiple conditions)
+    const seenIds = new Set();
+    const uniqueTransactions = [];
+
+    for (const tx of transactions) {
+        if (!seenIds.has(tx._id)) {
+            seenIds.add(tx._id);
+            uniqueTransactions.push(tx);
+        }
+    }
+
+    return uniqueTransactions.slice(0, 10);
 }
 
 async function fetchStockItems() {
     const query = groq`*[_type == "StockItem"] {
-        _id,
-        name,
-        minimumStockLevel,
-        unitOfMeasure
-    }`;
+    _id,
+    name,
+    minimumStockLevel,
+    unitOfMeasure
+  }`;
     return await client.fetch(query);
 }
 
@@ -255,43 +288,84 @@ async function fetchBins(siteIds: string[]) {
     if (siteIds.length === 0) return [];
 
     const query = groq`*[_type == "Bin" && site._ref in $siteIds] {
-        _id,
-        "siteId": site._ref
-    }`;
+    _id,
+    "siteId": site._ref
+  }`;
     return await client.fetch(query, { siteIds });
 }
 
+// COMPREHENSIVE MONTHLY RECEIPTS COUNT (LEGACY + NEW)
 async function countMonthlyReceipts(siteIds: string[], startOfMonth: string) {
     if (siteIds.length === 0) return 0;
 
+    // Count receipts that are either:
+    // 1. Old format: document-level receivingBin for the site
+    // 2. New format: purchaseOrder->site for the site
+    // 3. Item-level: any receivedItems with receivingBin for the site
     const query = groq`count(*[
-        _type == "GoodsReceipt" && 
-        receivingBin->site._ref in $siteIds &&
-        receiptDate >= $startOfMonth
-    ])`;
+    _type == "GoodsReceipt" && 
+    receiptDate >= $startOfMonth &&
+    (
+      // Old format: document-level receivingBin
+      (defined(receivingBin) && receivingBin->site._ref in $siteIds) ||
+      
+      // New format: purchaseOrder site
+      (defined(purchaseOrder) && purchaseOrder->site._ref in $siteIds) ||
+      
+      // Item-level bins
+      count(receivedItems[defined(receivingBin) && receivingBin->site._ref in $siteIds]) > 0
+    )
+  ])`;
+
     return await client.fetch(query, { siteIds, startOfMonth });
 }
 
+// COMPREHENSIVE MONTHLY DISPATCHES COUNT (LEGACY + NEW)
 async function countMonthlyDispatches(siteIds: string[], startOfMonth: string) {
     if (siteIds.length === 0) return 0;
 
+    // Count dispatches that are either:
+    // 1. Old format: document-level sourceBin for the site
+    // 2. New format: sourceSite reference for the site
+    // 3. Item-level: any dispatchedItems with sourceBin for the site
     const query = groq`count(*[
-        _type == "DispatchLog" && 
-        sourceBin->site._ref in $siteIds &&
-        dispatchDate >= $startOfMonth
-    ])`;
+    _type == "DispatchLog" && 
+    dispatchDate >= $startOfMonth &&
+    (
+      // Old format: document-level sourceBin
+      (defined(sourceBin) && sourceBin->site._ref in $siteIds) ||
+      
+      // New format: sourceSite reference
+      (defined(sourceSite) && sourceSite._ref in $siteIds) ||
+      
+      // Item-level bins
+      count(dispatchedItems[defined(sourceBin) && sourceBin->site._ref in $siteIds]) > 0
+    )
+  ])`;
+
     return await client.fetch(query, { siteIds, startOfMonth });
 }
 
+// TODAY'S DISPATCHES COUNT (ONLY PENDING/NOT COMPLETED)
 async function countTodaysDispatches(siteIds: string[], startOfToday: string) {
     if (siteIds.length === 0) return 0;
 
     const query = groq`count(*[
-        _type == "DispatchLog" && 
-        sourceBin->site._ref in $siteIds &&
-        dispatchDate >= $startOfToday &&
-        status != "completed"
-    ])`;
+    _type == "DispatchLog" && 
+    dispatchDate >= $startOfToday &&
+    status != "completed" &&
+    (
+      // Old format: document-level sourceBin
+      (defined(sourceBin) && sourceBin->site._ref in $siteIds) ||
+      
+      // New format: sourceSite reference
+      (defined(sourceSite) && sourceSite._ref in $siteIds) ||
+      
+      // Item-level bins
+      count(dispatchedItems[defined(sourceBin) && sourceBin->site._ref in $siteIds]) > 0
+    )
+  ])`;
+
     return await client.fetch(query, { siteIds, startOfToday });
 }
 
@@ -299,53 +373,111 @@ async function countPendingTransfers(siteIds: string[]) {
     if (siteIds.length === 0) return 0;
 
     const query = groq`count(*[
-        _type == "InternalTransfer" && 
-        (fromBin->site._ref in $siteIds || toBin->site._ref in $siteIds) &&
-        status == "pending"
-    ])`;
+    _type == "InternalTransfer" && 
+    (fromBin->site._ref in $siteIds || toBin->site._ref in $siteIds) &&
+    status == "pending"
+  ])`;
     return await client.fetch(query, { siteIds });
 }
 
 async function countDraftOrders(siteIds: string[]) {
     if (siteIds.length === 0) return 0;
 
+    // Draft orders don't have site filtering in your current schema
+    // They're visible to all with appropriate role
     const query = groq`count(*[
-        _type == "PurchaseOrder" && 
-        status == "draft"
-    ])`;
+    _type == "PurchaseOrder" && 
+    status == "draft"
+  ])`;
     return await client.fetch(query);
 }
 
+// COMPREHENSIVE WEEKLY ACTIVITY COUNT
 async function countWeeklyActivity(siteIds: string[], startOfWeek: string) {
     if (siteIds.length === 0) return 0;
 
     const query = groq`count(*[
-        _type in ["GoodsReceipt", "DispatchLog", "InternalTransfer", "StockAdjustment"] &&
-        (receivingBin->site._ref in $siteIds || 
-         sourceBin->site._ref in $siteIds || 
-         fromBin->site._ref in $siteIds || 
-         toBin->site._ref in $siteIds ||
-         bin->site._ref in $siteIds) &&
-        coalesce(receiptDate, dispatchDate, transferDate, adjustmentDate) >= $startOfWeek
-    ])`;
+    _type in ["GoodsReceipt", "DispatchLog", "InternalTransfer", "StockAdjustment"] &&
+    (
+      // GoodsReceipts - all formats
+      (_type == "GoodsReceipt" && (
+        (defined(receivingBin) && receivingBin->site._ref in $siteIds) ||
+        (defined(purchaseOrder) && purchaseOrder->site._ref in $siteIds) ||
+        count(receivedItems[defined(receivingBin) && receivingBin->site._ref in $siteIds]) > 0
+      )) ||
+      
+      // DispatchLogs - all formats
+      (_type == "DispatchLog" && (
+        (defined(sourceBin) && sourceBin->site._ref in $siteIds) ||
+        (defined(sourceSite) && sourceSite._ref in $siteIds) ||
+        count(dispatchedItems[defined(sourceBin) && sourceBin->site._ref in $siteIds]) > 0
+      )) ||
+      
+      // InternalTransfers
+      (_type == "InternalTransfer" && 
+        (fromBin->site._ref in $siteIds || toBin->site._ref in $siteIds)) ||
+      
+      // StockAdjustments
+      (_type == "StockAdjustment" && bin->site._ref in $siteIds)
+    ) &&
+    coalesce(receiptDate, dispatchDate, transferDate, adjustmentDate) >= $startOfWeek
+  ])`;
+
     return await client.fetch(query, { siteIds, startOfWeek });
 }
 
+// COMPREHENSIVE TODAY ACTIVITY COUNT
 async function countTodayActivity(siteIds: string[], startOfToday: string) {
     if (siteIds.length === 0) return 0;
 
     const query = groq`count(*[
-        _type in ["GoodsReceipt", "DispatchLog", "InternalTransfer", "StockAdjustment"] &&
-        (receivingBin->site._ref in $siteIds || 
-         sourceBin->site._ref in $siteIds || 
-         fromBin->site._ref in $siteIds || 
-         toBin->site._ref in $siteIds ||
-         bin->site._ref in $siteIds) &&
-        coalesce(receiptDate, dispatchDate, transferDate, adjustmentDate) >= $startOfToday
-    ])`;
+    _type in ["GoodsReceipt", "DispatchLog", "InternalTransfer", "StockAdjustment"] &&
+    (
+      // GoodsReceipts - all formats
+      (_type == "GoodsReceipt" && (
+        (defined(receivingBin) && receivingBin->site._ref in $siteIds) ||
+        (defined(purchaseOrder) && purchaseOrder->site._ref in $siteIds) ||
+        count(receivedItems[defined(receivingBin) && receivingBin->site._ref in $siteIds]) > 0
+      )) ||
+      
+      // DispatchLogs - all formats
+      (_type == "DispatchLog" && (
+        (defined(sourceBin) && sourceBin->site._ref in $siteIds) ||
+        (defined(sourceSite) && sourceSite._ref in $siteIds) ||
+        count(dispatchedItems[defined(sourceBin) && sourceBin->site._ref in $siteIds]) > 0
+      )) ||
+      
+      // InternalTransfers
+      (_type == "InternalTransfer" && 
+        (fromBin->site._ref in $siteIds || toBin->site._ref in $siteIds)) ||
+      
+      // StockAdjustments
+      (_type == "StockAdjustment" && bin->site._ref in $siteIds)
+    ) &&
+    coalesce(receiptDate, dispatchDate, transferDate, adjustmentDate) >= $startOfToday
+  ])`;
+
     return await client.fetch(query, { siteIds, startOfToday });
 }
 
+// TOTAL STOCK COUNT (simple count of stock items)
+async function calculateTotalStockCount(siteIds: string[]): Promise<number> {
+    if (siteIds.length === 0) return 0;
+
+    try {
+        // Count stock items that are associated with bins at the given sites
+        // This is a simplified count - in reality you might want to count unique stock items
+        // that have stock in bins at these sites
+
+        const query = groq`count(*[_type == "StockItem"])`;
+        return await client.fetch(query);
+    } catch (error) {
+        console.error('Error counting stock items:', error);
+        return 0;
+    }
+}
+
+// RECEIPTS TREND CALCULATION
 async function calculateReceiptsTrend(siteIds: string[], startOfMonth: string) {
     if (siteIds.length === 0) return 0;
 
@@ -360,4 +492,26 @@ async function calculateReceiptsTrend(siteIds: string[], startOfMonth: string) {
     ]);
 
     return Math.max(0, currentMonthCount - previousMonthCount);
+}
+
+// ENHANCED: Get site names for better transaction display
+async function getSiteNamesForTransactions(transactions: any[], siteIds: string[]) {
+    if (transactions.length === 0 || siteIds.length === 0) {
+        return transactions;
+    }
+
+    // Get site names
+    const siteQuery = groq`*[_type == "Site" && _id in $siteIds] {
+    _id,
+    name
+  }`;
+
+    const sites = await client.fetch(siteQuery, { siteIds });
+    const siteMap = new Map(sites.map((site: any) => [site._id, site.name]));
+
+    // Enhance transactions with site names
+    return transactions.map(tx => ({
+        ...tx,
+        siteName: tx.siteName || siteMap.get(tx.siteId) || 'Unknown Site'
+    }));
 }
