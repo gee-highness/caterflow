@@ -179,6 +179,11 @@ export async function POST(request: Request) {
         const result = await transaction.commit();
         console.log('✅ Transaction completed');
 
+
+
+        // Update evidence status after transaction
+        await updateEvidenceStatus(receiptId, attachmentIds);
+
         // Update stock after transaction (for procurement)
         console.log('🔄 Updating stock snapshots for procurement...');
         try {
@@ -189,9 +194,6 @@ export async function POST(request: Request) {
             // Don't fail the whole request if stock update fails
             // The receipt is already marked as completed
         }
-
-        // Update evidence status after transaction
-        await updateEvidenceStatus(receiptId, attachmentIds);
 
         return NextResponse.json({
             success: true,

@@ -151,9 +151,8 @@ export default function SimpleCalculationsModal({
 										<Thead bg={theadBg}>
 											<Tr>
 												<Th>Date & Time</Th>
-												<Th>Type</Th>
-												<Th>Document</Th>
-												<Th isNumeric>Quantity Change</Th>
+												<Th>Document</Th>{/*}
+												<Th isNumeric>Change</Th>*/}
 												<Th isNumeric>Running Total</Th>
 											</Tr>
 										</Thead>
@@ -172,6 +171,7 @@ export default function SimpleCalculationsModal({
 																<Text fontSize="xs" color="gray.500">{tx.time}</Text>
 															</VStack>
 														</Td>
+
 														<Td>
 															<HStack spacing={2}>
 																<Text fontSize="lg">{tx.icon}</Text>
@@ -182,15 +182,10 @@ export default function SimpleCalculationsModal({
 																	px={2}
 																	py={0.5}
 																>
-																	{tx.badgeText}
+																	{tx.documentNumber}
 																</Badge>
 															</HStack>
-														</Td>
-														<Td>
-															<Text fontSize="sm" fontFamily="mono" color="blue.600">
-																{tx.documentNumber}
-															</Text>
-														</Td>
+														</Td>{/*
 														<Td isNumeric>
 															<Text
 																fontSize="sm"
@@ -199,7 +194,7 @@ export default function SimpleCalculationsModal({
 															>
 																{tx.quantity}
 															</Text>
-														</Td>
+														</Td>*/}
 														<Td isNumeric>
 															<Text
 																fontSize="sm"

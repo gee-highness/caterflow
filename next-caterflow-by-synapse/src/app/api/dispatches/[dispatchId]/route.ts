@@ -6,7 +6,7 @@ import { logSanityInteraction } from '@/lib/sanityLogger';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { v4 as uuidv4 } from 'uuid';
-import { revertPreviousStockChanges, updateStockForTransaction } from '@/lib/stockCalculations';
+import { updateStockForTransaction } from '@/lib/stockCalculations';
 
 // Helper to normalize incoming reference values to a plain string id
 const resolveRef = (val: any): string | null => {
@@ -143,7 +143,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ disp
                     name,
                     sku,
                     unitOfMeasure,
-                    "currentStock": *[_type == "StockSnapshot" && stockItem._ref == ^._id && bin._ref == coalesce(^.sourceBin._ref, ^.sourceBin._ref)][0]{
+                    "currentStock": *[_type == "stockSnapshot" && stockItem._ref == ^._id && bin._ref == coalesce(^.sourceBin._ref, ^.sourceBin._ref)][0]{
                         quantity
                     }.quantity,
                     "category": category->{

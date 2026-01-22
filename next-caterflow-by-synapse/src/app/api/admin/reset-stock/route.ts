@@ -23,7 +23,7 @@ export async function POST(request: Request) {
 		// Delete StockSnapshots in batches
 		while (true) {
 			const snapshots = await client.fetch(
-				`*[_type == "StockSnapshot"] | order(_createdAt asc) [0...${batchSize}] { _id }`
+				`*[_type == "stockSnapshot"] | order(_createdAt asc) [0...${batchSize}] { _id }`
 			);
 
 			if (snapshots.length === 0) break;

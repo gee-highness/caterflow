@@ -572,8 +572,8 @@ const updateStockSnapshot = async (
   stockItemId: string,
   binId: string,
   quantity: number,
-  transactionType: string,
-  transactionId: string | null
+  transactionType: string, // Keep parameter but don't use in DB
+  transactionId: string | null // Keep parameter but don't use in DB
 ): Promise<void> => {
   const startTime = Date.now();
 
@@ -596,19 +596,16 @@ const updateStockSnapshot = async (
     const now = new Date().toISOString();
 
     if (existingSnapshot) {
-      // Update existing snapshot
+      // Update existing snapshot - only fields that exist in schema
       await writeClient
         .patch(existingSnapshot._id)
         .set({
           quantity,
-          lastUpdated: now,
-          transactionType,
-          transactionId,
-          updatedBy: transactionId // Track which transaction caused update
+          lastUpdated: now
         })
         .commit();
     } else {
-      // Create new snapshot
+      // Create new snapshot - only fields that exist in schema
       await writeClient.create({
         _type: 'stockSnapshot',
         stockItem: {
@@ -620,11 +617,7 @@ const updateStockSnapshot = async (
           _ref: binId,
         },
         quantity,
-        lastUpdated: now,
-        transactionType,
-        transactionId,
-        createdAt: now,
-        updatedBy: transactionId
+        lastUpdated: now
       });
     }
 
@@ -1558,7 +1551,7 @@ export async function updateStockForTransaction(
           stockItemId: item.stockItemId,
           quantity: -(item.dispatchedQuantity || 0),
           binId: item.sourceBinId  // Use item-level sourceBinId, not document-level
-        })).filter((item: { binId: any; }) => item.binId); // Only include items with a binId
+        })).filter((item: { binId: any; quantity: number; }) => item.binId && item.quantity <= 0); // Only include items with a binId
 
         console.log(`📋 Processing ${items.length} dispatch items with item-level bins`);
         break;
@@ -1566,16 +1559,16 @@ export async function updateStockForTransaction(
       case 'transfer':
         transaction = await client.fetch(
           groq`*[_type == "InternalTransfer" && _id == $id][0] {
-            _id,
-            transferNumber,
-            status,
-            "fromBin": fromBin._ref,
-            "toBin": toBin._ref,
-            "transferredItems": transferredItems[]{
-              "stockItemId": stockItem._ref,
-              transferredQuantity
-            }
-          }`,
+              _id,
+              transferNumber,
+              status,
+              "fromBin": fromBin._ref,
+              "toBin": toBin._ref,
+              "transferredItems": transferredItems[]{
+                "stockItemId": stockItem._ref,
+                transferredQuantity
+              }
+            }`,
           { id: transactionId }
         );
 
@@ -1590,7 +1583,6 @@ export async function updateStockForTransaction(
           return;
         }
 
-        // After fetching the transfer data, add this debug log:
         console.log('🔍 TRANSFER DEBUG:', {
           transactionId,
           fromBin: transaction.fromBin,
@@ -1619,20 +1611,35 @@ export async function updateStockForTransaction(
             });
           }
         });
+
+        // Filter items to ensure they have valid binIds
+        items = items.filter((item: { stockItemId: any; quantity: number; binId: any }) => {
+          const isValid = item.stockItemId && item.binId;
+          if (!isValid) {
+            console.warn('⚠️ Skipping transfer item:', {
+              stockItemId: item.stockItemId,
+              quantity: item.quantity,
+              binId: item.binId
+            });
+          }
+          return isValid;
+        });
+
+        console.log(`📋 Processing ${items.length} transfer items`);
         break;
 
       case 'inventoryCount':
         transaction = await client.fetch(
           groq`*[_type == "InventoryCount" && _id == $id][0] {
-            _id,
-            countNumber,
-            status,
-            "bin": bin._ref,
-            "countedItems": countedItems[]{
-              "stockItemId": stockItem._ref,
-              countedQuantity
-            }
-          }`,
+              _id,
+              countNumber,
+              status,
+              "bin": bin._ref,
+              "countedItems": countedItems[]{
+                "stockItemId": stockItem._ref,
+                countedQuantity
+              }
+            }`,
           { id: transactionId }
         );
 
@@ -1645,7 +1652,19 @@ export async function updateStockForTransaction(
           stockItemId: item.stockItemId,
           quantity: item.countedQuantity || 0,
           binId: transaction.bin
-        }));
+        })).filter((item: { stockItemId: any; quantity: number; binId: any }) => {
+          const isValid = item.stockItemId && item.quantity >= 0 && item.binId;
+          if (!isValid) {
+            console.warn('⚠️ Skipping inventory count item:', {
+              stockItemId: item.stockItemId,
+              quantity: item.quantity,
+              binId: item.binId
+            });
+          }
+          return isValid;
+        });
+
+        console.log(`📋 Processing ${items.length} inventory count items`);
         break;
 
       case 'procurement':
@@ -1680,7 +1699,7 @@ export async function updateStockForTransaction(
           quantity: item.receivedQuantity || 0,
           binId: item.binId  // Use item-level binId
         })).filter((item: { stockItemId: any; quantity: number; binId: any }) => {
-          const isValid = item.stockItemId && item.quantity > 0 && item.binId;
+          const isValid = item.stockItemId && item.quantity >= 0 && item.binId;
           if (!isValid) {
             console.warn('⚠️ Skipping item:', {
               stockItemId: item.stockItemId,
@@ -2247,9 +2266,7 @@ export const batchUpdateStock = async (
         writeClient.patch(`stockSnapshot-${update.stockItemId}-${update.binId}`)
           .set({
             quantity: update.quantity,
-            lastUpdated: new Date().toISOString(),
-            transactionType: update.transactionType,
-            transactionId: update.transactionId
+            lastUpdated: new Date().toISOString()
           })
           .commit()
       );
@@ -2557,7 +2574,7 @@ export const getStockHistory = async (
   }
 };
 
-// 15. Revert previous stock changes (with enhanced UX)
+/*/ 15. Revert previous stock changes (with enhanced UX)
 export async function revertPreviousStockChanges(transactionId: string) {
   try {
     console.log(`↩️ Reverting previous stock changes for transaction:`, transactionId);
@@ -2631,7 +2648,7 @@ export async function revertPreviousStockChanges(transactionId: string) {
     console.error('❌ Failed to revert stock changes:', error);
     throw error;
   }
-}
+}*/
 
 // 16. Utility function to clear all active timers (debugging)
 export const clearAllTimers = (): void => {
@@ -3630,11 +3647,178 @@ export const auditStockCalculations = async (
   };
 };
 
+export const getCurrentStockSnapshots = async (
+  stockItemIds?: string[],
+  binIds?: string[]
+): Promise<Array<{
+  _id: string;
+  stockItem: {
+    _id: string;
+    name: string;
+    sku?: string;
+  };
+  bin: {
+    _id: string;
+    name: string;
+    site?: {
+      _id: string;
+      name: string;
+    };
+  };
+  quantity: number;
+  lastUpdated: string;
+}>> => {
+  try {
+    console.log('📊 Fetching current stock snapshots...');
+
+    let query = groq`*[_type == "stockSnapshot"]`;
+    const params: any = {};
+
+    // Add filters if provided
+    if (stockItemIds && stockItemIds.length > 0) {
+      query += `[stockItem._ref in $stockItemIds]`;
+      params.stockItemIds = stockItemIds;
+    }
+
+    if (binIds && binIds.length > 0) {
+      const prefix = stockItemIds ? '&&' : '[';
+      query += ` ${prefix} bin._ref in $binIds]`;
+      params.binIds = binIds;
+    }
+
+    // If no filters, close the array
+    if (!stockItemIds && !binIds) {
+      query += `]`;
+    }
+
+    // Add the rest of the query - ONLY FIELDS THAT EXIST IN SCHEMA
+    query += ` {
+      _id,
+      "stockItem": stockItem->{
+        _id,
+        name,
+        sku,
+        unitOfMeasure,
+        minimumStockLevel
+      },
+      "bin": bin->{
+        _id,
+        name,
+        "site": site->{
+          _id,
+          name
+        }
+      },
+      quantity,
+      lastUpdated
+    } | order(lastUpdated desc)`;
+
+    const snapshots = await client.fetch(query, params);
+
+    console.log(`✅ Found ${snapshots.length} stock snapshots`);
+    return snapshots;
+
+  } catch (error) {
+    console.error('❌ Error fetching stock snapshots:', error);
+    return [];
+  }
+};
 
 
+// Add after the previous function
+export const compareSnapshotsWithCalculated = async (
+  stockItemIds: string[],
+  binIds: string[]
+): Promise<Array<{
+  stockItemId: string;
+  binId: string;
+  snapshotQuantity: number;
+  calculatedQuantity: number;
+  difference: number;
+  matches: boolean;
+  stockItemName?: string;
+  binName?: string;
+}>> => {
+  try {
+    console.log('🔍 Comparing snapshots with calculated stock...');
 
+    // Get snapshots
+    const snapshots = await getCurrentStockSnapshots(stockItemIds, binIds);
 
+    // Calculate from transactions
+    const calculatedResults = await calculateBulkStockFromTransactions(
+      stockItemIds,
+      binIds
+    );
 
+    // Create comparison
+    const comparison = [];
+
+    for (const snapshot of snapshots) {
+      const key = `${snapshot.stockItem._id}-${snapshot.bin._id}`;
+      const calculatedQuantity = calculatedResults[key] || 0;
+      const snapshotQuantity = snapshot.quantity || 0;
+      const difference = Math.abs(snapshotQuantity - calculatedQuantity);
+      const matches = difference < 0.01; // Allow small floating point differences
+
+      comparison.push({
+        stockItemId: snapshot.stockItem._id,
+        binId: snapshot.bin._id,
+        stockItemName: snapshot.stockItem.name,
+        binName: snapshot.bin.name,
+        snapshotQuantity,
+        calculatedQuantity,
+        difference,
+        matches
+      });
+    }
+
+    // Also check for items that should have snapshots but don't
+    const missingSnapshots = [];
+
+    for (const binId of binIds) {
+      for (const itemId of stockItemIds) {
+        const key = `${itemId}-${binId}`;
+        const calculatedQuantity = calculatedResults[key] || 0;
+
+        // If there's stock but no snapshot
+        if (calculatedQuantity > 0) {
+          const hasSnapshot = snapshots.some(s =>
+            s.stockItem._id === itemId && s.bin._id === binId
+          );
+
+          if (!hasSnapshot) {
+            missingSnapshots.push({
+              stockItemId: itemId,
+              binId,
+              calculatedQuantity,
+              snapshotQuantity: 0,
+              difference: calculatedQuantity,
+              matches: false,
+              status: 'MISSING_SNAPSHOT'
+            });
+          }
+        }
+      }
+    }
+
+    const allResults = [...comparison, ...missingSnapshots];
+
+    console.log('📊 Comparison results:', {
+      totalSnapshots: snapshots.length,
+      compared: comparison.length,
+      missing: missingSnapshots.length,
+      matches: allResults.filter(r => r.matches).length,
+      mismatches: allResults.filter(r => !r.matches).length
+    });
+
+    return allResults;
+
+  } catch (error) {
+    console.error('❌ Error comparing snapshots:', error);
+    return [];
+  }
+};
 
 
 // Add to exports section at the bottom or near other export functions:

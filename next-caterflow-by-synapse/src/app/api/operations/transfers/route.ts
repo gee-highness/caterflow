@@ -7,7 +7,7 @@ import { logSanityInteraction } from '@/lib/sanityLogger';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { getUserSiteInfo, buildTransactionSiteFilter } from '@/lib/siteFiltering';
-import { revertPreviousStockChanges, updateStockForTransaction } from '@/lib/stockCalculations';
+import { updateStockForTransaction } from '@/lib/stockCalculations';
 import { id } from 'date-fns/locale';
 
 // Helper function to generate the next unique transfer number
@@ -302,12 +302,12 @@ export async function PATCH(request: Request) {
             }));
         }
 
-        // In PATCH function, add revert logic:
+        /*/ In PATCH function, add revert logic:
         const wasCompleted = currentTransfer?.status === 'completed';
         if (wasCompleted && (body.transferredItems || body.fromBin || body.toBin)) {
             console.log('↩️ Reverting previous stock changes for transfer edit');
             await revertPreviousStockChanges(currentTransfer.id);
-        }
+        }*/
 
         const result = await writeClient.patch(_id).set(patchedData).commit();
 

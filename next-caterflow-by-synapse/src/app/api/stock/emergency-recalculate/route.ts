@@ -15,11 +15,11 @@ export async function POST(request: Request) {
 
 		console.log('🚨 Starting emergency stock recalculation via API...');
 
-		// 1. Clear existing StockSnapshots
+		// 1. Clear existing stockSnapshots
 		let snapshotsDeleted = 0;
 		while (true) {
 			const snapshots = await client.fetch(
-				`*[_type == "StockSnapshot"] | order(_createdAt asc) [0...50] { _id }`
+				`*[_type == "stockSnapshot"] | order(_createdAt asc) [0...50] { _id }`
 			);
 
 			if (snapshots.length === 0) break;
@@ -85,15 +85,13 @@ export async function POST(request: Request) {
 						});
 					}
 
-					// Create StockSnapshot
+					// Create stockSnapshot
 					await writeClient.create({
-						_type: 'StockSnapshot',
-						transactionType: 'procurement',
-						transaction: { _type: 'reference', _ref: receipt._id },
+						_type: 'stockSnapshot',
 						stockItem: { _type: 'reference', _ref: item.stockItem._id },
-						quantityChange: item.receivedQuantity,
-						transactionDate: new Date().toISOString(),
-						notes: `Emergency recalc: ${receipt.receiptNumber}`
+						bin: { _type: 'reference', _ref: receipt.receivingBin._id },
+						quantity: item.receivedQuantity,
+						lastUpdated: new Date().toISOString()
 					});
 				}
 			}

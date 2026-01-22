@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server';
 import { client, writeClient } from '@/lib/sanity';
 import { groq } from 'next-sanity';
 import { logSanityInteraction } from '@/lib/sanityLogger';
-import { revertPreviousStockChanges, updateStockForTransaction } from '@/lib/stockCalculations';
+import { updateStockForTransaction } from '@/lib/stockCalculations';
 
 export async function GET(
   request: Request,
@@ -82,10 +82,10 @@ export async function PUT(
     const wasCompleted = existingCount?.status === 'completed';
     const willBeCompleted = updateData.status === 'completed' || (!updateData.status && wasCompleted);
 
-    if (wasCompleted && (updateData.countedItems || updateData.bin)) {
-      console.log('↩️ Reverting previous stock changes for count edit');
-      await revertPreviousStockChanges(id);
-    }
+    /*    if (wasCompleted && (updateData.countedItems || updateData.bin)) {
+          console.log('↩️ Reverting previous stock changes for count edit');
+          await revertPreviousStockChanges(id);
+        }*/
 
     const result = await writeClient
       .patch(id)

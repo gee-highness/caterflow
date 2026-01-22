@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { client, writeClient } from '@/lib/sanity';
 import { groq } from 'next-sanity';
 import { logSanityInteraction } from '@/lib/sanityLogger';
-import { updateStockForTransaction, revertPreviousStockChanges } from '@/lib/stockCalculations';
+import { updateStockForTransaction } from '@/lib/stockCalculations';
 
 // Helper function to generate the next unique transfer number
 const getNextTransferNumber = async (): Promise<string> => {
@@ -178,10 +178,10 @@ export async function PATCH(request: Request) {
         const wasCompleted = updateData?.status === 'completed';
         const willBeCompleted = updateData.status === 'completed' || (!updateData.status && wasCompleted);
 
-        if (wasCompleted && (updateData.transferredItems || updateData.fromBin || updateData.toBin)) {
-            console.log('↩️ Reverting previous stock changes for transfer edit');
-            await revertPreviousStockChanges(_id);
-        }
+        /*        if (wasCompleted && (updateData.transferredItems || updateData.fromBin || updateData.toBin)) {
+                    console.log('↩️ Reverting previous stock changes for transfer edit');
+                    await revertPreviousStockChanges(_id);
+                }*/
 
         const result = await patch.commit();
 

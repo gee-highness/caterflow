@@ -43,7 +43,7 @@ import {
     Select,
 } from '@chakra-ui/react';
 import { useSession } from 'next-auth/react';
-import { FiEye, FiArrowLeft, FiArrowRight, FiSearch, FiRefreshCw, FiFileText, FiInfo, FiTrendingUp, FiTrendingDown } from 'react-icons/fi';
+import { FiEye, FiArrowLeft, FiArrowRight, FiSearch, FiRefreshCw, FiFileText, FiInfo, FiTrendingUp, FiTrendingDown, FiDatabase } from 'react-icons/fi';
 import { MdOutlineSort } from 'react-icons/md';
 import DataTable, { Column } from './DataTable';
 import { Site, StockItem } from '@/lib/sanityTypes';
@@ -98,6 +98,10 @@ export default function CurrentStockPage() {
     const [selectedItem, setSelectedItem] = useState<CurrentStockItem | null>(null);
     const [transactionHistory, setTransactionHistory] = useState<any>(null);
     const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+
+    // Add to your other state variables
+    const [snapshotData, setSnapshotData] = useState<any[]>([]);
+    const [showSnapshots, setShowSnapshots] = useState(false);
 
     // Theming props
     const bgPrimary = useColorModeValue('neutral.light.bg-primary', 'neutral.dark.bg-primary');
@@ -768,7 +772,7 @@ export default function CurrentStockPage() {
                                 </Text>
                             )}
                         </Text>
-                        <Button
+                        {/*                        <Button
                             size="xs"
                             variant="link"
                             colorScheme="blue"
@@ -777,7 +781,7 @@ export default function CurrentStockPage() {
                             mt={1}
                         >
                             View Calculation
-                        </Button>
+                        </Button>*/}
                     </Flex>
                 </Flex>
             ),
@@ -803,6 +807,52 @@ export default function CurrentStockPage() {
             isSortable: true,
         },
     ];
+
+    const fetchStockSnapshots = async () => {
+        try {
+            setIsLoading(true);
+            console.log('📊 Fetching stock snapshots...');
+
+            // Get unique item and bin IDs from current items
+            const uniqueItemIds = [...new Set(currentStockItems.map(item => {
+                // Extract original item ID (remove bin suffix)
+                return item._id.includes('-') ? item._id.split('-')[0] : item._id;
+            }))];
+
+            const uniqueBinIds = [...new Set(currentStockItems.map(item => item.binId))];
+
+            // Call the new function
+            const response = await fetch('/api/stock/snapshots', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    stockItemIds: uniqueItemIds,
+                    binIds: uniqueBinIds
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to fetch snapshots');
+            }
+
+            const data = await response.json();
+            setSnapshotData(data);
+            setShowSnapshots(true);
+
+            console.log(`✅ Loaded ${data.length} snapshots`);
+
+        } catch (error) {
+            console.error('Error fetching snapshots:', error);
+            toast({
+                title: 'Error',
+                description: 'Failed to fetch stock snapshots',
+                status: 'error',
+                duration: 3000,
+            });
+        } finally {
+            setIsLoading(false);
+        }
+    };
 
     const exportCurrentStockPDF = () => {
         const sortedItems = [...filteredItems].sort((a, b) =>
@@ -1064,7 +1114,7 @@ export default function CurrentStockPage() {
                                 </MenuItem>
                             </MenuList>
                         </Menu>
-                        <Menu>
+                        {/*<Menu>
                             <MenuButton as={Button} leftIcon={<FiRefreshCw />} isLoading={isRefreshing}>
                                 Refresh
                             </MenuButton>
@@ -1080,7 +1130,17 @@ export default function CurrentStockPage() {
                                     Emergency Recalculate All
                                 </MenuItem>
                             </MenuList>
-                        </Menu>
+                        </Menu>*/}
+                        <Button
+                            leftIcon={<FiRefreshCw />}
+                            onClick={() => handleRefresh(true)}
+                            variant="outline"
+                            colorScheme="brand"
+                            size="sm"
+                            isDisabled={isLoading || isRefreshing}
+                        >
+                            Refresh
+                        </Button>
                         <Button
                             leftIcon={<FiFileText />}
                             onClick={exportCurrentStockPDF}
@@ -1091,8 +1151,87 @@ export default function CurrentStockPage() {
                         >
                             Export PDF
                         </Button>
+                        <Button
+                            leftIcon={<FiDatabase />}
+                            onClick={fetchStockSnapshots}
+                            variant="outline"
+                            colorScheme="purple"
+                            size="sm"
+                            isLoading={isLoading}
+                        >
+                            View Snapshots
+                        </Button>
                     </HStack>
                 </Flex>
+
+                {showSnapshots && (
+                    <Card mt={4} bg={bgCard} borderColor={borderCard} borderWidth="1px">
+                        <CardBody>
+                            <Flex justify="space-between" align="center" mb={4}>
+                                <Heading size="md" color={primaryTextColor}>
+                                    Stock Snapshots ({snapshotData.length})
+                                </Heading>
+                                <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    onClick={() => setShowSnapshots(false)}
+                                >
+                                    Close
+                                </Button>
+                            </Flex>
+
+                            <DataTable
+                                columns={[
+                                    {
+                                        accessorKey: 'stockItem.name',
+                                        header: 'Item',
+                                        isSortable: true,
+                                    },
+                                    {
+                                        accessorKey: 'bin.name',
+                                        header: 'Bin',
+                                        isSortable: true,
+                                    },
+                                    {
+                                        accessorKey: 'quantity',
+                                        header: 'Quantity',
+                                        isSortable: true,
+                                        cell: (row: any) => (
+                                            <Badge
+                                                colorScheme={row.quantity > 0 ? 'green' : 'red'}
+                                                variant="subtle"
+                                            >
+                                                {row.quantity}
+                                            </Badge>
+                                        ),
+                                    },
+                                    {
+                                        accessorKey: 'lastUpdated',
+                                        header: 'Last Updated',
+                                        isSortable: true,
+                                        cell: (row: any) => (
+                                            <Text fontSize="sm">
+                                                {new Date(row.lastUpdated).toLocaleString()}
+                                            </Text>
+                                        ),
+                                    },
+                                    {
+                                        accessorKey: 'transactionType',
+                                        header: 'Source',
+                                        isSortable: true,
+                                        cell: (row: any) => (
+                                            <Badge colorScheme="blue" variant="subtle">
+                                                {row.transactionType || 'manual'}
+                                            </Badge>
+                                        ),
+                                    },
+                                ]}
+                                data={snapshotData}
+                                loading={isLoading}
+                            />
+                        </CardBody>
+                    </Card>
+                )}
 
                 {/* Progress Bar during Calculation */}
                 {(isLoading || isRefreshing) && progress && (

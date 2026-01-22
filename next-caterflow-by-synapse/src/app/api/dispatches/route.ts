@@ -401,7 +401,7 @@ export async function POST(request: Request) {
         });
 
         // Only update stock if dispatch is being completed
-        if (finalEvidenceStatus === 'complete') {
+        if (result.status === 'complete') {
             console.log('📦 Updating stock for newly created completed dispatch');
             await updateStockForTransaction('dispatch', result._id);
         }
@@ -604,7 +604,7 @@ export async function PATCH(request: Request) {
         const result = await patch.commit();
 
         // ✅ Update stock if dispatch is completed (ONLY HERE, not in validation)
-        if (willBeCompleted && !wasCompleted) {
+        if (result.status === "completed") {
             console.log('📦 Updating stock for completed dispatch:', result.dispatchNumber);
             await updateStockForTransaction('dispatch', result._id);
         }

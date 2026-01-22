@@ -5,7 +5,7 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { logSanityInteraction } from '@/lib/sanityLogger';
 import { NextResponse } from 'next/server';
-import { revertPreviousStockChanges, updateStockForTransaction } from '@/lib/stockCalculations';
+import { updateStockForTransaction } from '@/lib/stockCalculations';
 import { v4 as uuidv4 } from 'uuid';
 import { getUserSiteInfo, buildGoodsReceiptSiteFilter } from '@/lib/siteFiltering';
 
@@ -378,18 +378,12 @@ export async function PUT(
             itemsWithBins: processedReceivedItems?.filter((item: any) => item.receivingBin).length || 0
         });
 
-        // Revert stock if editing completed receipt with new items
-        if (wasCompleted && updateData.receivedItems) {
-            console.log('↩️ Reverting previous stock changes for goods receipt edit:', existingReceipt.receiptNumber);
-            await revertPreviousStockChanges(id);
-        }
-
         // Apply the patch
         const patch = writeClient.patch(id).set(patchData);
         const result = await patch.commit();
 
         // Update stock if status changed TO 'completed'
-        if (isStatusChangeToCompleted) {
+        if (patchData.status === "completed") {
             console.log('📦 Updating stock for status change to completed:', existingReceipt.receiptNumber);
             await updateStockForTransaction('procurement', id);
         }
@@ -466,14 +460,6 @@ export async function DELETE(
                 { error: 'Completed goods receipt cannot be deleted' },
                 { status: 400 }
             );
-        }
-
-        // Revert stock changes if any were made
-        try {
-            await revertPreviousStockChanges(id);
-        } catch (stockError) {
-            console.error('Error reverting stock changes:', stockError);
-            // Continue with deletion even if stock revert fails
         }
 
         const result = await writeClient.delete(id);

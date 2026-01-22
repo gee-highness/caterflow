@@ -4,7 +4,7 @@ import { client, writeClient } from '@/lib/sanity';
 import { groq } from 'next-sanity';
 import { logSanityInteraction } from '@/lib/sanityLogger';
 import { getUserSiteInfo, buildBinSiteFilter } from '@/lib/siteFiltering';
-import { updateStockForTransaction, revertPreviousStockChanges, calculateStock } from '@/lib/stockCalculations';
+import { updateStockForTransaction, calculateStock } from '@/lib/stockCalculations';
 
 const getCurrentStockForItem = async (stockItemId: string, binId: string): Promise<number> => {
     try {
@@ -251,11 +251,11 @@ export async function PUT(request: Request) {
         const wasCompleted = existingCount?.status === 'completed';
         const willBeCompleted = updateData.status === 'completed' || (!updateData.status && wasCompleted);
 
-        if (wasCompleted && (updateData.countedItems || updateData.bin)) {
-            console.log('↩️ Reverting previous stock changes for count edit');
-            await revertPreviousStockChanges(_id);
-        }
-
+        /*        if (wasCompleted && (updateData.countedItems || updateData.bin)) {
+                    console.log('↩️ Reverting previous stock changes for count edit');
+                    await revertPreviousStockChanges(_id);
+                }
+        */
         const result = await patch.commit();
 
         // ✅ KEEP ONLY ONE: Check actual result status

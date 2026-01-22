@@ -2,10 +2,10 @@ import { NextResponse } from 'next/server';
 import { client } from '@/lib/sanity';
 
 export async function GET() {
-	try {
-		const summary = await client.fetch(`
+    try {
+        const summary = await client.fetch(`
             {
-                "totalSnapshots": count(*[_type == "StockSnapshot"]),
+                "totalSnapshots": count(*[_type == "stockSnapshot"]),
                 "totalBinStock": count(*[_type == "BinStock"]),
                 "totalStockValue": *[_type == "BinStock"] {
                     quantity,
@@ -26,11 +26,11 @@ export async function GET() {
             }
         `);
 
-		return NextResponse.json(summary);
-	} catch (error: any) {
-		return NextResponse.json(
-			{ error: 'Failed to get summary', details: error.message },
-			{ status: 500 }
-		);
-	}
+        return NextResponse.json(summary);
+    } catch (error: any) {
+        return NextResponse.json(
+            { error: 'Failed to get summary', details: error.message },
+            { status: 500 }
+        );
+    }
 }
