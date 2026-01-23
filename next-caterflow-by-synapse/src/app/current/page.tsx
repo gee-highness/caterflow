@@ -1151,7 +1151,7 @@ export default function CurrentStockPage() {
                         >
                             Export PDF
                         </Button>
-                        <Button
+                        {/*<Button
                             leftIcon={<FiDatabase />}
                             onClick={fetchStockSnapshots}
                             variant="outline"
@@ -1160,7 +1160,7 @@ export default function CurrentStockPage() {
                             isLoading={isLoading}
                         >
                             View Snapshots
-                        </Button>
+                        </Button>*/}
                     </HStack>
                 </Flex>
 
