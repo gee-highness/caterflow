@@ -16,6 +16,443 @@ import { Mutex } from 'async-mutex';
 
 Decimal.set({ precision: 10, rounding: Decimal.ROUND_HALF_UP });
 
+// Add this function to stockCalculations.ts, after the imports but before updateStockForTransaction
+
+/**
+ * 🚀 BULK UPDATE STOCK SNAPSHOTS - Optimized for all transaction types
+ * Updates multiple stock snapshots in minimal API calls
+ */
+export async function bulkUpdateStockSnapshots(
+  updates: Array<{
+    stockItemId: string;
+    binId: string;
+    quantity: number; // Can be positive (add), negative (deduct), or absolute (set)
+    transactionType: 'procurement' | 'dispatch' | 'transfer' | 'inventoryCount' | 'adjustment';
+    transactionId: string;
+    isAbsolute?: boolean; // true for inventoryCount (SET value), false for others (ADJUST value)
+  }>,
+  options?: {
+    onProgress?: (progress: { processed: number; total: number; batch: number }) => void;
+    maxRetries?: number;
+  }
+): Promise<{
+  success: number;
+  failed: number;
+  results: Array<{ stockItemId: string; binId: string; success: boolean; error?: string }>;
+}> {
+  const startTime = Date.now();
+  const maxRetries = options?.maxRetries || 3;
+
+  if (!updates || updates.length === 0) {
+    console.log('📭 No updates to process');
+    return { success: 0, failed: 0, results: [] };
+  }
+
+  console.log(`🚀 Starting bulk update for ${updates.length} items (${updates[0]?.transactionType})`);
+
+  // Remove duplicates (same item-bin combination)
+  const uniqueUpdates = Array.from(
+    new Map(
+      updates.map(update => [`${update.stockItemId}-${update.binId}`, update])
+    ).values()
+  );
+
+  console.log(`📊 Unique items to update: ${uniqueUpdates.length} (from ${updates.length} total)`);
+
+  try {
+    // ATTEMPT 1: Bulk transaction (fastest, most efficient)
+    try {
+      return await attemptBulkTransaction(uniqueUpdates, options);
+    } catch (bulkError) {
+      console.warn('⚠️ Bulk transaction failed, falling back to batched:', bulkError);
+
+      // ATTEMPT 2: Batched updates (slower but more reliable)
+      return await attemptBatchedUpdates(uniqueUpdates, maxRetries, options);
+    }
+  } finally {
+    const duration = Date.now() - startTime;
+    console.log(`⏱️ Bulk update completed in ${duration}ms`);
+  }
+}
+
+// ========== PRIVATE HELPER FUNCTIONS ==========
+
+/**
+ * ATTEMPT 1: Use Sanity transaction API for maximum efficiency
+ * ONE API call for ALL updates
+ */
+async function attemptBulkTransaction(
+  updates: any[],
+  options?: { onProgress?: (progress: any) => void }
+): Promise<any> {
+  console.log(`🔄 Attempting bulk transaction for ${updates.length} items`);
+
+  // Group by bin for more efficient queries
+  const updatesByBin = groupUpdatesByBin(updates);
+
+  const allResults: any[] = [];
+  let totalSuccess = 0;
+  let totalFailed = 0;
+
+  // Process each bin group separately (bin-level locking)
+  for (const [binId, binUpdates] of updatesByBin) {
+    console.log(`📦 Processing bin ${binId}: ${binUpdates.length} items`);
+
+    try {
+      const binResults = await processBinBulkTransaction(binUpdates, binId);
+      allResults.push(...binResults.results);
+      totalSuccess += binResults.success;
+      totalFailed += binResults.failed;
+
+      // Report progress
+      options?.onProgress?.({
+        processed: totalSuccess + totalFailed,
+        total: updates.length,
+        batch: 1
+      });
+
+    } catch (binError) {
+      console.error(`❌ Failed to process bin ${binId}:`, binError);
+      // Mark all items in this bin as failed for now
+      binUpdates.forEach(update => {
+        allResults.push({
+          stockItemId: update.stockItemId,
+          binId: update.binId,
+          success: false,
+          error: `Bin processing failed: ${binError}`
+        });
+        totalFailed++;
+      });
+    }
+  }
+
+  return {
+    success: totalSuccess,
+    failed: totalFailed,
+    results: allResults
+  };
+}
+
+/**
+ * Process all updates for a single bin in one transaction
+ */
+async function processBinBulkTransaction(
+  updates: any[],
+  binId: string
+): Promise<any> {
+  // STEP 1: Get ALL existing snapshots for this bin in ONE query
+  const itemIds = updates.map(u => u.stockItemId);
+
+  const existingSnapshots = await client.fetch(
+    groq`*[_type == "stockSnapshot" && 
+          stockItem._ref in $itemIds && 
+          bin._ref == $binId] {
+      _id,
+      "itemId": stockItem._ref,
+      quantity
+    }`,
+    { itemIds, binId }
+  );
+
+  // Create lookup map
+  const snapshotMap = new Map();
+  existingSnapshots.forEach((snapshot: any) => {
+    snapshotMap.set(snapshot.itemId, snapshot);
+  });
+
+  // STEP 2: Build transaction with ALL operations
+  const now = new Date().toISOString();
+  let transactionBuilder = writeClient.transaction();
+
+  const cacheUpdates: Array<{ key: string; quantity: number }> = [];
+  const results: any[] = [];
+
+  updates.forEach(update => {
+    try {
+      const existing = snapshotMap.get(update.stockItemId);
+      const currentQty = existing?.quantity || 0;
+
+      // Calculate new quantity based on transaction type
+      let newQuantity: number;
+      if (update.isAbsolute || update.transactionType === 'inventoryCount') {
+        // SET absolute value (inventory counts)
+        newQuantity = update.quantity;
+      } else {
+        // ADJUST by amount (procurement, dispatch, transfer)
+        newQuantity = currentQty + update.quantity;
+
+        // For safety: don't go below 0 for dispatches unless explicitly allowed
+        if (update.transactionType === 'dispatch' && newQuantity < 0) {
+          console.warn(`⚠️ Dispatch would make stock negative: ${update.stockItemId} in ${binId}`);
+          // Decide what to do: set to 0 or allow negative?
+          newQuantity = 0; // or newQuantity = currentQty + update.quantity to allow negative
+        }
+      }
+
+      const snapshotData: any = {
+        _type: 'stockSnapshot',
+        stockItem: {
+          _type: 'reference',
+          _ref: update.stockItemId,
+        },
+        bin: {
+          _type: 'reference',
+          _ref: binId,
+        },
+        quantity: newQuantity,
+        lastUpdated: now
+      };
+
+      if (existing) {
+        // Update existing
+        transactionBuilder = transactionBuilder.patch(existing._id, {
+          set: snapshotData
+        });
+      } else {
+        // Create new
+        transactionBuilder = transactionBuilder.create(snapshotData);
+      }
+
+      // Track cache updates
+      const cacheKey = `${update.stockItemId}-${binId}`;
+      cacheUpdates.push({ key: cacheKey, quantity: newQuantity });
+
+      // Track result
+      results.push({
+        stockItemId: update.stockItemId,
+        binId,
+        success: true,
+        previousQuantity: currentQty,
+        newQuantity
+      });
+
+    } catch (itemError) {
+      console.error(`❌ Failed to prepare update for ${update.stockItemId}:`, itemError);
+      results.push({
+        stockItemId: update.stockItemId,
+        binId,
+        success: false,
+        error: itemError
+      });
+    }
+  });
+
+  // STEP 3: Execute transaction (ONE API call for all items in this bin)
+  if (results.some(r => r.success)) {
+    console.log(`🚀 Executing transaction for bin ${binId}: ${results.filter(r => r.success).length} operations`);
+    await transactionBuilder.commit();
+
+    // Update caches after successful commit
+    cacheUpdates.forEach(({ key, quantity }) => {
+      snapshotCache.set(key, quantity, {
+        confidence: 'high',
+        transactionType: updates[0]?.transactionType
+      });
+      invalidateStockCache(key.split('-')[0]); // itemId
+      invalidateStockCache(key.split('-')[1]); // binId
+    });
+  }
+
+  return {
+    success: results.filter(r => r.success).length,
+    failed: results.filter(r => !r.success).length,
+    results
+  };
+}
+
+/**
+ * ATTEMPT 2: Fallback to batched updates if bulk transaction fails
+ */
+async function attemptBatchedUpdates(
+  updates: any[],
+  maxRetries: number,
+  options?: { onProgress?: (progress: any) => void }
+): Promise<any> {
+  console.log(`🔄 Starting batched fallback for ${updates.length} items`);
+
+  const BATCH_SIZE = 5; // Small batches to avoid rate limits
+  const BASE_DELAY = 100; // ms between batches
+
+  const allResults: any[] = [];
+  let totalProcessed = 0;
+
+  for (let i = 0; i < updates.length; i += BATCH_SIZE) {
+    const batch = updates.slice(i, i + BATCH_SIZE);
+    const batchNumber = Math.floor(i / BATCH_SIZE) + 1;
+    const totalBatches = Math.ceil(updates.length / BATCH_SIZE);
+
+    console.log(`📦 Processing batch ${batchNumber}/${totalBatches} (${batch.length} items)`);
+
+    let retryCount = 0;
+    let batchCompleted = false;
+    let batchResults: any[] = [];
+
+    while (!batchCompleted && retryCount <= maxRetries) {
+      try {
+        // Process batch with individual updates
+        batchResults = await Promise.all(
+          batch.map(update => processSingleItemUpdate(update, retryCount))
+        );
+
+        batchCompleted = true;
+
+      } catch (batchError) {
+        console.error(`❌ Batch ${batchNumber} failed:`, batchError);
+        retryCount++;
+
+        if (retryCount <= maxRetries) {
+          console.log(`  🔄 Retrying batch (attempt ${retryCount}/${maxRetries})`);
+          await new Promise(resolve => setTimeout(resolve, 1000 * retryCount)); // Exponential backoff
+        } else {
+          console.error(`❌ Batch ${batchNumber} failed after ${maxRetries} retries`);
+          // Mark all as failed
+          batchResults = batch.map(update => ({
+            stockItemId: update.stockItemId,
+            binId: update.binId,
+            success: false,
+            error: `Failed after ${maxRetries} retries`
+          }));
+          batchCompleted = true;
+        }
+      }
+    }
+
+    allResults.push(...batchResults);
+    totalProcessed += batch.length;
+
+    // Report progress
+    options?.onProgress?.({
+      processed: totalProcessed,
+      total: updates.length,
+      batch: batchNumber
+    });
+
+    // Delay between batches
+    if (i + BATCH_SIZE < updates.length) {
+      await new Promise(resolve => setTimeout(resolve, BASE_DELAY));
+    }
+  }
+
+  const success = allResults.filter(r => r.success).length;
+  const failed = allResults.filter(r => !r.success).length;
+
+  console.log(`✅ Batched fallback complete: ${success} succeeded, ${failed} failed`);
+
+  return {
+    success,
+    failed,
+    results: allResults
+  };
+}
+
+/**
+ * Process a single item update (for fallback mode)
+ */
+async function processSingleItemUpdate(
+  update: any,
+  retryCount: number
+): Promise<any> {
+  const lockKey = `${update.stockItemId}-${update.binId}`;
+  const mutex = getMutexForKey(lockKey);
+
+  return mutex.runExclusive(async () => {
+    try {
+      // Get current snapshot
+      const currentSnapshot = await client.fetch(
+        groq`*[_type == "stockSnapshot" && 
+              stockItem._ref == $itemId && 
+              bin._ref == $binId][0]`,
+        { itemId: update.stockItemId, binId: update.binId }
+      );
+
+      const currentQty = currentSnapshot?.quantity || 0;
+
+      // Calculate new quantity
+      let newQuantity: number;
+      if (update.isAbsolute || update.transactionType === 'inventoryCount') {
+        newQuantity = update.quantity;
+      } else {
+        newQuantity = currentQty + update.quantity;
+
+        // Safety check for dispatches
+        if (update.transactionType === 'dispatch' && newQuantity < 0) {
+          console.warn(`⚠️ Dispatch makes stock negative: ${update.stockItemId} in ${update.binId}`);
+          newQuantity = 0; // or handle differently
+        }
+      }
+
+      const now = new Date().toISOString();
+      const snapshotData: any = {
+        _type: 'stockSnapshot',
+        stockItem: {
+          _type: 'reference',
+          _ref: update.stockItemId,
+        },
+        bin: {
+          _type: 'reference',
+          _ref: update.binId,
+        },
+        quantity: newQuantity,
+        lastUpdated: now
+      };
+
+      if (currentSnapshot) {
+        await writeClient
+          .patch(currentSnapshot._id)
+          .set(snapshotData)
+          .commit();
+      } else {
+        await writeClient.create(snapshotData);
+      }
+
+      // Update cache
+      const cacheKey = `${update.stockItemId}-${update.binId}`;
+      snapshotCache.set(cacheKey, newQuantity, {
+        confidence: 'high',
+        fallback: true,
+        retryCount
+      });
+      invalidateStockCache(update.stockItemId);
+      invalidateStockCache(update.binId);
+
+      return {
+        stockItemId: update.stockItemId,
+        binId: update.binId,
+        success: true,
+        previousQuantity: currentQty,
+        newQuantity,
+        retryCount
+      };
+
+    } catch (error) {
+      console.error(`❌ Failed to update ${update.stockItemId}-${update.binId}:`, error);
+      return {
+        stockItemId: update.stockItemId,
+        binId: update.binId,
+        success: false,
+        error: error,
+        retryCount
+      };
+    }
+  });
+}
+
+/**
+ * Group updates by bin for more efficient processing
+ */
+function groupUpdatesByBin(updates: any[]): Map<string, any[]> {
+  const map = new Map<string, any[]>();
+
+  updates.forEach(update => {
+    if (!map.has(update.binId)) {
+      map.set(update.binId, []);
+    }
+    map.get(update.binId)!.push(update);
+  });
+
+  return map;
+}
+
 // Validation function for dispatch items
 export const validateDispatchItems = async (dispatchId: string): Promise<{
   valid: boolean;
@@ -1620,22 +2057,83 @@ export async function updateStockForTransaction(
     console.log(`📊 Updating stock snapshots for ${transactionType}:`, transactionId);
 
     let transaction: any;
-    let items: Array<{ stockItemId: string, quantity: number, binId: string }> = [];
+    let bulkUpdates: Array<{
+      stockItemId: string;
+      binId: string;
+      quantity: number;
+      transactionType: 'dispatch' | 'transfer' | 'inventoryCount' | 'procurement' | 'adjustment'; // ← SPECIFIC
+      transactionId: string;
+      isAbsolute?: boolean;
+    }> = [];
 
-    // Fetch transaction data
+    // ========== FETCH TRANSACTION DATA BASED ON TYPE ==========
     switch (transactionType) {
+      // ========== PROCUREMENT (Goods Receipt) ==========
+      case 'procurement':
+        transaction = await client.fetch(
+          groq`*[_type == "GoodsReceipt" && _id == $id][0] {
+            _id,
+            receiptNumber,
+            status,
+            "receivedItems": receivedItems[]{
+                "stockItemId": stockItem._ref,
+                receivedQuantity,
+                "binId": receivingBin._ref
+            }
+          }`,
+          { id: transactionId }
+        );
+
+        if (!transaction) {
+          console.error(`❌ Goods receipt ${transactionId} not found`);
+          return;
+        }
+
+        if (!transaction.receivedItems || transaction.receivedItems.length === 0) {
+          console.error(`❌ Goods receipt ${transaction.receiptNumber} has no received items`);
+          return;
+        }
+
+        // Prepare bulk updates - POSITIVE quantities (adding stock)
+        bulkUpdates = transaction.receivedItems
+          .filter((item: any) => {
+            const isValid = item.stockItemId && item.binId && item.receivedQuantity > 0;
+            if (!isValid) {
+              console.warn('⚠️ Skipping invalid procurement item:', {
+                stockItemId: item.stockItemId,
+                binId: item.binId,
+                quantity: item.receivedQuantity,
+                receiptNumber: transaction.receiptNumber
+              });
+            }
+            return isValid;
+          })
+          .map((item: any) => ({
+            stockItemId: item.stockItemId,
+            binId: item.binId,
+            quantity: item.receivedQuantity || 0, // POSITIVE (adding stock)
+            transactionType: 'procurement',
+            transactionId,
+            isAbsolute: false // ADJUSTMENT: add to current stock
+          }));
+
+        console.log(`📋 Processing ${bulkUpdates.length} procurement items for receipt ${transaction.receiptNumber}`);
+        break;
+
+      // ========== DISPATCH ==========
       case 'dispatch':
         transaction = await client.fetch(
           groq`*[_type == "DispatchLog" && _id == $id][0] {
             _id,
             dispatchNumber,
             evidenceStatus,
+            status,
             "dispatchedItems": dispatchedItems[]{
                 "stockItemId": stockItem._ref,
                 dispatchedQuantity,
                 "sourceBinId": sourceBin._ref
             }
-        }`,
+          }`,
           { id: transactionId }
         );
 
@@ -1644,28 +2142,46 @@ export async function updateStockForTransaction(
           return;
         }
 
-        items = (transaction.dispatchedItems || []).map((item: any) => ({
-          stockItemId: item.stockItemId,
-          quantity: -(item.dispatchedQuantity || 0),
-          binId: item.sourceBinId  // Use item-level sourceBinId, not document-level
-        })).filter((item: { binId: any; quantity: number; }) => item.binId && item.quantity <= 0); // Only include items with a binId
+        // Prepare bulk updates - NEGATIVE quantities (removing stock)
+        bulkUpdates = transaction.dispatchedItems
+          .filter((item: any) => {
+            const isValid = item.stockItemId && item.sourceBinId && item.dispatchedQuantity > 0;
+            if (!isValid) {
+              console.warn('⚠️ Skipping invalid dispatch item:', {
+                stockItemId: item.stockItemId,
+                sourceBinId: item.sourceBinId,
+                quantity: item.dispatchedQuantity,
+                dispatchNumber: transaction.dispatchNumber
+              });
+            }
+            return isValid;
+          })
+          .map((item: any) => ({
+            stockItemId: item.stockItemId,
+            binId: item.sourceBinId,
+            quantity: -(item.dispatchedQuantity || 0), // NEGATIVE (removing stock)
+            transactionType: 'dispatch',
+            transactionId,
+            isAbsolute: false // ADJUSTMENT: subtract from current stock
+          }));
 
-        console.log(`📋 Processing ${items.length} dispatch items with item-level bins`);
+        console.log(`📋 Processing ${bulkUpdates.length} dispatch items for ${transaction.dispatchNumber}`);
         break;
 
+      // ========== TRANSFER ==========
       case 'transfer':
         transaction = await client.fetch(
           groq`*[_type == "InternalTransfer" && _id == $id][0] {
-              _id,
-              transferNumber,
-              status,
-              "fromBin": fromBin._ref,
-              "toBin": toBin._ref,
-              "transferredItems": transferredItems[]{
-                "stockItemId": stockItem._ref,
-                transferredQuantity
-              }
-            }`,
+            _id,
+            transferNumber,
+            status,
+            "fromBin": fromBin._ref,
+            "toBin": toBin._ref,
+            "transferredItems": transferredItems[]{
+              "stockItemId": stockItem._ref,
+              transferredQuantity
+            }
+          }`,
           { id: transactionId }
         );
 
@@ -1680,6 +2196,7 @@ export async function updateStockForTransaction(
           return;
         }
 
+        // Debug log
         console.log('🔍 TRANSFER DEBUG:', {
           transactionId,
           fromBin: transaction.fromBin,
@@ -1688,48 +2205,60 @@ export async function updateStockForTransaction(
           status: transaction.status
         });
 
-        // Create items for both source and destination bins
-        items = [];
+        // Prepare bulk updates for BOTH source and destination bins
+        bulkUpdates = [];
+
         (transaction.transferredItems || []).forEach((item: any) => {
-          // Source bin (negative)
-          if (transaction.fromBin) {
-            items.push({
+          if (item.stockItemId && item.transferredQuantity > 0) {
+            // Source bin: NEGATIVE (removing stock)
+            if (transaction.fromBin) {
+              bulkUpdates.push({
+                stockItemId: item.stockItemId,
+                binId: transaction.fromBin,
+                quantity: -(item.transferredQuantity || 0), // NEGATIVE
+                transactionType: 'transfer',
+                transactionId,
+                isAbsolute: false
+              });
+            }
+
+            // Destination bin: POSITIVE (adding stock)
+            if (transaction.toBin) {
+              bulkUpdates.push({
+                stockItemId: item.stockItemId,
+                binId: transaction.toBin,
+                quantity: item.transferredQuantity || 0, // POSITIVE
+                transactionType: 'transfer',
+                transactionId,
+                isAbsolute: false
+              });
+            }
+          } else {
+            console.warn('⚠️ Skipping invalid transfer item:', {
               stockItemId: item.stockItemId,
-              quantity: -(item.transferredQuantity || 0),
-              binId: transaction.fromBin
-            });
-          }
-          // Destination bin (positive)
-          if (transaction.toBin) {
-            items.push({
-              stockItemId: item.stockItemId,
-              quantity: item.transferredQuantity || 0,
-              binId: transaction.toBin
+              transferredQuantity: item.transferredQuantity,
+              transferNumber: transaction.transferNumber
             });
           }
         });
 
         // Filter items to ensure they have valid binIds
-        items = items.filter((item: { stockItemId: any; quantity: number; binId: any }) => {
+        bulkUpdates = bulkUpdates.filter((item: any) => {
           const isValid = item.stockItemId && item.binId;
           if (!isValid) {
-            console.warn('⚠️ Skipping transfer item:', {
+            console.warn('⚠️ Skipping transfer item with missing IDs:', {
               stockItemId: item.stockItemId,
-              quantity: item.quantity,
-              binId: item.binId
+              binId: item.binId,
+              quantity: item.quantity
             });
           }
           return isValid;
         });
 
-        console.log(`📋 Processing ${items.length} transfer items`);
+        console.log(`📋 Processing ${bulkUpdates.length} transfer items for ${transaction.transferNumber}`);
         break;
 
-      // In stockCalculations.ts, find the updateStockForTransaction function
-      // Look for the 'inventoryCount' case (around line 775-795)
-
-      // REPLACE the existing inventoryCount case with this optimized version:
-
+      // ========== INVENTORY COUNT ==========
       case 'inventoryCount':
         transaction = await client.fetch(
           groq`*[_type == "InventoryCount" && _id == $id][0] {
@@ -1738,11 +2267,10 @@ export async function updateStockForTransaction(
             status,
             "bin": bin._ref,
             "countedItems": countedItems[]{
-                "stockItemId": stockItem._ref,
-                countedQuantity,
-                systemQuantityAtCountTime
+              "stockItemId": stockItem._ref,
+              countedQuantity
             }
-        }`,
+          }`,
           { id: transactionId }
         );
 
@@ -1751,143 +2279,39 @@ export async function updateStockForTransaction(
           return;
         }
 
+        // Only update stock if count is completed
         if (transaction.status !== 'completed') {
           console.log(`⚠️ Inventory count ${transactionId} is not completed (status: ${transaction.status}). Stock won't be updated.`);
           return;
         }
 
-        const countedItems = transaction.countedItems || [];
-        console.log(`📊 Processing ${countedItems.length} items in ONE BULK OPERATION`);
-
-        if (countedItems.length === 0) {
-          console.log('⚠️ No items to process');
-          return;
-        }
-
-        try {
-          // STEP 1: Get ALL existing snapshots in ONE query
-          const itemIds = countedItems.map((item: any) => item.stockItemId);
-
-          const existingSnapshots = await client.fetch(
-            groq`*[_type == "stockSnapshot" && 
-                  stockItem._ref in $itemIds && 
-                  bin._ref == $binId] {
-                _id,
-                "itemId": stockItem._ref,
-                quantity
-            }`,
-            { itemIds, binId: transaction.bin }
-          );
-
-          // Create map for O(1) lookup
-          const snapshotMap = new Map();
-          existingSnapshots.forEach((snapshot: any) => {
-            snapshotMap.set(snapshot.itemId, snapshot);
-          });
-
-          // STEP 2: Prepare ALL operations in ONE transaction
-          const now = new Date().toISOString();
-          let transactionBuilder = writeClient.transaction();
-
-          countedItems.forEach((item: any) => {
-            const countedQty = item.countedQuantity || 0;
-            const existing = snapshotMap.get(item.stockItemId);
-
-            const snapshotData: any = {
-              _type: 'stockSnapshot',
-              stockItem: {
-                _type: 'reference',
-                _ref: item.stockItemId,
-              },
-              bin: {
-                _type: 'reference',
-                _ref: transaction.bin,
-              },
-              quantity: countedQty,
-              lastUpdated: now
-            };
-
-            if (existing) {
-              // Update existing - CORRECT SYNTAX
-              transactionBuilder = transactionBuilder.patch(existing._id, {
-                set: snapshotData
+        // Prepare bulk updates - SET absolute values
+        bulkUpdates = (transaction.countedItems || [])
+          .filter((item: any) => {
+            const isValid = item.stockItemId && item.countedQuantity >= 0;
+            if (!isValid) {
+              console.warn('⚠️ Skipping invalid inventory count item:', {
+                stockItemId: item.stockItemId,
+                countedQuantity: item.countedQuantity,
+                countNumber: transaction.countNumber
               });
-            } else {
-              // Create new
-              transactionBuilder = transactionBuilder.create(snapshotData);
             }
+            return isValid;
+          })
+          .map((item: any) => ({
+            stockItemId: item.stockItemId,
+            binId: transaction.bin,
+            quantity: item.countedQuantity || 0,
+            transactionType: 'inventoryCount',
+            transactionId,
+            isAbsolute: true // SET absolute value (not adjustment)
+          }));
 
-            // Update cache immediately
-            const cacheKey = `${item.stockItemId}-${transaction.bin}`;
-            snapshotCache.set(cacheKey, countedQty, { confidence: 'high' });
-
-            // Invalidate bulk cache
-            invalidateStockCache(item.stockItemId);
-            invalidateStockCache(transaction.bin);
-          });
-
-          // STEP 3: Execute ALL operations in ONE API call
-          console.log(`🚀 Executing bulk transaction with ${countedItems.length} operations`);
-          await transactionBuilder.commit();
-          console.log(`✅ BULK UPDATE SUCCESSFUL! Updated ${countedItems.length} snapshots in ONE API call`);
-
-        } catch (error) {
-          console.error('❌ Bulk transaction failed:', error);
-
-          // Fallback to individual updates with batching
-          await fallbackToIndividualUpdates(countedItems, transaction, transactionId);
-        }
+        console.log(`📋 Processing ${bulkUpdates.length} inventory count items for ${transaction.countNumber}`);
         break;
 
-      case 'procurement':
-        transaction = await client.fetch(
-          groq`*[_type == "GoodsReceipt" && _id == $id][0] {
-              _id,
-              receiptNumber,
-              status,
-              // Get item-level bins, not document-level
-              "receivedItems": receivedItems[]{
-                  "stockItemId": stockItem._ref,
-                  receivedQuantity,
-                  "binId": receivingBin._ref  // ← CRITICAL: Get bin at item level
-              }
-            }`,
-          { id: transactionId }
-        );
-
-        if (!transaction) {
-          console.error(`❌ Goods receipt ${transactionId} not found`);
-          return;
-        }
-
-        if (!transaction.receivedItems || transaction.receivedItems.length === 0) {
-          console.error(`❌ Goods receipt ${transaction.receiptNumber} has no received items`);
-          return;
-        }
-
-        // Process each item with its own bin
-        items = (transaction.receivedItems || []).map((item: any) => ({
-          stockItemId: item.stockItemId,
-          quantity: item.receivedQuantity || 0,
-          binId: item.binId  // Use item-level binId
-        })).filter((item: { stockItemId: any; quantity: number; binId: any }) => {
-          const isValid = item.stockItemId && item.quantity >= 0 && item.binId;
-          if (!isValid) {
-            console.warn('⚠️ Skipping item:', {
-              stockItemId: item.stockItemId,
-              quantity: item.quantity,
-              binId: item.binId,
-              receiptNumber: transaction?.receiptNumber
-            });
-          }
-          return isValid;
-        });
-
-        console.log(`📋 Processing ${items.length} procurement items for receipt ${transaction.receiptNumber}`);
-        break;
-
+      // ========== ADJUSTMENT (if implemented) ==========
       case 'adjustment':
-        // Handle adjustment if needed
         console.log(`⚠️ Adjustment transaction type not yet implemented for ${transactionId}`);
         return;
 
@@ -1896,155 +2320,65 @@ export async function updateStockForTransaction(
         return;
     }
 
-    console.log(`🔄 Processing ${items.length} items for ${transactionType}`);
+    // ========== EXECUTE BULK UPDATE ==========
+    if (bulkUpdates.length === 0) {
+      console.log(`⚠️ No valid items to update for ${transactionType} ${transactionId}`);
+      return;
+    }
 
-    // Process items with proper locking
-    const updatePromises = items.map(async (item) => {
-      if (!item.stockItemId || !item.binId) {
-        console.warn('⚠️ Skipping item without stockItemId or binId:', {
-          stockItemId: item.stockItemId,
-          binId: item.binId,
-          quantity: item.quantity,
-          transactionType,
-          transactionId
-        });
-        return;
-      }
+    console.log(`🚀 Processing ${bulkUpdates.length} items for ${transactionType} ${transactionId}`);
 
-      const lockKey = `${item.stockItemId}-${item.binId}`;
-      const mutex = getMutexForKey(lockKey);
-
-      // Use mutex to prevent race conditions
-      return mutex.runExclusive(async () => {
-        try {
-          console.log(`🔄 Processing ${transactionType} item:`, {
-            stockItemId: item.stockItemId,
-            binId: item.binId,
-            quantity: item.quantity
-          });
-
-          // Re-fetch current stock WITHIN the lock to ensure we have latest
-          const currentSnapshot = await client.fetch(
-            groq`*[_type == "stockSnapshot" && stockItem._ref == $stockItemId && bin._ref == $binId][0]{
-                    quantity,
-                    lastUpdated
-                }`,
-            { stockItemId: item.stockItemId, binId: item.binId }
-          );
-
-          let currentStock = currentSnapshot?.quantity || 0;
-
-          // If no snapshot exists, calculate from transactions
-          if (!currentSnapshot) {
-            console.log(`📊 No snapshot found, calculating from transactions for ${item.stockItemId}-${item.binId}`);
-            currentStock = await calculateStockFromTransactions(item.stockItemId, item.binId, false);
-          }
-
-          // Calculate new stock with validation
-          let newStock;
-          if (transactionType === 'inventoryCount') {
-            // Inventory counts set the absolute quantity
-            newStock = item.quantity;
-            console.log(`📋 Inventory count sets stock to ${newStock} for ${item.stockItemId}-${item.binId}`);
-          } else if (transactionType === 'procurement') {
-            // ========== FIX FOR PROCUREMENT DOUBLE COUNTING ==========
-            // Problem: When no snapshot exists OR snapshot is 0,
-            // calculateStockFromTransactions might already include the new receipt
-            // causing double counting when we do: currentStock + item.quantity
-
-            const calculatedStock = await calculateStockFromTransactions(item.stockItemId, item.binId, false);
-
-            // Check if calculated stock is approximately equal to (snapshot + received)
-            // This would indicate the new receipt is already included
-            const expectedIfReceiptIncluded = currentStock + item.quantity;
-            const difference = Math.abs(calculatedStock - expectedIfReceiptIncluded);
-
-            if (difference < 0.01 && calculatedStock > 0) {
-              // Calculated stock already includes the new receipt
-              // Use the calculated value directly to avoid double counting
-              newStock = calculatedStock;
-              console.log(`📊 Procurement FIX: Using calculated stock ${calculatedStock} (includes new receipt)`);
-            } else {
-              // Calculated stock doesn't match expected - receipt not included yet
-              // Use snapshot + received quantity
-              newStock = currentStock + item.quantity;
-              console.log(`📊 Procurement: Adding ${item.quantity} to snapshot ${currentStock} = ${newStock}`);
-            }
-            // ========== END FIX ==========
-          } else {
-            // Other transactions adjust the quantity
-            newStock = currentStock + item.quantity;
-            console.log(`📋 ${transactionType} adjustment:`, {
-              current: currentStock,
-              adjustment: item.quantity,
-              new: newStock,
-              item: item.stockItemId,
-              bin: item.binId
-            });
-
-            // In updateStockForTransaction, inside the mutex.runExclusive block:
-
-            console.log(`🔍 DEBUG updateStockForTransaction:`, {
-              transactionType,
-              transactionId,
-              item: {
-                stockItemId: item.stockItemId,
-                binId: item.binId,
-                quantity: item.quantity
-              },
-              currentSnapshot: currentSnapshot ? {
-                quantity: currentSnapshot.quantity,
-                lastUpdated: currentSnapshot.lastUpdated
-              } : 'NO SNAPSHOT',
-              calculatedStockFromTransactions: await calculateStockFromTransactions(item.stockItemId, item.binId, false)
-            });
-
-            // Then the existing logic...
-
-            // Validate no negative stock (except for special cases)
-            if (newStock < 0) {
-              console.warn(`⚠️ Negative stock detected for ${item.stockItemId} in ${item.binId}:`, {
-                current: currentStock,
-                adjustment: item.quantity,
-                new: newStock,
-                transactionType,
-                transactionId
-              });
-            }
-          }
-
-          // Update the snapshot
-          await updateStockSnapshot(
-            item.stockItemId,
-            item.binId,
-            newStock,
-            transactionType,
-            transactionId
-          );
-
-          console.log(`✅ Updated ${transactionType} stock:`, {
-            stockItemId: item.stockItemId,
-            binId: item.binId,
-            current: currentStock,
-            adjustment: item.quantity,
-            new: newStock
-          });
-
-        } catch (error) {
-          console.error(`❌ Failed to update stock for item ${item.stockItemId}-${item.binId}:`, error);
-          throw error; // Re-throw to ensure transaction integrity
+    // Use the bulk update function
+    const result = await bulkUpdateStockSnapshots(bulkUpdates, {
+      onProgress: (progress) => {
+        // Optional: Could emit event for UI progress bar here
+        if (progress.processed % 10 === 0 || progress.processed === progress.total) {
+          console.log(`📈 Progress: ${progress.processed}/${progress.total} items processed (batch ${progress.batch})`);
         }
-      });
+      },
+      maxRetries: 3
     });
 
-    // Wait for all updates to complete
-    await Promise.all(updatePromises);
+    // Log final results
+    const successRate = (result.success / bulkUpdates.length * 100).toFixed(1);
 
-    console.log(`🎉 Stock snapshots updated for ${transactionType} ${transactionId}`);
+    console.log(`🎉 ${transactionType.toUpperCase()} ${transactionId} PROCESSING COMPLETE:`, {
+      totalItems: bulkUpdates.length,
+      successful: result.success,
+      failed: result.failed,
+      successRate: `${successRate}%`,
+      transactionType,
+      transactionId
+    });
+
+    // Report failed items if any
+    if (result.failed > 0) {
+      const failedItems = result.results.filter(r => !r.success);
+      console.warn(`⚠️ ${result.failed} items failed to update:`, {
+        failedItems: failedItems.map(f => ({
+          stockItemId: f.stockItemId,
+          binId: f.binId,
+          error: f.error
+        })),
+        transactionType,
+        transactionId
+      });
+
+      // Optionally send notification/alert to admins
+      // await sendStockUpdateFailureAlert(transactionType, transactionId, failedItems);
+    }
+
+    // Invalidate all related caches for immediate UI updates
+    bulkUpdates.forEach(update => {
+      invalidateStockCache(update.stockItemId);
+      invalidateStockCache(update.binId);
+    });
 
   } catch (error) {
-    console.error(`❌ Failed to update stock for ${transactionType}:`, error);
-    throw error;
+    console.error(`❌ CRITICAL ERROR: Failed to update stock for ${transactionType} ${transactionId}:`, error);
+
+    // Re-throw to let calling code handle the error (e.g., show toast to user)
+    throw new Error(`Failed to update stock for ${transactionType}: ${error}`);
   }
 }
 
