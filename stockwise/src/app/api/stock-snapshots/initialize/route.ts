@@ -43,7 +43,7 @@ export async function POST(request: Request) {
 							.set({
 								quantity: stock,
 								lastUpdated: now,
-								transactionType: 'initial',
+								transactionType: 'inventoryCount',
 								transactionId: null
 							})
 							.commit();
@@ -61,7 +61,7 @@ export async function POST(request: Request) {
 							},
 							quantity: stock,
 							lastUpdated: now,
-							transactionType: 'initial',
+							transactionType: 'inventoryCount',
 							transactionId: null
 						});
 					}

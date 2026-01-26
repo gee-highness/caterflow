@@ -8,7 +8,6 @@ import purchaseOrder from './purchaseOrder';
 import goodsReceipt from './goodsReceipt';
 import dispatchLog from './dispatchLog';
 import internalTransfer from './internalTransfer';
-import stockAdjustment from './stockAdjustment'; // Add this
 import inventoryCount from './inventoryCount';
 import appUser from './appUser';
 import notificationPreference from './notificationPreference';
@@ -35,7 +34,6 @@ export const schemaTypes = [
     goodsReceipt,
     dispatchLog,
     internalTransfer,
-    stockAdjustment, // Add this
     inventoryCount,
     appUser,
     notificationPreference,

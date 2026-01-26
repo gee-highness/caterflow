@@ -1608,38 +1608,68 @@ export const calculateBulkStock = async (
     // In calculateBulkStock function, replace the section that creates zero snapshots:
 
     if (itemsWithoutSnapshots.length > 0) {
-      console.log(`🔍 Calculating ${itemsWithoutSnapshots.length} missing snapshots...`);
+      console.log(`🔍 Calculating ${itemsWithoutSnapshots.length} missing snapshots in BULK...`);
 
-      // Process in batches to avoid overwhelming
-      const BATCH_SIZE = 10;
+      // Prepare bulk updates for ALL missing items
+      const bulkUpdates = itemsWithoutSnapshots.map(({ itemId, binId }) => {
+        // We'll calculate first, then bulk update
+        return {
+          stockItemId: itemId,
+          binId: binId,
+          quantity: 0, // Placeholder - will be set after calculation
+          transactionType: 'inventoryCount' as const,
+          transactionId: 'bulk-calculation',
+          isAbsolute: true
+        };
+      });
 
-      for (let i = 0; i < itemsWithoutSnapshots.length; i += BATCH_SIZE) {
-        const batch = itemsWithoutSnapshots.slice(i, i + BATCH_SIZE);
+      // Calculate stock for all missing items in parallel
+      const calculationPromises = itemsWithoutSnapshots.map(async ({ itemId, binId }) => {
+        try {
+          const calculatedStock = await calculateStockExactLogic(itemId, binId, false);
+          return { itemId, binId, calculatedStock, success: true };
+        } catch (error) {
+          console.error(`❌ Failed to calculate for ${itemId}-${binId}:`, error);
+          return { itemId, binId, calculatedStock: 0, success: false };
+        }
+      });
 
-        const batchPromises = batch.map(async ({ itemId, binId }) => {
-          try {
-            // Use EXACT logic to calculate
-            const calculatedStock = await calculateStockExactLogic(itemId, binId, false);
+      const calculationResults = await Promise.all(calculationPromises);
 
-            // Create snapshot
-            await createStockSnapshot(itemId, binId, calculatedStock);
+      // Update bulk updates with calculated values
+      const validUpdates = bulkUpdates.map(update => {
+        const result = calculationResults.find(r =>
+          r.itemId === update.stockItemId && r.binId === update.binId
+        );
+        if (result?.success) {
+          update.quantity = result.calculatedStock;
+        }
+        return update;
+      }).filter(update => update.quantity !== undefined);
 
-            // Update results
-            results[`${itemId}-${binId}`] = calculatedStock;
+      // Use BULK update for all missing snapshots
+      if (validUpdates.length > 0) {
+        console.log(`🚀 Bulk updating ${validUpdates.length} snapshots...`);
 
-            return { success: true, itemId, binId, stock: calculatedStock };
-          } catch (error) {
-            console.error(`❌ Failed to create snapshot for ${itemId}-${binId}:`, error);
-            results[`${itemId}-${binId}`] = 0;
-            return { success: false, itemId, binId, error };
+        const bulkResult = await bulkUpdateStockSnapshots(validUpdates, {
+          onProgress: (progress) => {
+            if (progress.processed % 10 === 0 || progress.processed === progress.total) {
+              console.log(`📈 Bulk progress: ${progress.processed}/${progress.total} items`);
+            }
+          },
+          maxRetries: 2
+        });
+
+        // Update results with calculated values
+        calculationResults.forEach(result => {
+          if (result.success) {
+            const key = `${result.itemId}-${result.binId}`;
+            results[key] = result.calculatedStock;
           }
         });
 
-        await Promise.all(batchPromises);
-        console.log(`   Processed batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(itemsWithoutSnapshots.length / BATCH_SIZE)}`);
+        console.log(`✅ Bulk created ${bulkResult.success} snapshots, ${bulkResult.failed} failed`);
       }
-
-      console.log(`✅ Created ${itemsWithoutSnapshots.length} calculated snapshots`);
     }
 
     onProgress?.({ stage: 'Finalizing results...', percentage: 95 });
@@ -2418,7 +2448,7 @@ export const initializeAllStockSnapshots = async (): Promise<void> => {
     for (const itemId of stockItemIds) {
       try {
         const stock = await calculateStockFromTransactions(itemId, binId, false);
-        await updateStockSnapshot(itemId, binId, stock, 'initial', null);
+        await updateStockSnapshot(itemId, binId, stock, 'inventoryCount', null);
         count++;
 
         if (count % 100 === 0 || count === total) {

@@ -113,116 +113,186 @@ export default function CurrentStockPage() {
     const warningColor = useColorModeValue('orange.500', 'orange.300');
     const errorColor = useColorModeValue('red.500', 'red.300');
 
+    // Helper function to extract missing item-bin pairs from snapshot data
+    const extractMissingPairs = (snapshotResults: { [key: string]: number }): Array<{ itemId: string; binId: string }> => {
+        const missingPairs: Array<{ itemId: string; binId: string }> = [];
+
+        Object.entries(snapshotResults).forEach(([key, value]) => {
+            if (value === 0) {
+                const [itemId, binId] = key.split('-');
+                missingPairs.push({ itemId, binId });
+            }
+        });
+
+        return missingPairs;
+    };
+
+
+
     // Calculate stock with progress tracking
-    const calculateStockForSite = useCallback(async (siteId: string | null) => {
+    const calculateStockForSite = useCallback(async (siteId: string | null, forceRecalc = false) => {
         setIsLoading(true);
         setIsRefreshing(true);
         setError(null);
-        setProgress({ stage: 'Starting calculation...', percentage: 0 });
+        setProgress({ stage: 'Starting...', percentage: 0 });
         setCalculationMetrics(null);
 
         const startTime = Date.now();
 
         try {
-            console.log('🔄 Starting stock calculation for site:', siteId || 'All sites');
+            console.log('🚀 Optimized stock loading for site:', siteId || 'All sites', forceRecalc ? '(forced)' : '');
 
-            // Fetch all stock items (no site filtering)
-            setProgress({ stage: 'Fetching stock items...', percentage: 10 });
-            console.log('📦 Fetching all stock items...');
-            const stockItemsResponse = await fetch('/api/stock-items');
-            if (!stockItemsResponse.ok) {
-                throw new Error('Failed to fetch stock items');
+            // 1. Get stock items and bins in parallel
+            setProgress({ stage: 'Fetching items and bins...', percentage: 10 });
+
+            const [stockItemsResponse, binsResponse] = await Promise.all([
+                fetch('/api/stock-items'),
+                fetch(siteId ? `/api/bins?siteId=${siteId}` : '/api/bins')
+            ]);
+
+            if (!stockItemsResponse.ok || !binsResponse.ok) {
+                throw new Error('Failed to fetch items or bins');
             }
+
             const stockItems: any[] = await stockItemsResponse.json();
-            console.log('✅ Stock items fetched:', stockItems.length, 'items');
+            const bins: any[] = await binsResponse.json();
 
-            if (stockItems.length === 0) {
-                console.log('⚠️ No stock items found');
+            if (stockItems.length === 0 || bins.length === 0) {
+                console.log('⚠️ No items or bins found');
                 setCurrentStockItems([]);
                 setIsLoading(false);
                 setIsRefreshing(false);
                 return;
             }
 
-            // Fetch bins for the selected site (or all bins if no site selected)
-            setProgress({ stage: 'Fetching bins...', percentage: 20 });
-            const binsEndpoint = siteId ? `/api/bins?siteId=${siteId}` : '/api/bins';
-            console.log('🗄️ Fetching bins from:', binsEndpoint);
-            const binsResponse = await fetch(binsEndpoint);
-            if (!binsResponse.ok) {
-                throw new Error('Failed to fetch bins');
-            }
-            const bins = await binsResponse.json();
-            const binIds = bins.map((bin: any) => bin._id);
-            console.log('✅ Bins fetched:', bins.length, 'bins, IDs:', binIds);
-
-            if (binIds.length === 0) {
-                console.log('⚠️ No bins found for site:', siteId);
-                setCurrentStockItems([]);
-                setIsLoading(false);
-                setIsRefreshing(false);
-                return;
-            }
-
-            // Get all stock item IDs
             const stockItemIds = stockItems.map(item => item._id);
-            console.log('🔢 Calculating stock for', stockItemIds.length, 'items across', binIds.length, 'bins');
+            const binIds = bins.map(bin => bin._id);
 
-            // Calculate current stock for all items in all bins with progress tracking
-            setProgress({ stage: 'Calculating current stock...', percentage: 30 });
-            console.log('🧮 Starting bulk stock calculation...');
+            console.log(`📊 Processing: ${stockItems.length} items × ${bins.length} bins = ${stockItemIds.length * binIds.length} combinations`);
 
-            const stockResults = await calculateBulkStock(stockItemIds, binIds, (progressUpdate) => {
-                setProgress(progressUpdate);
-            });
+            // 2. TRY FAST PATH: Get snapshots first
+            setProgress({ stage: 'Loading snapshots...', percentage: 30 });
+            console.log('📊 Fetching snapshots via bulk API...');
 
-            console.log('✅ Bulk stock calculation complete. Results:', Object.keys(stockResults).length, 'item-bin pairs');
-
-            // DEBUG: Check Beef Sausages specifically
-            console.log('🔍 DEBUG: Checking for Beef Sausages stock...');
-            const beefSausagesItems = stockItems.filter(item =>
-                item.name?.toLowerCase().includes('beef') ||
-                item.name?.toLowerCase().includes('sausage')
-            );
-
-            beefSausagesItems.forEach(item => {
-                console.log(`🔍 Item: ${item.name} (ID: ${item._id})`);
-                bins.forEach((bin: { _id: any; name: any; }) => {
-                    const key = `${item._id}-${bin._id}`;
-                    const quantity = stockResults[key] || 0;
-                    if (quantity > 0) {
-                        console.log(`  📦 Bin: ${bin.name} (ID: ${bin._id}): ${quantity}`);
-                    }
-                });
-            });
-
-            // Also log all stock results for debugging
-            console.log('📊 All stock results (first 20):');
-            Object.entries(stockResults)
-                .slice(0, 20)
-                .forEach(([key, value]) => {
-                    if (Number(value) > 0) {
-                        console.log(`  ${key}: ${value}`);
-                    }
+            let snapshotData: any = null;
+            try {
+                const snapshotsResponse = await fetch('/api/stock/snapshots/bulk', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ stockItemIds, binIds })
                 });
 
-            // Process results and create a separate entry for each item-bin combination with stock
-            // Process results and create a separate entry for each item-bin combination
-            setProgress({ stage: 'Processing results...', percentage: 80 });
-            console.log('📊 Processing results and creating individual entries for each bin...');
+                if (snapshotsResponse.ok) {
+                    snapshotData = await snapshotsResponse.json();
+                    console.log(`✅ Snapshots API response: ${snapshotData.totalCount} total, ${snapshotData.missingCount} missing`);
+                } else {
+                    console.log('⚠️ Snapshots API failed, falling back to full calculation');
+                }
+            } catch (apiError) {
+                console.log('⚠️ Could not reach snapshots API:', apiError);
+            }
+
+            // 3. DECISION: Which path to take?
+            let stockResults: { [key: string]: number } = {};
+            let fromCacheCount = 0;
+            let calculatedCount = 0;
+
+            if (snapshotData && snapshotData.hasAllSnapshots && !forceRecalc) {
+                // 🎉 FASTEST PATH: All snapshots exist
+                console.log(`🎉 ALL SNAPSHOTS EXIST! Loading instantly...`);
+                stockResults = snapshotData.snapshots;
+                fromCacheCount = snapshotData.totalCount;
+                calculatedCount = 0;
+
+                setProgress({ stage: 'Processing snapshots...', percentage: 90 });
+            }
+            else if (snapshotData && snapshotData.missingCount > 0 && !forceRecalc) {
+                // ⚡ HYBRID PATH: Some snapshots missing
+                console.log(`⚡ HYBRID: ${snapshotData.totalCount - snapshotData.missingCount} snapshots exist, ${snapshotData.missingCount} missing`);
+
+                // Use existing snapshots
+                stockResults = snapshotData.snapshots;
+                fromCacheCount = snapshotData.totalCount - snapshotData.missingCount;
+
+                // Only calculate missing ones
+                if (snapshotData.missingCount > 0) {
+                    setProgress({ stage: 'Calculating missing stock...', percentage: 50 });
+
+                    // Extract missing item-bin pairs
+                    const missingPairs = Object.entries(snapshotData.snapshots)
+                        .filter(([_, value]) => value === 0)
+                        .map(([key, _]) => {
+                            const [itemId, binId] = key.split('-');
+                            return { itemId, binId };
+                        });
+
+                    const missingItemIds = [...new Set(missingPairs.map(p => p.itemId))];
+                    const missingBinIds = [...new Set(missingPairs.map(p => p.binId))];
+
+                    console.log(`🔍 Calculating ${missingPairs.length} missing items (${missingItemIds.length} unique items, ${missingBinIds.length} bins)`);
+
+                    const calculatedResults = await calculateBulkStock(
+                        missingItemIds,
+                        missingBinIds,
+                        (progress) => {
+                            // FIXED: calculateBulkStock progress is { stage: string; percentage: number }
+                            const adjustedPercentage = 50 + (progress.percentage * 0.4); // 50-90%
+                            setProgress({
+                                stage: progress.stage || `Calculating missing items...`,
+                                percentage: adjustedPercentage
+                            });
+                        }
+                    );
+
+                    // Merge results
+                    Object.entries(calculatedResults).forEach(([key, value]) => {
+                        stockResults[key] = value;
+                    });
+
+                    calculatedCount = missingPairs.length;
+                }
+
+                setProgress({ stage: 'Processing results...', percentage: 90 });
+            }
+            else {
+                // 🐌 FULL PATH: No snapshots or force recalc
+                console.log('🔄 FULL CALCULATION: No snapshots available or forced recalculation');
+                setProgress({ stage: 'Calculating all stock...', percentage: 50 });
+
+                stockResults = await calculateBulkStock(
+                    stockItemIds,
+                    binIds,
+                    (progress) => {
+                        // FIXED: calculateBulkStock progress is { stage: string; percentage: number }
+                        const adjustedPercentage = 50 + (progress.percentage * 0.4); // 50-90%
+                        setProgress({
+                            stage: progress.stage || 'Calculating stock...',
+                            percentage: adjustedPercentage
+                        });
+                    }
+                );
+
+                fromCacheCount = 0;
+                calculatedCount = Object.keys(stockResults).length;
+
+                setProgress({ stage: 'Processing results...', percentage: 90 });
+            }
+
+            // 4. PROCESS RESULTS (reuse your existing logic)
+            console.log('📊 Processing final results...');
             const itemsWithCalculatedStock: CurrentStockItem[] = [];
 
-            // CRITICAL: Create a map for site lookups
+            // Create site map for lookups
             const siteMap = new Map();
             sites.forEach(site => {
                 siteMap.set(site._id, site.name);
             });
 
-            // For EACH item and EACH bin combination - ALWAYS create entry
+            // For EACH item and EACH bin combination
             stockItems.forEach(item => {
                 bins.forEach((bin: any) => {
                     const key = `${item._id}-${bin._id}`;
-                    const quantity = stockResults[key] || 0;  // Default to 0 if undefined
+                    const quantity = stockResults[key] || 0;
 
                     let stockStatus: 'in-stock' | 'low-stock' | 'out-of-stock' = 'in-stock';
                     if (quantity <= 0) {
@@ -231,7 +301,7 @@ export default function CurrentStockPage() {
                         stockStatus = 'low-stock';
                     }
 
-                    // Get site name - handle both object and reference formats
+                    // Get site name
                     let siteName = "Unknown site";
                     if (bin.site) {
                         if (typeof bin.site === 'object' && bin.site.name) {
@@ -241,101 +311,53 @@ export default function CurrentStockPage() {
                         }
                     }
 
-                    // Create a UNIQUE ID for this item-bin combination
-                    const uniqueId = `${item._id}-${bin._id}`;
-
-                    // Replace the itemsWithCalculatedStock.push() section with:
-
                     itemsWithCalculatedStock.push({
                         ...item,
-                        _id: uniqueId, // ← Keep unique ID for React keys
+                        _id: `${item._id}-${bin._id}`,
                         currentStock: quantity,
                         stockStatus,
                         siteName,
                         binName: bin.name,
-                        binId: bin._id, // ← ADD THIS: Store the actual bin ID
+                        binId: bin._id,
                         lastUpdated: new Date().toISOString(),
                     });
                 });
             });
 
-            // DEBUG: Show what we created
-            console.log(`✅ Created ${itemsWithCalculatedStock.length} entries total`);
-            console.log('🔍 Checking B-WELL Tangy Mayo entries (should have 2):');
-            const tangyMayoEntries = itemsWithCalculatedStock.filter(item =>
-                item.name === 'B-WELL Tangy Mayo'
-            );
-            tangyMayoEntries.forEach(entry => {
-                console.log(`  - ${entry.binName}: ${entry.currentStock}`);
-            });
-
             const duration = Date.now() - startTime;
+
+            // 5. UPDATE STATE
+            setCurrentStockItems(itemsWithCalculatedStock);
             setCalculationMetrics({
                 duration,
                 itemsProcessed: itemsWithCalculatedStock.length,
-                fromCache: 0
+                fromCache: fromCacheCount
             });
 
-            console.log('✅ Stock calculation complete. Total items to display:', itemsWithCalculatedStock.length);
-            // Add this simple debug
-            console.log('🔍 SIMPLE DEBUG: All items with their stock:');
-            stockItems.slice(0, 20).forEach(item => {
-                console.log(`${item.name}:`);
-                bins.forEach((bin: { _id: any; name: any; }) => {
-                    const key = `${item._id}-${bin._id}`;
-                    const quantity = stockResults[key] || 0;
-                    if (quantity > 0) {
-                        console.log(`  - ${bin.name}: ${quantity}`);
-                    }
-                });
-            });
+            // 6. SHOW APPROPRIATE TOAST
+            let toastTitle = 'Stock loaded';
+            let toastDescription = '';
 
-            // After processing, verify the results
-            console.log('🧪 FINAL VERIFICATION:');
-            console.log(`Total items in final array: ${itemsWithCalculatedStock.length}`);
-
-            // Show all items with multiple bins
-            const itemGroups: { [name: string]: CurrentStockItem[] } = {};
-            itemsWithCalculatedStock.forEach(item => {
-                if (!itemGroups[item.name]) {
-                    itemGroups[item.name] = [];
-                }
-                itemGroups[item.name].push(item);
-            });
-
-            console.log('📊 Items with multiple bin entries:');
-            Object.entries(itemGroups).forEach(([name, entries]) => {
-                if (entries.length > 1) {
-                    console.log(`  ${name}: ${entries.length} entries`);
-                    entries.forEach(entry => {
-                        console.log(`    - ${entry.binName}: ${entry.currentStock}`);
-                    });
-                }
-            });
-
-            // Specifically check Braaiworse Mbuluzi
-            console.log('🔍 Checking Braaiworse Mbuluzi:');
-            const braaiworseEntries = itemsWithCalculatedStock.filter(item =>
-                item.name.includes('Braaiworse') || item.name.includes('wors') || item.name.includes('sausage')
-            );
-            if (braaiworseEntries.length > 0) {
-                braaiworseEntries.forEach(entry => {
-                    console.log(`  - ${entry.name}: ${entry.currentStock} in ${entry.binName}`);
-                });
+            if (fromCacheCount === itemsWithCalculatedStock.length) {
+                toastTitle = 'Stock loaded instantly';
+                toastDescription = `All ${itemsWithCalculatedStock.length} items from snapshots`;
+            } else if (fromCacheCount > 0 && calculatedCount > 0) {
+                toastTitle = 'Stock calculated efficiently';
+                toastDescription = `${fromCacheCount} from snapshots + ${calculatedCount} calculated`;
             } else {
-                console.log('  No braaiworse/sausage items found in final array');
+                toastTitle = 'Stock calculation complete';
+                toastDescription = `Calculated ${itemsWithCalculatedStock.length} items`;
             }
 
-            setCurrentStockItems(itemsWithCalculatedStock);
-
-            // Show success toast with metrics
             toast({
-                title: 'Stock calculation complete',
-                description: `Calculated ${itemsWithCalculatedStock.length} stock items in ${duration}ms`,
+                title: toastTitle,
+                description: `${toastDescription} in ${duration}ms`,
                 status: 'success',
                 duration: 3000,
                 isClosable: true,
             });
+
+            console.log(`✅ FINISHED: ${itemsWithCalculatedStock.length} items in ${duration}ms (${fromCacheCount} cached, ${calculatedCount} calculated)`);
 
         } catch (err: any) {
             console.error('❌ Error calculating stock:', err);
@@ -351,7 +373,6 @@ export default function CurrentStockPage() {
             setProgress({ stage: 'Complete', percentage: 100 });
             setIsLoading(false);
             setIsRefreshing(false);
-            console.log('🏁 Stock calculation finished');
         }
     }, [toast, sites]);
 

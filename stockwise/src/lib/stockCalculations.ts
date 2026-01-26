@@ -2405,7 +2405,7 @@ export const initializeAllStockSnapshots = async (): Promise<void> => {
     for (const itemId of stockItemIds) {
       try {
         const stock = await calculateStockFromTransactions(itemId, binId, false);
-        await updateStockSnapshot(itemId, binId, stock, 'initial', null);
+        await updateStockSnapshot(itemId, binId, stock, 'inventoryCount', null);
         count++;
 
         if (count % 100 === 0 || count === total) {
