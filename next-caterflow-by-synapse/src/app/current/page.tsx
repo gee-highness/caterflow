@@ -348,7 +348,7 @@ export default function CurrentStockPage() {
                         (progress) => {
                             const adjustedPercentage = 50 + (progress.percentage * 0.4);
                             setProgress({
-                                stage: `Calculating ${Math.round(progress.percentage)}%...`,
+                                stage: `Calculating...`,
                                 percentage: adjustedPercentage
                             });
                         }
