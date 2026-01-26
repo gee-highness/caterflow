@@ -397,7 +397,7 @@ async function countWeeklyActivity(siteIds: string[], startOfWeek: string) {
   if (siteIds.length === 0) return 0;
 
   const query = groq`count(*[
-    _type in ["GoodsReceipt", "DispatchLog", "InternalTransfer"] &&
+    _type in ["GoodsReceipt", "DispatchLog", "InternalTransfer", "StockAdjustment"] &&
     (
       // GoodsReceipts - all formats
       (_type == "GoodsReceipt" && (
@@ -416,6 +416,9 @@ async function countWeeklyActivity(siteIds: string[], startOfWeek: string) {
       // InternalTransfers
       (_type == "InternalTransfer" && 
         (fromBin->site._ref in $siteIds || toBin->site._ref in $siteIds)) ||
+      
+      // StockAdjustments
+      (_type == "StockAdjustment" && bin->site._ref in $siteIds)
     ) &&
     coalesce(receiptDate, dispatchDate, transferDate, adjustmentDate) >= $startOfWeek
   ])`;
@@ -512,8 +515,3 @@ async function getSiteNamesForTransactions(transactions: any[], siteIds: string[
     siteName: tx.siteName || siteMap.get(tx.siteId) || 'Unknown Site'
   }));
 }
-
-/**
- *  // StockAdjustments
-(_type == "StockAdjustment" && bin->site._ref in $siteIds)
- */
