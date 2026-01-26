@@ -102,7 +102,7 @@ export default function LoginPage() {
       } else {
         toast({
           title: 'Login successful!',
-          description: 'Welcome back to Stockwise.',
+          description: 'Welcome back to StockWise.',
           status: 'success',
           duration: 3000,
           isClosable: true,
@@ -208,7 +208,7 @@ export default function LoginPage() {
               <VStack spacing={6} align="stretch">
                 <Box textAlign="center">
                   <Heading as="h1" size="xl" color={primaryTextColor} mb={2}>
-                    Stockwise
+                    StockWise
                   </Heading>
                   <Text color={secondaryTextColor} fontSize="md">
                     Inventory Management System

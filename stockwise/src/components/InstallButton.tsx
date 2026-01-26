@@ -44,7 +44,7 @@ export function InstallButton() {
 		if (isInstalled) {
 			toast({
 				title: 'App already installed',
-				description: 'Stockwise is already installed on your device.',
+				description: 'StockWise is already installed on your device.',
 				status: 'info',
 				duration: 3000,
 				isClosable: true,
@@ -58,7 +58,7 @@ export function InstallButton() {
 			if (installed) {
 				toast({
 					title: 'Installation started',
-					description: 'Stockwise is being installed on your device.',
+					description: 'StockWise is being installed on your device.',
 					status: 'success',
 					duration: 3000,
 					isClosable: true,
@@ -136,12 +136,12 @@ export function InstallButton() {
 			<Modal isOpen={isOpen} onClose={onClose} size="md">
 				<ModalOverlay />
 				<ModalContent>
-					<ModalHeader>Install Stockwise App</ModalHeader>
+					<ModalHeader>Install StockWise App</ModalHeader>
 					<ModalCloseButton />
 					<ModalBody>
 						<VStack spacing={4} align="stretch">
 							<Text>
-								To install Stockwise as an app on your device:
+								To install StockWise as an app on your device:
 							</Text>
 
 							<Box p={4} bg={iosBgColor} borderRadius="md">

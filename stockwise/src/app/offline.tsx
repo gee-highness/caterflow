@@ -25,7 +25,7 @@ export default function Offline() {
       >
         <Image
           src="/icons/icon-512x512.png"
-          alt="Stockwise Logo"
+          alt="StockWise Logo"
           width={120}
           height={120}
         />

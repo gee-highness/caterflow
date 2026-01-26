@@ -40,7 +40,7 @@ export async function POST(req: Request) {
         await resend.emails.send({
             from: 'onboarding@resend.dev', // Replace with your verified Resend domain
             to: "godlinessdongorere@gmail.com",
-            subject: 'Stockwise Password Reset',
+            subject: 'StockWise Password Reset',
             html: `<p>Your password reset code is: <strong>${verificationCode}</strong>. This code is valid for 15 minutes.</p>`,
         });
 

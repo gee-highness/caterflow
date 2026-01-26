@@ -86,8 +86,6 @@ export default function ActivityPage() {
                 return BsTruck;
             case 'InternalTransfer':
                 return BsArrowRight;
-            case 'StockAdjustment':
-                return BsBoxSeam;
             case 'InventoryCount':
                 return BsClipboardData;
             default:
@@ -104,8 +102,6 @@ export default function ActivityPage() {
                 return 'orange';
             case 'InternalTransfer':
                 return 'blue';
-            case 'StockAdjustment':
-                return 'purple';
             case 'InventoryCount':
                 return 'teal';
             default:
@@ -146,8 +142,6 @@ export default function ActivityPage() {
             case 'DispatchLog':
                 return <Icon as={BsTruck} color="orange.500" boxSize={4} />;
             case 'InternalTransfer':
-                return <Icon as={BsArrowRight} color="blue.500" boxSize={4} />;
-            case 'StockAdjustment':
                 return <Icon as={BsBoxSeam} color="purple.500" boxSize={4} />;
             case 'InventoryCount':
                 return <Icon as={BsClipboardData} color="teal.500" boxSize={4} />;

@@ -17,7 +17,7 @@ interface FooterProps {
   appName?: string;
 }
 
-export function Footer({ appName = 'Stockwise' }: FooterProps) {
+export function Footer({ appName = 'StockWise' }: FooterProps) {
   const theme = useTheme();
 
   const footerBg = useColorModeValue(theme.colors.neutral.light['bg-secondary'], theme.colors.neutral.dark['bg']);
@@ -31,7 +31,7 @@ export function Footer({ appName = 'Stockwise' }: FooterProps) {
         <Flex direction={{ base: 'column', md: 'row' }} justify="space-between" align="center">
           <Text>
             &copy; {new Date().getFullYear()} {appName} by{' '}
-            <Link href="https://triptych-sol.vercel.app" isExternal>
+            <Link href="https://Triptych-sol.vercel.app" isExternal>
               Triptych Solutions
             </Link>
             . All rights reserved.

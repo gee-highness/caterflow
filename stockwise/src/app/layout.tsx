@@ -14,8 +14,8 @@ import { InstallButton } from "@/components/InstallButton"; // Import the Instal
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Stockwise",
-  description: "Stockwise Inventory Management System",
+  title: "StockWise",
+  description: "StockWise Inventory Management System",
   manifest: "/manifest.json",
   icons: {
     icon: '/favicon.ico',
@@ -53,7 +53,7 @@ export default function RootLayout({
                 {children}
               </Box>
               <SpeedInsights />
-              <Footer appName="Stockwise" />
+              <Footer appName="StockWise" />
             </Box>
             <ServiceWorkerRegister />
             <InstallButton /> {/* Add the InstallButton here */}

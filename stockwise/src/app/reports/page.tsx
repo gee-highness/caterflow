@@ -2453,7 +2453,7 @@ export default function ComprehensiveReportsPage() {
             console.log('💾 Generating Excel file with VAT...');
             const excelBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
             const data = new Blob([excelBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-            const fileName = `Stockwise_Comprehensive_Report_VAT_${format(new Date(), 'yyyy-MM-dd')}.xlsx`;
+            const fileName = `StockWise_Comprehensive_Report_VAT_${format(new Date(), 'yyyy-MM-dd')}.xlsx`;
             saveAs(data, fileName);
 
             console.log('✅ Excel export with VAT completed successfully');
