@@ -265,6 +265,37 @@ export default function LoginPage() {
                         </InputGroup>
                       </FormControl>
 
+                      {/**DEMO INFO */}
+                      {/* Compact Demo Info Card */}
+                      <Box
+                        bg={bgCard}
+                        p={4}
+                        borderRadius="md"
+                        borderWidth="1px"
+                        borderColor={bgPrimary}
+                        mt={6}
+                      >
+                        <Text fontSize="sm" fontWeight="semibold" color={primaryTextColor} mb={2}>
+                          Demo Access
+                        </Text>
+                        <Text fontSize="xs" color={secondaryTextColor} mb={3}>
+                          Try with: admin@stockwise.demo / password
+                        </Text>
+                        <Flex gap={2}>
+                          <Button
+                            size="xs"
+                            variant="outline"
+                            colorScheme="blue"
+                            onClick={() => {
+                              setEmail('admin@stockwise.demo');
+                              setPassword('password');
+                            }}
+                          >
+                            Manager
+                          </Button>
+                        </Flex>
+                      </Box>
+
                       <Button
                         colorScheme="brand"
                         width="full"
