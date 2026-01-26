@@ -239,7 +239,7 @@ const SidebarContent = ({ onItemClick }: { onItemClick?: () => void }) => {
                                             justifyContent="flex-start"
                                             w="full"
                                             leftIcon={<Icon as={item.icon} boxSize={5} />}
-                                            color={pathname === item.href ? theme.colors.brand['500'] : iconColor}
+                                            color={pathname === item.href ? textSecondaryColor : iconColor}
                                             bg={pathname === item.href ? activeBg : 'transparent'}
                                             _hover={{ bg: activeBg }}
                                             onClick={() => handleItemClick(item.href)}
