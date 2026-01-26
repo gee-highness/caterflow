@@ -107,9 +107,10 @@ interface BinCountModalProps {
     onClose: () => void;
     binCount: BinCount | null;
     onSave: () => void;
+    countType?: 'standard' | 'adjustment'; // Add this
 }
 
-export default function BinCountModal({ isOpen, onClose, binCount, onSave }: BinCountModalProps) {
+export default function BinCountModal({ isOpen, onClose, binCount, onSave, countType = 'standard' }: BinCountModalProps) {
     const { data: session } = useSession();
     const toast = useToast();
     const [loading, setLoading] = useState(false);
@@ -430,14 +431,14 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
     }, [selectedBin, binCount, toast]);
 
     useEffect(() => {
-        if (selectedBin && !binCount) {
+        if (selectedBin && !binCount && countType === 'standard') {
             const timer = setTimeout(() => {
                 loadAllStockItems();
             }, 500);
 
             return () => clearTimeout(timer);
         }
-    }, [selectedBin, binCount, loadAllStockItems]);
+    }, [selectedBin, binCount, loadAllStockItems, countType]);
 
     useEffect(() => {
         const updatedItems = countedItems.map(item => {
@@ -886,8 +887,21 @@ export default function BinCountModal({ isOpen, onClose, binCount, onSave }: Bin
                         pb={4}
                     >
                         <Heading size="md" fontWeight="bold">
-                            {binCount ? `Bin Count ${binCount.countNumber}` : 'New Bin Count'}
+                            {binCount
+                                ? `Bin Count ${binCount.countNumber}`
+                                : countType === 'adjustment'
+                                    ? 'New Adjustment Count'
+                                    : 'New Bin Count'}
                         </Heading>
+                        {!binCount && (
+                            <Badge
+                                colorScheme={countType === 'adjustment' ? 'orange' : 'brand'}
+                                ml={2}
+                                fontSize="xs"
+                            >
+                                {countType === 'adjustment' ? 'Adjustment' : 'Standard'}
+                            </Badge>
+                        )}
                     </ModalHeader>
                     <ModalCloseButton />
                     <ModalBody

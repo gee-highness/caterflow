@@ -151,7 +151,7 @@ export async function GET(request: Request) {
     const siteFilter = buildTransactionSiteFilter(userSiteInfo);
 
     // Execute all queries concurrently with site filtering
-    const [transfers, purchaseOrders, goodsReceipts, stockAdjustments] = await Promise.all([
+    const [transfers, purchaseOrders, goodsReceipts] = await Promise.all([
       client.fetch(internalTransferQuery(siteFilter)),
       client.fetch(purchaseOrderQuery(siteFilter)),
       client.fetch(goodsReceiptQuery(siteFilter)),
@@ -159,7 +159,7 @@ export async function GET(request: Request) {
     ]);
 
     // Combine the results into a single array
-    let actions = [...transfers, ...purchaseOrders, ...goodsReceipts, ...stockAdjustments];
+    let actions = [...transfers, ...purchaseOrders, ...goodsReceipts];
     console.log(`✅ /api/actions: Raw actions from Sanity fetched. Count: ${actions.length}`);
 
     // Filter actions based on user role and site (additional client-side filtering if needed)

@@ -136,11 +136,6 @@ export const generateWorkflow = (actionType: string, status: string = 'draft', c
                     required: true
                 },
             ];
-        case 'StockAdjustment':
-            return [
-                { title: 'Review Adjustment Reason', description: 'Confirm the reason for the stock adjustment.', completed: completedSteps > 0, required: true },
-                { title: 'Update Stock Levels', description: 'Adjust the item quantities in the system.', completed: completedSteps > 1, required: true },
-            ];
         default:
             return [];
     }
@@ -149,6 +144,5 @@ export const generateWorkflow = (actionType: string, status: string = 'draft', c
 export const actionTypeTitles: { [key: string]: string } = {
     'PurchaseOrder': 'Purchase Orders',
     'GoodsReceipt': 'Goods Receipts',
-    'InternalTransfer': 'Internal Transfers',
-    'StockAdjustment': 'Stock Adjustments',
+    'InternalTransfer': 'Internal Transfers'
 };

@@ -70,17 +70,6 @@ export async function GET(request: NextRequest) {
           "fromBin": fromBin->name,
           "toBin": toBin->name
         },
-        "adjustments": *[_type == "StockAdjustment" && _createdAt >= $startDate ${siteFilter}] | order(_createdAt desc) {
-          _id,
-          _type,
-          adjustmentNumber,
-          "description": "Stock adjustment: " + count(adjustedItems) + " items at " + bin->name + " (" + adjustmentNumber + ")",
-          "user": adjustedBy->name,
-          "timestamp": _createdAt,
-          "siteName": bin->site->name,
-          "itemCount": count(adjustedItems),
-          "binName": bin->name
-        },
         "inventoryCounts": *[_type == "InventoryCount" && _createdAt >= $startDate ${siteFilter}] | order(_createdAt desc) {
           _id,
           _type,
@@ -118,3 +107,18 @@ export async function GET(request: NextRequest) {
     );
   }
 }
+
+/**
+ * 
+"adjustments": *[_type == "StockAdjustment" && _createdAt >= $startDate ${siteFilter}] | order(_createdAt desc) {
+  _id,
+  _type,
+  adjustmentNumber,
+  "description": "Stock adjustment: " + count(adjustedItems) + " items at " + bin->name + " (" + adjustmentNumber + ")",
+  "user": adjustedBy->name,
+  "timestamp": _createdAt,
+  "siteName": bin->site->name,
+  "itemCount": count(adjustedItems),
+  "binName": bin->name
+},
+ */

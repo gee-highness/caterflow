@@ -792,54 +792,76 @@ setInterval(cleanupSnapshotCache, 60000);
 const getStockSnapshot = async (stockItemId: string, binId: string): Promise<number> => {
   const cacheKey = `${stockItemId}-${binId}`;
 
-  // Check cache first
+  // 1. Check cache first
   const cached = snapshotCache.get(cacheKey);
   if (cached) {
-    // If confidence is low, refresh in background
-    if (cached.metadata?.confidence === 'low') {
-      setTimeout(() => {
-        refreshStockSnapshot(stockItemId, binId).catch(console.error);
-      }, 0);
-    }
     return cached.quantity;
   }
 
   try {
+    // 2. Check if snapshot exists in database
     const query = groq`*[_type == "stockSnapshot" && stockItem._ref == $stockItemId && bin._ref == $binId][0]{
       quantity,
-      lastUpdated,
-      "transactionCount": count(*[_type in ["GoodsReceipt", "DispatchLog", "InternalTransfer", "InventoryCount"] && 
-        (stockItem._ref == $stockItemId && bin._ref == $binId)])
+      lastUpdated
     }`;
 
     const snapshot = await client.fetch(query, { stockItemId, binId });
 
     if (snapshot) {
+      // 3. Snapshot exists - use it and cache
       const quantity = snapshot.quantity || 0;
-      const confidence = snapshot.transactionCount > 10 ? 'high' :
-        snapshot.transactionCount > 0 ? 'medium' : 'low';
-
-      await atomicCacheUpdate(cacheKey, quantity, { confidence, transactionCount: snapshot.transactionCount });
+      snapshotCache.set(cacheKey, quantity, { confidence: 'high' });
       return quantity;
     }
 
-    // No snapshot exists - calculate from transactions
-    const calculatedStock = await calculateStockFromTransactions(stockItemId, binId, false);
-    snapshotCache.set(cacheKey, calculatedStock, { confidence: 'low' });
+    // 4. NO SNAPSHOT EXISTS - Calculate using exact logic
+    console.log(`🔍 No snapshot for ${stockItemId}-${binId}, calculating...`);
+    const calculatedStock = await calculateStockExactLogic(stockItemId, binId, true);
+
+    // 5. CREATE the snapshot for next time
+    await createStockSnapshot(stockItemId, binId, calculatedStock);
+
+    // 6. Cache and return
+    snapshotCache.set(cacheKey, calculatedStock, { confidence: 'high' });
     return calculatedStock;
 
   } catch (error) {
     console.error('Error getting stock snapshot:', error);
-
-    // Try to get any cached value (even if we didn't find it earlier)
-    const fallbackCache = snapshotCache.get(cacheKey);
-    if (fallbackCache) {
-      // Mark as low confidence due to error
-      snapshotCache.set(cacheKey, fallbackCache.quantity, { confidence: 'low' });
-      return fallbackCache.quantity;
-    }
-
     return 0;
+  }
+};
+
+
+/**
+ * Create a new stock snapshot (doesn't update existing)
+ */
+const createStockSnapshot = async (
+  stockItemId: string,
+  binId: string,
+  quantity: number
+): Promise<void> => {
+  try {
+    const now = new Date().toISOString();
+
+    await writeClient.create({
+      _type: 'stockSnapshot',
+      stockItem: {
+        _type: 'reference',
+        _ref: stockItemId,
+      },
+      bin: {
+        _type: 'reference',
+        _ref: binId,
+      },
+      quantity,
+      lastUpdated: now
+    });
+
+    console.log(`✅ Created snapshot for ${stockItemId}-${binId}: ${quantity}`);
+
+  } catch (error) {
+    console.error('Error creating stock snapshot:', error);
+    throw error;
   }
 };
 
@@ -1586,42 +1608,38 @@ export const calculateBulkStock = async (
     // In calculateBulkStock function, replace the section that creates zero snapshots:
 
     if (itemsWithoutSnapshots.length > 0) {
-      console.log(`📊 Creating ${itemsWithoutSnapshots.length} zero stock snapshots...`);
+      console.log(`🔍 Calculating ${itemsWithoutSnapshots.length} missing snapshots...`);
 
-      const now = new Date().toISOString();
-      const batchSize = 50;
+      // Process in batches to avoid overwhelming
+      const BATCH_SIZE = 10;
 
-      // Instead of directly using writeClient, call the API
-      try {
-        const response = await fetch('/api/stock-snapshots/create-zero-snapshots', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            items: itemsWithoutSnapshots
-          }),
+      for (let i = 0; i < itemsWithoutSnapshots.length; i += BATCH_SIZE) {
+        const batch = itemsWithoutSnapshots.slice(i, i + BATCH_SIZE);
+
+        const batchPromises = batch.map(async ({ itemId, binId }) => {
+          try {
+            // Use EXACT logic to calculate
+            const calculatedStock = await calculateStockExactLogic(itemId, binId, false);
+
+            // Create snapshot
+            await createStockSnapshot(itemId, binId, calculatedStock);
+
+            // Update results
+            results[`${itemId}-${binId}`] = calculatedStock;
+
+            return { success: true, itemId, binId, stock: calculatedStock };
+          } catch (error) {
+            console.error(`❌ Failed to create snapshot for ${itemId}-${binId}:`, error);
+            results[`${itemId}-${binId}`] = 0;
+            return { success: false, itemId, binId, error };
+          }
         });
 
-        if (!response.ok) {
-          const errorData = await response.json();
-          throw new Error(errorData.error || 'Failed to create zero snapshots');
-        }
-
-        const result = await response.json();
-        console.log(`✅ ${result.message}`);
-
-      } catch (error) {
-        console.error(`❌ Failed to create zero snapshots:`, error);
-        // Don't throw, just continue with 0 values
+        await Promise.all(batchPromises);
+        console.log(`   Processed batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(itemsWithoutSnapshots.length / BATCH_SIZE)}`);
       }
 
-      // Set results to 0 for all items without snapshots
-      itemsWithoutSnapshots.forEach(({ itemId, binId }) => {
-        results[`${itemId}-${binId}`] = 0;
-      });
-
-      console.log(`✅ Created ${itemsWithoutSnapshots.length} zero stock snapshots`);
+      console.log(`✅ Created ${itemsWithoutSnapshots.length} calculated snapshots`);
     }
 
     onProgress?.({ stage: 'Finalizing results...', percentage: 95 });
@@ -2309,11 +2327,6 @@ export async function updateStockForTransaction(
 
         console.log(`📋 Processing ${bulkUpdates.length} inventory count items for ${transaction.countNumber}`);
         break;
-
-      // ========== ADJUSTMENT (if implemented) ==========
-      case 'adjustment':
-        console.log(`⚠️ Adjustment transaction type not yet implemented for ${transactionId}`);
-        return;
 
       default:
         console.error(`❌ Unsupported transaction type: ${transactionType}`);
@@ -3524,6 +3537,232 @@ const calculateStockFromTransactionsFixed = async (
     return 0;
   }
 };
+
+
+/**
+ * 🎯 EXACT CALCULATION LOGIC AS SPECIFIED
+ * 1. Find latest inventory count for this item-bin
+ * 2. Start from count value (or 0)
+ * 3. Add receipts after count
+ * 4. Add transfers IN after count
+ * 5. Deduct dispatches after count
+ * 6. Deduct transfers OUT after count
+ * 7. Return calculated stock
+ */
+export const calculateStockExactLogic = async (
+  stockItemId: string,
+  binId: string,
+  verbose: boolean = false
+): Promise<number> => {
+  const startTime = Date.now();
+
+  if (verbose) {
+    console.log(`🎯 Calculating exact stock for ${stockItemId} in ${binId}`);
+  }
+
+  try {
+    // STEP 1: Find latest inventory count for this specific item in this bin
+    const countQuery = groq`*[
+      _type == "InventoryCount" && 
+      bin._ref == $binId &&
+      status == "completed"
+    ] | order(countDate desc) {
+      _id,
+      countDate,
+      countNumber,
+      countedItems[] {
+        "itemId": stockItem._ref,
+        countedQuantity
+      }
+    }`;
+
+    const counts = await client.fetch(countQuery, { binId });
+
+    let startingStock = 0;
+    let lastCountDate: Date | null = null;
+
+    // Find if this specific item was counted
+    for (const count of counts) {
+      const countedItem = count.countedItems?.find(
+        (item: any) => item.itemId === stockItemId
+      );
+
+      if (countedItem) {
+        startingStock = countedItem.countedQuantity || 0;
+        lastCountDate = new Date(count.countDate);
+
+        if (verbose) {
+          console.log(`📋 Found inventory count: ${count.countNumber} on ${count.countDate}`);
+          console.log(`   Starting stock: ${startingStock}`);
+        }
+        break;
+      }
+    }
+
+    if (verbose && !lastCountDate) {
+      console.log(`📋 No inventory count found for ${stockItemId} in ${binId}, starting from 0`);
+    }
+
+    // STEP 2: Get all transactions AFTER the last count (or all if no count)
+    const dateFilter = lastCountDate
+      ? `&& date > $lastCountDate`
+      : '';
+
+    const transactionsQuery = groq`{
+      // Goods receipts INTO this bin
+      "receipts": *[
+        _type == "GoodsReceipt" && 
+        status in ["completed", "processed"] &&
+        receivingBin._ref == $binId
+        ${dateFilter}
+      ] | order(receiptDate asc) {
+        receiptDate,
+        receivedItems[] {
+          "itemId": stockItem._ref,
+          receivedQuantity
+        }
+      },
+      
+      // Dispatches FROM this bin
+      "dispatches": *[
+        _type == "DispatchLog" && 
+        status in ["completed", "processed"] &&
+        sourceBin._ref == $binId
+        ${dateFilter}
+      ] | order(dispatchDate asc) {
+        dispatchDate,
+        dispatchedItems[] {
+          "itemId": stockItem._ref,
+          dispatchedQuantity
+        }
+      },
+      
+      // Transfers INTO this bin
+      "transfersIn": *[
+        _type == "InternalTransfer" && 
+        status == "completed" &&
+        toBin._ref == $binId
+        ${dateFilter}
+      ] | order(transferDate asc) {
+        transferDate,
+        transferredItems[] {
+          "itemId": stockItem._ref,
+          transferredQuantity
+        }
+      },
+      
+      // Transfers OUT OF this bin
+      "transfersOut": *[
+        _type == "InternalTransfer" && 
+        status == "completed" &&
+        fromBin._ref == $binId
+        ${dateFilter}
+      ] | order(transferDate asc) {
+        transferDate,
+        transferredItems[] {
+          "itemId": stockItem._ref,
+          transferredQuantity
+        }
+      }
+    }`;
+
+    const params = lastCountDate
+      ? { stockItemId, binId, lastCountDate: lastCountDate.toISOString() }
+      : { stockItemId, binId };
+
+    const data = await client.fetch(transactionsQuery, params);
+
+    let currentStock = new Decimal(startingStock);
+
+    // STEP 3: Process ALL transactions in chronological order
+    const allTransactions: Array<{
+      date: Date;
+      type: 'receipt' | 'dispatch' | 'transferIn' | 'transferOut';
+      quantity: number;
+    }> = [];
+
+    // Add receipts
+    data.receipts?.forEach((receipt: any) => {
+      receipt.receivedItems?.forEach((item: any) => {
+        if (item.itemId === stockItemId && item.receivedQuantity > 0) {
+          allTransactions.push({
+            date: new Date(receipt.receiptDate),
+            type: 'receipt',
+            quantity: item.receivedQuantity
+          });
+        }
+      });
+    });
+
+    // Add dispatches
+    data.dispatches?.forEach((dispatch: any) => {
+      dispatch.dispatchedItems?.forEach((item: any) => {
+        if (item.itemId === stockItemId && item.dispatchedQuantity > 0) {
+          allTransactions.push({
+            date: new Date(dispatch.dispatchDate),
+            type: 'dispatch',
+            quantity: -item.dispatchedQuantity // Negative for deduction
+          });
+        }
+      });
+    });
+
+    // Add transfers IN
+    data.transfersIn?.forEach((transfer: any) => {
+      transfer.transferredItems?.forEach((item: any) => {
+        if (item.itemId === stockItemId && item.transferredQuantity > 0) {
+          allTransactions.push({
+            date: new Date(transfer.transferDate),
+            type: 'transferIn',
+            quantity: item.transferredQuantity
+          });
+        }
+      });
+    });
+
+    // Add transfers OUT
+    data.transfersOut?.forEach((transfer: any) => {
+      transfer.transferredItems?.forEach((item: any) => {
+        if (item.itemId === stockItemId && item.transferredQuantity > 0) {
+          allTransactions.push({
+            date: new Date(transfer.transferDate),
+            type: 'transferOut',
+            quantity: -item.transferredQuantity // Negative for deduction
+          });
+        }
+      });
+    });
+
+    // Sort by date (chronological order)
+    allTransactions.sort((a, b) => a.date.getTime() - b.date.getTime());
+
+    // STEP 4: Apply transactions
+    allTransactions.forEach((tx, index) => {
+      const stockBefore = currentStock.toNumber();
+      currentStock = currentStock.plus(tx.quantity);
+
+      if (verbose) {
+        console.log(`  ${index + 1}. ${tx.date.toISOString().split('T')[0]} ${tx.type}: ${tx.quantity > 0 ? '+' : ''}${tx.quantity} (${stockBefore} → ${currentStock.toNumber()})`);
+      }
+    });
+
+    const finalStock = currentStock.toNumber();
+
+    if (verbose) {
+      const duration = Date.now() - startTime;
+      console.log(`✅ Final stock: ${finalStock} (calculated in ${duration}ms)`);
+      console.log(`   Transactions processed: ${allTransactions.length}`);
+      console.log(`   Starting point: ${startingStock} ${lastCountDate ? `(from count on ${lastCountDate.toISOString().split('T')[0]})` : '(no count)'}`);
+    }
+
+    return finalStock;
+
+  } catch (error) {
+    console.error(`❌ Error in exact calculation for ${stockItemId}-${binId}:`, error);
+    return 0;
+  }
+};
+
 
 /**
  * 🎯 CORRECT STOCK CALCULATION LOGIC:

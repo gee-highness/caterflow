@@ -20,6 +20,12 @@ import {
     Icon,
     Text,
     HStack,
+    Modal,
+    ModalOverlay,
+    ModalContent,
+    ModalHeader,
+    ModalBody,
+    ModalCloseButton,
     VStack,
 } from '@chakra-ui/react';
 import { FiPlus, FiSearch, FiEdit, FiEye, FiClipboard, FiFilter } from 'react-icons/fi';
@@ -72,6 +78,8 @@ export default function BinCountsPage() {
     const { isOpen, onOpen, onClose } = useDisclosure();
     const toast = useToast();
     const [viewMode, setViewMode] = useState<'actionRequired' | 'all'>('all');
+    const [showCountTypeModal, setShowCountTypeModal] = useState(false);
+    const [pendingCountType, setPendingCountType] = useState<'standard' | 'adjustment'>('standard');
 
     // Theming props
     const bgPrimary = useColorModeValue('neutral.light.bg-primary', 'neutral.dark.bg-primary');
@@ -151,8 +159,15 @@ export default function BinCountsPage() {
     }, [binCounts, searchTerm, viewMode]);
 
     const handleAddBinCount = () => {
-        setSelectedBinCount(null);
-        onOpen();
+        const isAdmin = session?.user?.role === 'admin';
+
+        if (isAdmin) {
+            setShowCountTypeModal(true);
+        } else {
+            setSelectedBinCount(null);
+            setPendingCountType('standard'); // Default for non-admins
+            onOpen();
+        }
     };
 
     const handleViewOrEdit = useCallback((count: BinCount) => {
@@ -339,10 +354,59 @@ export default function BinCountsPage() {
 
                 <BinCountModal
                     isOpen={isOpen}
-                    onClose={onClose}
+                    onClose={() => {
+                        onClose();
+                        // Reset to standard for next time
+                        setPendingCountType('standard');
+                    }}
                     binCount={selectedBinCount}
                     onSave={fetchBinCounts}
+                    countType={pendingCountType}
                 />
+
+                {/* Count Type Selection Modal (Admin Only) */}
+                <Modal isOpen={showCountTypeModal} onClose={() => setShowCountTypeModal(false)} size="sm">
+                    <ModalOverlay />
+                    <ModalContent>
+                        <ModalHeader>Select Count Type</ModalHeader>
+                        <ModalCloseButton />
+                        <ModalBody>
+                            <VStack spacing={4} py={4}>
+                                <Button
+                                    w="100%"
+                                    size="lg"
+                                    colorScheme="brand"
+                                    onClick={() => {
+                                        setPendingCountType('standard');
+                                        setSelectedBinCount(null);
+                                        setShowCountTypeModal(false);
+                                        onOpen();
+                                    }}
+                                    leftIcon={<FiClipboard />}
+                                >
+                                    Standard Count
+                                    <Text fontSize="xs" mt={1} opacity={0.8}>Count all items in bin</Text>
+                                </Button>
+
+                                <Button
+                                    w="100%"
+                                    size="lg"
+                                    colorScheme="orange"
+                                    onClick={() => {
+                                        setPendingCountType('adjustment');
+                                        setSelectedBinCount(null);
+                                        setShowCountTypeModal(false);
+                                        onOpen();
+                                    }}
+                                    leftIcon={<FiEdit />}
+                                >
+                                    Adjustment Count
+                                    <Text fontSize="xs" mt={1} opacity={0.8}>Select specific items to adjust</Text>
+                                </Button>
+                            </VStack>
+                        </ModalBody>
+                    </ModalContent>
+                </Modal>
             </VStack>
         </Box>
     );
