@@ -157,6 +157,17 @@ export default function CurrentStockPage() {
             const stockItems: any[] = await stockItemsResponse.json();
             const bins: any[] = await binsResponse.json();
 
+            console.log('🔍 DEBUG - Bins fetched:', {
+                count: bins.length,
+                binIds: bins.map(b => b._id),
+                binNames: bins.map(b => b.name)
+            });
+
+            console.log('🔍 DEBUG - Stock items fetched:', {
+                count: stockItems.length,
+                itemIds: stockItems.slice(0, 5).map(i => i._id)
+            });
+
             if (stockItems.length === 0 || bins.length === 0) {
                 console.log('⚠️ No items or bins found');
                 setCurrentStockItems([]);
@@ -185,6 +196,11 @@ export default function CurrentStockPage() {
                 if (snapshotsResponse.ok) {
                     snapshotData = await snapshotsResponse.json();
                     console.log(`✅ Snapshots API response: ${snapshotData.totalCount} total, ${snapshotData.missingCount} missing`);
+
+                    // SAFETY CHECK: Verify the API returned data for the bins we requested
+                    if (snapshotData.totalCount !== stockItemIds.length * binIds.length) {
+                        console.warn(`⚠️ WARNING: API returned ${snapshotData.totalCount} snapshots but expected ${stockItemIds.length * binIds.length}`);
+                    }
                 } else {
                     console.log('⚠️ Snapshots API failed, falling back to full calculation');
                 }
@@ -214,42 +230,63 @@ export default function CurrentStockPage() {
                 stockResults = snapshotData.snapshots;
                 fromCacheCount = snapshotData.totalCount - snapshotData.missingCount;
 
-                // Only calculate missing ones
-                if (snapshotData.missingCount > 0) {
-                    setProgress({ stage: 'Calculating missing stock...', percentage: 50 });
+                // CRITICAL FIX: Extract missing pairs but ONLY for bins we actually have
+                const missingPairs = Object.entries(snapshotData.snapshots)
+                    .filter(([key, value]) => {
+                        if (value !== 0) return false; // Not missing
 
-                    // Extract missing item-bin pairs
-                    const missingPairs = Object.entries(snapshotData.snapshots)
-                        .filter(([_, value]) => value === 0)
-                        .map(([key, _]) => {
-                            const [itemId, binId] = key.split('-');
-                            return { itemId, binId };
-                        });
-
-                    const missingItemIds = [...new Set(missingPairs.map(p => p.itemId))];
-                    const missingBinIds = [...new Set(missingPairs.map(p => p.binId))];
-
-                    console.log(`🔍 Calculating ${missingPairs.length} missing items (${missingItemIds.length} unique items, ${missingBinIds.length} bins)`);
-
-                    const calculatedResults = await calculateBulkStock(
-                        missingItemIds,
-                        missingBinIds,
-                        (progress) => {
-                            // FIXED: calculateBulkStock progress is { stage: string; percentage: number }
-                            const adjustedPercentage = 50 + (progress.percentage * 0.4); // 50-90%
-                            setProgress({
-                                stage: progress.stage || `Calculating missing items...`,
-                                percentage: adjustedPercentage
-                            });
-                        }
-                    );
-
-                    // Merge results
-                    Object.entries(calculatedResults).forEach(([key, value]) => {
-                        stockResults[key] = value;
+                        const [itemId, binId] = key.split('-');
+                        // ONLY include if this bin is in our fetched bins AND item is in our fetched items
+                        return binIds.includes(binId) && stockItemIds.includes(itemId);
+                    })
+                    .map(([key, _]) => {
+                        const [itemId, binId] = key.split('-');
+                        return { itemId, binId };
                     });
 
-                    calculatedCount = missingPairs.length;
+                console.log(`🔍 Valid missing pairs after filtering: ${missingPairs.length} (was ${snapshotData.missingCount})`);
+
+                // Only calculate missing pairs
+                if (missingPairs.length > 0) {
+                    // SAFETY CHECK: Don't calculate too many at once
+                    const MAX_CALCULATIONS = 1000;
+                    let pairsToCalculate = missingPairs;
+
+                    if (missingPairs.length > MAX_CALCULATIONS) {
+                        console.warn(`⚠️ WARNING: Too many calculations (${missingPairs.length}), limiting to ${MAX_CALCULATIONS}`);
+                        pairsToCalculate = missingPairs.slice(0, MAX_CALCULATIONS);
+                    }
+
+                    setProgress({ stage: `Calculating ${pairsToCalculate.length} missing items...`, percentage: 50 });
+
+                    const missingItemIds = [...new Set(pairsToCalculate.map(p => p.itemId))];
+                    const missingBinIds = [...new Set(pairsToCalculate.map(p => p.binId))];
+
+                    console.log(`🔍 Calculating ${pairsToCalculate.length} missing items (${missingItemIds.length} unique items, ${missingBinIds.length} bins)`);
+
+                    try {
+                        const calculatedResults = await calculateBulkStock(
+                            missingItemIds,
+                            missingBinIds,
+                            (progress) => {
+                                const adjustedPercentage = 50 + (progress.percentage * 0.4);
+                                setProgress({
+                                    stage: `Calculating ${Math.round(progress.percentage)}%...`,
+                                    percentage: adjustedPercentage
+                                });
+                            }
+                        );
+
+                        // Merge results
+                        Object.entries(calculatedResults).forEach(([key, value]) => {
+                            stockResults[key] = value;
+                        });
+
+                        calculatedCount = pairsToCalculate.length;
+                    } catch (calcError) {
+                        console.error('❌ Calculation failed:', calcError);
+                        // Don't fail the whole request, just log the error
+                    }
                 }
 
                 setProgress({ stage: 'Processing results...', percentage: 90 });
@@ -257,28 +294,75 @@ export default function CurrentStockPage() {
             else {
                 // 🐌 FULL PATH: No snapshots or force recalc
                 console.log('🔄 FULL CALCULATION: No snapshots available or forced recalculation');
-                setProgress({ stage: 'Calculating all stock...', percentage: 50 });
 
-                stockResults = await calculateBulkStock(
-                    stockItemIds,
-                    binIds,
-                    (progress) => {
-                        // FIXED: calculateBulkStock progress is { stage: string; percentage: number }
-                        const adjustedPercentage = 50 + (progress.percentage * 0.4); // 50-90%
+                // SAFETY CHECK: Don't calculate too many at once
+                const totalCombinations = stockItemIds.length * binIds.length;
+                const MAX_CALCULATIONS = 2000;
+
+                if (totalCombinations > MAX_CALCULATIONS) {
+                    console.warn(`⚠️ WARNING: Too many combinations (${totalCombinations}), calculating in batches`);
+
+                    // Calculate in smaller batches
+                    const BATCH_SIZE = 500;
+                    let processed = 0;
+
+                    for (let i = 0; i < stockItemIds.length; i += 20) {
+                        const batchItemIds = stockItemIds.slice(i, i + 20);
+                        const batchPercentage = 50 + (processed / totalCombinations * 40);
+
                         setProgress({
-                            stage: progress.stage || 'Calculating stock...',
-                            percentage: adjustedPercentage
+                            stage: `Calculating batch ${Math.floor(i / 20) + 1}...`,
+                            percentage: batchPercentage
                         });
+
+                        try {
+                            const batchResults = await calculateBulkStock(
+                                batchItemIds,
+                                binIds,
+                                () => { } // Minimal progress for batches
+                            );
+
+                            // Merge batch results
+                            Object.entries(batchResults).forEach(([key, value]) => {
+                                stockResults[key] = value;
+                            });
+
+                            processed += batchItemIds.length * binIds.length;
+                            console.log(`📦 Batch ${Math.floor(i / 20) + 1} complete: ${processed}/${totalCombinations}`);
+
+                            // Small delay to prevent freezing
+                            await new Promise(resolve => setTimeout(resolve, 100));
+                        } catch (batchError) {
+                            console.error(`❌ Batch ${Math.floor(i / 20) + 1} failed:`, batchError);
+                        }
                     }
-                );
+
+                    calculatedCount = processed;
+                } else {
+                    // Normal calculation for smaller datasets
+                    setProgress({ stage: 'Calculating all stock...', percentage: 50 });
+
+                    stockResults = await calculateBulkStock(
+                        stockItemIds,
+                        binIds,
+                        (progress) => {
+                            const adjustedPercentage = 50 + (progress.percentage * 0.4);
+                            setProgress({
+                                stage: `Calculating ${Math.round(progress.percentage)}%...`,
+                                percentage: adjustedPercentage
+                            });
+                        }
+                    );
+
+                    calculatedCount = totalCombinations;
+                }
 
                 fromCacheCount = 0;
-                calculatedCount = Object.keys(stockResults).length;
 
                 setProgress({ stage: 'Processing results...', percentage: 90 });
             }
 
-            // 4. PROCESS RESULTS (reuse your existing logic)
+            // 4. PROCESS RESULTS
             console.log('📊 Processing final results...');
             const itemsWithCalculatedStock: CurrentStockItem[] = [];
 
@@ -289,8 +373,8 @@ export default function CurrentStockPage() {
             });
 
             // For EACH item and EACH bin combination
-            stockItems.forEach(item => {
-                bins.forEach((bin: any) => {
+            for (const item of stockItems) {
+                for (const bin of bins) {
                     const key = `${item._id}-${bin._id}`;
                     const quantity = stockResults[key] || 0;
 
@@ -321,8 +405,13 @@ export default function CurrentStockPage() {
                         binId: bin._id,
                         lastUpdated: new Date().toISOString(),
                     });
-                });
-            });
+                }
+
+                // Yield to prevent UI freezing during processing
+                if (itemsWithCalculatedStock.length % 100 === 0) {
+                    await new Promise(resolve => setTimeout(resolve, 0));
+                }
+            }
 
             const duration = Date.now() - startTime;
 
