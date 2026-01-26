@@ -276,7 +276,7 @@ export default function LoginPage() {
                         mt={6}
                       >
                         <Text fontSize="sm" fontWeight="semibold" color={primaryTextColor} mb={2}>
-                          Demo Access
+                          Demo Admin Access
                         </Text>
                         <Text fontSize="xs" color={secondaryTextColor} mb={3}>
                           Try with: admin@stockwise.demo / password
