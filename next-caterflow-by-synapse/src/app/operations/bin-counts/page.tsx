@@ -385,7 +385,6 @@ export default function BinCountsPage() {
                                     leftIcon={<FiClipboard />}
                                 >
                                     Standard Count
-                                    <Text fontSize="xs" mt={1} opacity={0.8}>Count all items in bin</Text>
                                 </Button>
 
                                 <Button
@@ -401,7 +400,6 @@ export default function BinCountsPage() {
                                     leftIcon={<FiEdit />}
                                 >
                                     Adjustment Count
-                                    <Text fontSize="xs" mt={1} opacity={0.8}>Select specific items to adjust</Text>
                                 </Button>
                             </VStack>
                         </ModalBody>
