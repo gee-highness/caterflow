@@ -91,7 +91,6 @@ export async function GET(request: NextRequest) {
       ...data.receipts,
       ...data.dispatches,
       ...data.transfers,
-      ...data.adjustments,
       ...data.inventoryCounts
     ];
 
@@ -121,4 +120,8 @@ export async function GET(request: NextRequest) {
   "itemCount": count(adjustedItems),
   "binName": bin->name
 },
+
+
+
+      ...data.adjustments,
  */

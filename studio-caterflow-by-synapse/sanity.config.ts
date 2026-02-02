@@ -84,7 +84,6 @@ export default defineConfig({
                     S.documentTypeListItem('GoodsReceipt').title('Goods Receipts'),
                     S.documentTypeListItem('DispatchLog').title('Dispatch Logs'),
                     S.documentTypeListItem('InternalTransfer').title('Internal Transfers'),
-                    S.documentTypeListItem('StockAdjustment').title('Stock Adjustments'),
                     S.documentTypeListItem('InventoryCount').title('Inventory Counts'),
                   ])
               ),
