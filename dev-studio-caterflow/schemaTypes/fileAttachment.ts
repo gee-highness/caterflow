@@ -66,7 +66,6 @@ export default defineType({
                 { type: 'PurchaseOrder' },
                 { type: 'GoodsReceipt' },
                 { type: 'DispatchLog' },
-                { type: 'StockAdjustment' },
                 { type: 'InternalTransfer' },
                 { type: 'InventoryCount' },
             ],
