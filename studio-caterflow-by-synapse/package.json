@@ -1,5 +1,5 @@
 {
-  "name": "studio-caterflow-by-synapse",
+  "name": "dev-studio-caterflow",
   "private": true,
   "version": "1.0.0",
   "main": "package.json",
@@ -16,6 +16,8 @@
   ],
   "dependencies": {
     "@sanity/vision": "^4.22.0",
+    "esbuild": "^0.25.10",
+    "next-sanity": "^11.4.2",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
     "react-icons": "^5.5.0",

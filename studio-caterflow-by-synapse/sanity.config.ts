@@ -9,7 +9,7 @@ export default defineConfig({
   name: 'default',
   title: 'Caterflow by Synapse',
 
-  projectId: 'v3sfsmld',
+  projectId: 'ml4r1dn2',
   dataset: 'production',
 
 
@@ -30,8 +30,6 @@ export default defineConfig({
                     S.documentTypeListItem('Site').title('Sites'),
                     S.documentTypeListItem('Bin').title('Storage Bins'),
                     S.documentTypeListItem('Category').title('Categories'),
-                    S.documentTypeListItem('DispatchType').title('Dispatch Type'),
-
                     // --- START MODIFICATION FOR STOCKITEM FILTERING ---
                     S.listItem() // This creates the "All Stock Items" + "Stock Items by Category" group
                       .title('Stock Items')
@@ -85,6 +83,7 @@ export default defineConfig({
                     S.documentTypeListItem('DispatchLog').title('Dispatch Logs'),
                     S.documentTypeListItem('InternalTransfer').title('Internal Transfers'),
                     S.documentTypeListItem('InventoryCount').title('Inventory Counts'),
+                    S.documentTypeListItem('StockRegistry').title('Stock Registry'),
                   ])
               ),
             S.divider(),
@@ -99,7 +98,6 @@ export default defineConfig({
                   .items([
                     S.documentTypeListItem('AppUser').title('App Users'),
                     S.documentTypeListItem('NotificationPreference').title('Notification Preferences'),
-                    S.documentTypeListItem('stockSnapshot').title('Stock Snapshot'),
                   ])
               ),
           ])

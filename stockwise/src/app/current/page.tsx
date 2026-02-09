@@ -140,7 +140,7 @@ export default function CurrentStockPage() {
         const startTime = Date.now();
 
         try {
-            console.log('🚀 Optimized stock loading for site:', siteId || 'All sites', forceRecalc ? '(forced)' : '');
+            console.log('🚀 Loading stock from registry for site:', siteId || 'All sites', forceRecalc ? '(forced)' : '');
 
             // 1. Get stock items and bins in parallel
             setProgress({ stage: 'Fetching items and bins...', percentage: 10 });
@@ -181,88 +181,63 @@ export default function CurrentStockPage() {
 
             console.log(`📊 Processing: ${stockItems.length} items × ${bins.length} bins = ${stockItemIds.length * binIds.length} combinations`);
 
-            // 2. TRY FAST PATH: Get snapshots first
-            setProgress({ stage: 'Loading snapshots...', percentage: 30 });
-            console.log('📊 Fetching snapshots via bulk API...');
+            // 2. Get ALL stock from registry in one call
+            setProgress({ stage: 'Loading from registry...', percentage: 30 });
+            console.log('📊 Fetching stock from registry...');
 
-            let snapshotData: any = null;
-            try {
-                const snapshotsResponse = await fetch('/api/stock/snapshots/bulk', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ stockItemIds, binIds })
-                });
+            const response = await fetch('/api/stock/snapshots/bulk', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ stockItemIds, binIds })
+            });
 
-                if (snapshotsResponse.ok) {
-                    snapshotData = await snapshotsResponse.json();
-                    console.log(`✅ Snapshots API response: ${snapshotData.totalCount} total, ${snapshotData.missingCount} missing`);
-
-                    // SAFETY CHECK: Verify the API returned data for the bins we requested
-                    if (snapshotData.totalCount !== stockItemIds.length * binIds.length) {
-                        console.warn(`⚠️ WARNING: API returned ${snapshotData.totalCount} snapshots but expected ${stockItemIds.length * binIds.length}`);
-                    }
-                } else {
-                    console.log('⚠️ Snapshots API failed, falling back to full calculation');
-                }
-            } catch (apiError) {
-                console.log('⚠️ Could not reach snapshots API:', apiError);
+            if (!response.ok) {
+                throw new Error('Failed to fetch from registry');
             }
 
-            // 3. DECISION: Which path to take?
-            let stockResults: { [key: string]: number } = {};
-            let fromCacheCount = 0;
+            const registryData = await response.json();
+
+            console.log('📋 Registry response:', {
+                total: registryData.totalCount,
+                found: registryData.existingSnapshots,
+                missing: registryData.missingCount,
+                hasAll: registryData.hasAllSnapshots,
+                registryExists: registryData.registryExists,
+                registryId: registryData.registryId
+            });
+
+            const stockResults = registryData.snapshots;
+
+            // 3. If force recalc OR items are missing from registry, calculate them
             let calculatedCount = 0;
+            let fromCacheCount = registryData.existingSnapshots;
 
-            if (snapshotData && snapshotData.hasAllSnapshots && !forceRecalc) {
-                // 🎉 FASTEST PATH: All snapshots exist
-                console.log(`🎉 ALL SNAPSHOTS EXIST! Loading instantly...`);
-                stockResults = snapshotData.snapshots;
-                fromCacheCount = snapshotData.totalCount;
-                calculatedCount = 0;
+            if (forceRecalc || registryData.missingCount > 0) {
+                console.log(`🔍 ${registryData.missingCount} items missing from registry, calculating...`);
 
-                setProgress({ stage: 'Processing snapshots...', percentage: 90 });
-            }
-            else if (snapshotData && snapshotData.missingCount > 0 && !forceRecalc) {
-                // ⚡ HYBRID PATH: Some snapshots missing
-                console.log(`⚡ HYBRID: ${snapshotData.totalCount - snapshotData.missingCount} snapshots exist, ${snapshotData.missingCount} missing`);
+                // Identify which items are truly missing (not just 0 quantity)
+                const missingPairs: Array<{ itemId: string; binId: string }> = [];
 
-                // Use existing snapshots
-                stockResults = snapshotData.snapshots;
-                fromCacheCount = snapshotData.totalCount - snapshotData.missingCount;
-
-                // CRITICAL FIX: Extract missing pairs but ONLY for bins we actually have
-                const missingPairs = Object.entries(snapshotData.snapshots)
-                    .filter(([key, value]) => {
-                        if (value !== 0) return false; // Not missing
-
-                        const [itemId, binId] = key.split('-');
-                        // ONLY include if this bin is in our fetched bins AND item is in our fetched items
-                        return binIds.includes(binId) && stockItemIds.includes(itemId);
-                    })
-                    .map(([key, _]) => {
-                        const [itemId, binId] = key.split('-');
-                        return { itemId, binId };
-                    });
-
-                console.log(`🔍 Valid missing pairs after filtering: ${missingPairs.length} (was ${snapshotData.missingCount})`);
-
-                // Only calculate missing pairs
-                if (missingPairs.length > 0) {
-                    // SAFETY CHECK: Don't calculate too many at once
-                    const MAX_CALCULATIONS = 1000;
-                    let pairsToCalculate = missingPairs;
-
-                    if (missingPairs.length > MAX_CALCULATIONS) {
-                        console.warn(`⚠️ WARNING: Too many calculations (${missingPairs.length}), limiting to ${MAX_CALCULATIONS}`);
-                        pairsToCalculate = missingPairs.slice(0, MAX_CALCULATIONS);
+                // Only calculate items that are not in registry at all
+                // Items with quantity 0 ARE in registry, so don't recalculate them
+                for (const binId of binIds) {
+                    for (const itemId of stockItemIds) {
+                        const key = `${itemId}-${binId}`;
+                        // If this key doesn't exist in results at all (undefined), it's missing
+                        if (stockResults[key] === undefined) {
+                            missingPairs.push({ itemId, binId });
+                        }
                     }
+                }
 
-                    setProgress({ stage: `Calculating ${pairsToCalculate.length} missing items...`, percentage: 50 });
+                console.log(`🔍 True missing pairs: ${missingPairs.length} (was ${registryData.missingCount})`);
 
-                    const missingItemIds = [...new Set(pairsToCalculate.map(p => p.itemId))];
-                    const missingBinIds = [...new Set(pairsToCalculate.map(p => p.binId))];
+                if (missingPairs.length > 0) {
+                    // Calculate missing items
+                    const missingItemIds = [...new Set(missingPairs.map(p => p.itemId))];
+                    const missingBinIds = [...new Set(missingPairs.map(p => p.binId))];
 
-                    console.log(`🔍 Calculating ${pairsToCalculate.length} missing items (${missingItemIds.length} unique items, ${missingBinIds.length} bins)`);
+                    setProgress({ stage: `Calculating ${missingPairs.length} missing items...`, percentage: 50 });
 
                     try {
                         const calculatedResults = await calculateBulkStock(
@@ -277,90 +252,24 @@ export default function CurrentStockPage() {
                             }
                         );
 
-                        // Merge results
+                        // Merge calculated results with registry results
                         Object.entries(calculatedResults).forEach(([key, value]) => {
                             stockResults[key] = value;
                         });
 
-                        calculatedCount = pairsToCalculate.length;
+                        calculatedCount = missingPairs.length;
+                        fromCacheCount = registryData.totalCount - missingPairs.length;
+
                     } catch (calcError) {
                         console.error('❌ Calculation failed:', calcError);
                         // Don't fail the whole request, just log the error
                     }
                 }
-
-                setProgress({ stage: 'Processing results...', percentage: 90 });
+            } else {
+                console.log('✅ All items found in registry');
             }
-            else {
-                // 🐌 FULL PATH: No snapshots or force recalc
-                console.log('🔄 FULL CALCULATION: No snapshots available or forced recalculation');
 
-                // SAFETY CHECK: Don't calculate too many at once
-                const totalCombinations = stockItemIds.length * binIds.length;
-                const MAX_CALCULATIONS = 2000;
-
-                if (totalCombinations > MAX_CALCULATIONS) {
-                    console.warn(`⚠️ WARNING: Too many combinations (${totalCombinations}), calculating in batches`);
-
-                    // Calculate in smaller batches
-                    const BATCH_SIZE = 500;
-                    let processed = 0;
-
-                    for (let i = 0; i < stockItemIds.length; i += 20) {
-                        const batchItemIds = stockItemIds.slice(i, i + 20);
-                        const batchPercentage = 50 + (processed / totalCombinations * 40);
-
-                        setProgress({
-                            stage: `Calculating batch ${Math.floor(i / 20) + 1}...`,
-                            percentage: batchPercentage
-                        });
-
-                        try {
-                            const batchResults = await calculateBulkStock(
-                                batchItemIds,
-                                binIds,
-                                () => { } // Minimal progress for batches
-                            );
-
-                            // Merge batch results
-                            Object.entries(batchResults).forEach(([key, value]) => {
-                                stockResults[key] = value;
-                            });
-
-                            processed += batchItemIds.length * binIds.length;
-                            console.log(`📦 Batch ${Math.floor(i / 20) + 1} complete: ${processed}/${totalCombinations}`);
-
-                            // Small delay to prevent freezing
-                            await new Promise(resolve => setTimeout(resolve, 100));
-                        } catch (batchError) {
-                            console.error(`❌ Batch ${Math.floor(i / 20) + 1} failed:`, batchError);
-                        }
-                    }
-
-                    calculatedCount = processed;
-                } else {
-                    // Normal calculation for smaller datasets
-                    setProgress({ stage: 'Calculating all stock...', percentage: 50 });
-
-                    stockResults = await calculateBulkStock(
-                        stockItemIds,
-                        binIds,
-                        (progress) => {
-                            const adjustedPercentage = 50 + (progress.percentage * 0.4);
-                            setProgress({
-                                stage: `Calculating...`,
-                                percentage: adjustedPercentage
-                            });
-                        }
-                    );
-
-                    calculatedCount = totalCombinations;
-                }
-
-                fromCacheCount = 0;
-
-                setProgress({ stage: 'Processing results...', percentage: 90 });
-            }
+            setProgress({ stage: 'Processing results...', percentage: 90 });
 
             // 4. PROCESS RESULTS
             console.log('📊 Processing final results...');
@@ -429,10 +338,10 @@ export default function CurrentStockPage() {
 
             if (fromCacheCount === itemsWithCalculatedStock.length) {
                 toastTitle = 'Stock loaded instantly';
-                toastDescription = `All ${itemsWithCalculatedStock.length} items from snapshots`;
+                toastDescription = `All ${itemsWithCalculatedStock.length} items from registry`;
             } else if (fromCacheCount > 0 && calculatedCount > 0) {
                 toastTitle = 'Stock calculated efficiently';
-                toastDescription = `${fromCacheCount} from snapshots + ${calculatedCount} calculated`;
+                toastDescription = `${fromCacheCount} from registry + ${calculatedCount} calculated`;
             } else {
                 toastTitle = 'Stock calculation complete';
                 toastDescription = `Calculated ${itemsWithCalculatedStock.length} items`;
@@ -446,7 +355,7 @@ export default function CurrentStockPage() {
                 isClosable: true,
             });
 
-            console.log(`✅ FINISHED: ${itemsWithCalculatedStock.length} items in ${duration}ms (${fromCacheCount} cached, ${calculatedCount} calculated)`);
+            console.log(`✅ FINISHED: ${itemsWithCalculatedStock.length} items in ${duration}ms (${fromCacheCount} from registry, ${calculatedCount} calculated)`);
 
         } catch (err: any) {
             console.error('❌ Error calculating stock:', err);

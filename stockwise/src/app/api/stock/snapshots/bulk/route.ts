@@ -1,3 +1,4 @@
+// src/app/api/stock/snapshots/bulk/route.ts
 import { NextResponse } from 'next/server';
 import { client } from '@/lib/sanity';
 import { groq } from 'next-sanity';
@@ -25,64 +26,111 @@ export async function POST(request: Request) {
 			}, { status: 400 });
 		}
 
-		// Get snapshots ONLY for requested bins/items
-		const query = groq`*[
-            _type == "stockSnapshot" && 
-            stockItem._ref in $stockItemIds && 
-            bin._ref in $binIds
-        ] {
-            "itemId": stockItem._ref,
-            "binId": bin._ref,
-            quantity,
-            lastUpdated
-        }`;
+		// Get from single registry document
+		const query = groq`*[_type == "stockRegistry"][0] {
+			_id,
+			lastUpdated,
+			stockData
+		}`;
 
-		const snapshots = await client.fetch(query, { stockItemIds, binIds });
+		const registry = await client.fetch(query);
 
-		// Create results object with ALL requested combinations
+		// 🚨 CRITICAL FIX: Check if registry exists
+		if (!registry) {
+			console.log('⚠️ No registry found - returning all zeros');
+			
+			// Return all zeros
+			const results: { [key: string]: number } = {};
+			for (const binId of binIds) {
+				for (const itemId of stockItemIds) {
+					results[`${itemId}-${binId}`] = 0;
+				}
+			}
+			
+			return NextResponse.json({
+				snapshots: results,
+				missingCount: totalCombinations, // All are "missing" because no registry
+				totalCount: totalCombinations,
+				hasAllSnapshots: false,
+				existingSnapshots: 0,
+				registryExists: false
+			});
+		}
+
+		console.log(`✅ Registry found: ${registry._id}, last updated: ${registry.lastUpdated}`);
+
 		const results: { [key: string]: number } = {};
+		let foundInRegistry = 0;
+		let missingFromRegistry = 0;
 
-		// Initialize ALL requested combinations to 0 (missing)
+		// Initialize ALL requested combinations
 		for (const binId of binIds) {
 			for (const itemId of stockItemIds) {
 				const key = `${itemId}-${binId}`;
-				results[key] = 0;
+				results[key] = 0; // Default to 0
 			}
 		}
 
-		// Fill in existing snapshots
-		snapshots.forEach((snapshot: any) => {
-			const key = `${snapshot.itemId}-${snapshot.binId}`;
-			// Only set if this combination was requested
-			if (results[key] !== undefined) {
-				results[key] = snapshot.quantity || 0;
+		// Fill in from registry if data exists
+		if (registry?.stockData?.items) {
+			console.log(`📋 Registry has ${registry.stockData.items.length} items`);
+			
+			// Create lookup map for faster access
+			const registryMap = new Map();
+			registry.stockData.items.forEach((item: any) => {
+				if (item.stockItemId && item.binQuantities?.bins) {
+					item.binQuantities.bins.forEach((bin: any) => {
+						if (bin.binId) {
+							const key = `${item.stockItemId}-${bin.binId}`;
+							registryMap.set(key, bin.quantity || 0);
+						}
+					});
+				}
+			});
+
+			// Update results from registry
+			for (const key in results) {
+				if (registryMap.has(key)) {
+					results[key] = registryMap.get(key);
+					foundInRegistry++;
+				} else {
+					missingFromRegistry++;
+					// Keep as 0 (not in registry)
+				}
 			}
-		});
+		} else {
+			console.log('⚠️ Registry has no stockData items');
+			missingFromRegistry = totalCombinations;
+		}
 
-		// Count how many are still 0 (missing)
-		let missingCount = 0;
-		Object.values(results).forEach(value => {
-			if (value === 0) missingCount++;
-		});
+		// 🚨 FIXED LOGIC: "Missing" means NOT FOUND in registry at all, not quantity = 0
+		// Items with 0 quantity ARE in registry, they're not missing!
 
-		const totalCount = Object.keys(results).length;
-		const hasAllSnapshots = missingCount === 0;
-
-		console.log(`✅ API: ${snapshots.length} snapshots found, ${missingCount} missing of ${totalCount} requested`);
+		console.log(`✅ API: ${foundInRegistry} found in registry, ${missingFromRegistry} not in registry of ${totalCombinations} requested`);
 
 		return NextResponse.json({
 			snapshots: results,
-			missingCount,
-			totalCount,
-			hasAllSnapshots,
-			existingSnapshots: snapshots.length
+			missingCount: missingFromRegistry, // Only count items NOT IN REGISTRY
+			totalCount: totalCombinations,
+			hasAllSnapshots: missingFromRegistry === 0,
+			existingSnapshots: foundInRegistry,
+			registryExists: true,
+			registryId: registry._id,
+			registryLastUpdated: registry.lastUpdated,
+			// Add summary
+			summary: {
+				itemsWithStock: Object.values(results).filter(qty => qty > 0).length,
+				itemsWithZeroStock: Object.values(results).filter(qty => qty === 0).length,
+				itemsMissingFromRegistry: missingFromRegistry
+			}
 		});
 
 	} catch (error: any) {
 		console.error('❌ Error in bulk snapshots API:', error);
 		return NextResponse.json({
 			error: 'Failed to fetch snapshots',
-			details: error.message
+			details: error.message,
+			stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
 		}, { status: 500 });
 	}
 }

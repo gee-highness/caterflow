@@ -3,7 +3,8 @@ import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { client, writeClient } from '@/lib/sanity';
-import { bulkUpdateStockSnapshots } from '@/lib/stockCalculations';
+import { groq } from 'next-sanity';
+import { bulkUpdateStockRegistry } from '@/lib/stockCalculations';
 
 export async function POST(request: Request) {
 	try {
@@ -16,21 +17,28 @@ export async function POST(request: Request) {
 
 		console.log('🚨 Starting emergency stock recalculation via API...');
 
-		// 1. Clear existing stockSnapshots
-		let snapshotsDeleted = 0;
-		while (true) {
-			const snapshots = await client.fetch(
-				`*[_type == "stockSnapshot"] | order(_createdAt asc) [0...50] { _id }`
-			);
+		// 1. Clear existing stock registry
+		const existingRegistry = await client.fetch(groq`*[_type == "stockRegistry"][0] { _id }`);
 
-			if (snapshots.length === 0) break;
-
-			const transaction = writeClient.transaction();
-			snapshots.forEach((s: { _id: string; }) => transaction.delete(s._id));
-			await transaction.commit();
-
-			snapshotsDeleted += snapshots.length;
-			await new Promise(resolve => setTimeout(resolve, 100)); // Small delay
+		if (existingRegistry) {
+			await writeClient
+				.patch(existingRegistry._id)
+				.set({
+					stockData: { items: [] },
+					lastUpdated: new Date().toISOString(),
+					version: (existingRegistry.version || 0) + 1
+				})
+				.commit();
+			console.log('✅ Cleared existing stock registry');
+		} else {
+			await writeClient.create({
+				_type: 'stockRegistry',
+				title: 'Stock Registry v1',
+				stockData: { items: [] },
+				lastUpdated: new Date().toISOString(),
+				version: 1
+			});
+			console.log('✅ Created new empty stock registry');
 		}
 
 		// 2. Reset BinStock quantities
@@ -40,7 +48,7 @@ export async function POST(request: Request) {
 			.set({ quantity: 0 })
 			.commit();
 
-		// 3. Process all completed goods receipts using BULK updates
+		// 3. Process all completed goods receipts using REGISTRY updates
 		console.log('📦 Collecting all goods receipt items for bulk processing...');
 		const receipts = await client.fetch(`
 				*[_type == "GoodsReceipt" && status == "completed"] {
@@ -76,18 +84,17 @@ export async function POST(request: Request) {
 
 		console.log(`🚀 Bulk processing ${bulkUpdates.length} items from ${receipts.length} receipts...`);
 
-		// Use BULK update for maximum efficiency
+		// Use REGISTRY bulk update for maximum efficiency
 		if (bulkUpdates.length > 0) {
-			const bulkResult = await bulkUpdateStockSnapshots(bulkUpdates, {
+			const bulkResult = await bulkUpdateStockRegistry(bulkUpdates, {
 				onProgress: (progress) => {
 					if (progress.processed % 50 === 0 || progress.processed === progress.total) {
 						console.log(`📈 Emergency recalculation: ${progress.processed}/${progress.total} items`);
 					}
-				},
-				maxRetries: 3
+				}
 			});
 
-			console.log(`✅ Emergency bulk update: ${bulkResult.success} succeeded, ${bulkResult.failed} failed`);
+			console.log(`✅ Emergency registry update: ${bulkResult.success} succeeded, ${bulkResult.failed} failed`);
 		}
 
 		// Still process BinStock separately if needed (for backward compatibility)
@@ -124,13 +131,11 @@ export async function POST(request: Request) {
 
 		const receiptsProcessed = receipts.length;
 
-
-
 		return NextResponse.json({
 			success: true,
 			message: 'Emergency recalculation complete',
 			stats: {
-				snapshotsDeleted,
+				registryReset: true,
 				binStockReset: binStockCount,
 				receiptsProcessed,
 				itemsProcessed

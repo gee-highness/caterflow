@@ -14,45 +14,51 @@ export async function GET(request: NextRequest) {
 			);
 		}
 
-		// Find all bins where this item has stock or transactions
-		const query = groq`{
-      // Get bins with stock snapshots
-      "binsWithSnapshots": *[
-        _type == "stockSnapshot" && 
-        stockItem._ref == $stockItemId &&
-        quantity > 0
-      ].bin-> {
-        _id,
-        name,
-        site->{
-          _id,
-          name
-        },
-        "stockQuantity": ^.quantity
-      },
-      
-      // Get bins with recent transactions
-      "binsWithTransactions": *[
-        _type in ["GoodsReceipt", "DispatchLog", "InternalTransfer", "InventoryCount"] &&
-        (
-          (_type == "GoodsReceipt" && receivingBin._ref != null) ||
-          (_type == "DispatchLog" && sourceBin._ref != null) ||
-          (_type == "InternalTransfer" && (fromBin._ref != null || toBin._ref != null)) ||
-          (_type == "InventoryCount" && bin._ref != null)
-        )
-      ] {
-        "binId": coalesce(receivingBin._ref, sourceBin._ref, bin._ref),
-        "type": _type
-      }
-    }`;
+		// Get from registry document
+		const query = groq`*[_type == "stockRegistry"][0] {
+            stockData.items[stockItemId == $stockItemId] {
+                stockItemId,
+                binQuantities.bins[] {
+                    binId,
+                    quantity,
+                    lastUpdated
+                }
+            }
+        }`;
 
 		const data = await client.fetch(query, { stockItemId });
+		const itemData = data?.stockData?.items?.[0];
+
+		// Get bins with stock from registry
+		const binsWithStock = itemData?.binQuantities?.bins
+			?.filter((bin: any) => bin.quantity > 0)
+			.map((bin: any) => ({
+				_id: bin.binId,
+				name: `Bin ${bin.binId.slice(0, 8)}...`, // You might want to fetch actual bin names
+				stockQuantity: bin.quantity
+			})) || [];
+
+		// Also get bins with transactions (from other queries)
+		const binsWithTransactions = await client.fetch(groq`{
+            "binsWithTransactions": *[
+                _type in ["GoodsReceipt", "DispatchLog", "InternalTransfer", "InventoryCount"] &&
+                (
+                    (_type == "GoodsReceipt" && receivingBin._ref != null) ||
+                    (_type == "DispatchLog" && sourceBin._ref != null) ||
+                    (_type == "InternalTransfer" && (fromBin._ref != null || toBin._ref != null)) ||
+                    (_type == "InventoryCount" && bin._ref != null)
+                )
+            ] {
+                "binId": coalesce(receivingBin._ref, sourceBin._ref, bin._ref),
+                "type": _type
+            }
+        }`, { stockItemId });
 
 		// Deduplicate bins
 		const binMap = new Map();
 
-		// Add bins with snapshots
-		data.binsWithSnapshots?.forEach((bin: any) => {
+		// Add bins with stock from registry
+		binsWithStock.forEach((bin: any) => {
 			if (bin._id && !binMap.has(bin._id)) {
 				binMap.set(bin._id, {
 					...bin,
@@ -62,7 +68,7 @@ export async function GET(request: NextRequest) {
 		});
 
 		// Add bins with transactions
-		data.binsWithTransactions?.forEach((tx: any) => {
+		binsWithTransactions?.binsWithTransactions?.forEach((tx: any) => {
 			if (tx.binId && !binMap.has(tx.binId)) {
 				binMap.set(tx.binId, {
 					_id: tx.binId,

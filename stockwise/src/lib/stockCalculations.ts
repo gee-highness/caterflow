@@ -1,5 +1,6 @@
 // src/lib/stockCalculations.ts - UX-OPTIMIZED VERSION (V2: WITH CONCURRENCY FIXES)
 import { client, writeClient } from '@/lib/sanity';
+import { bulkUpdateStockRegistryAPI } from '@/lib/stockRegistryAPI';
 import { groq } from 'next-sanity';
 import Decimal from 'decimal.js';
 import {
@@ -41,41 +42,119 @@ export async function bulkUpdateStockSnapshots(
   results: Array<{ stockItemId: string; binId: string; success: boolean; error?: string }>;
 }> {
   const startTime = Date.now();
-  const maxRetries = options?.maxRetries || 3;
 
   if (!updates || updates.length === 0) {
     console.log('📭 No updates to process');
     return { success: 0, failed: 0, results: [] };
   }
 
-  console.log(`🚀 Starting bulk update for ${updates.length} items (${updates[0]?.transactionType})`);
-
-  // Remove duplicates (same item-bin combination)
-  const uniqueUpdates = Array.from(
-    new Map(
-      updates.map(update => [`${update.stockItemId}-${update.binId}`, update])
-    ).values()
-  );
-
-  console.log(`📊 Unique items to update: ${uniqueUpdates.length} (from ${updates.length} total)`);
+  console.log(`🚀 Starting bulk update for ${updates.length} items (using registry)`);
 
   try {
-    // ATTEMPT 1: Bulk transaction (fastest, most efficient)
-    try {
-      return await attemptBulkTransaction(uniqueUpdates, options);
-    } catch (bulkError) {
-      console.warn('⚠️ Bulk transaction failed, falling back to batched:', bulkError);
+    // Use the new registry-based bulk update
+    const registryResult = await bulkUpdateStockRegistry(updates, {
+      onProgress: (progress) => {
+        options?.onProgress?.({
+          processed: progress.processed,
+          total: progress.total,
+          batch: 1
+        });
+      },
+      maxRetries: options?.maxRetries
+    });
 
-      // ATTEMPT 2: Batched updates (slower but more reliable)
-      return await attemptBatchedUpdates(uniqueUpdates, maxRetries, options);
-    }
-  } finally {
+    // Convert to the expected response format
+    const results = updates.map(update => ({
+      stockItemId: update.stockItemId,
+      binId: update.binId,
+      success: true, // Registry updates all or nothing
+      error: undefined
+    }));
+
     const duration = Date.now() - startTime;
     console.log(`⏱️ Bulk update completed in ${duration}ms`);
+
+    return {
+      success: registryResult.success,
+      failed: registryResult.failed,
+      results
+    };
+
+  } catch (error) {
+    console.error('❌ Bulk update failed:', error);
+
+    // Return all as failed
+    return {
+      success: 0,
+      failed: updates.length,
+      results: updates.map(update => ({
+        stockItemId: update.stockItemId,
+        binId: update.binId,
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      }))
+    };
   }
 }
 
 // ========== PRIVATE HELPER FUNCTIONS ==========
+
+/**
+ * Query stock registry for multiple items efficiently
+ */
+const queryStockRegistry = async (
+  stockItemIds: string[],
+  binIds: string[]
+): Promise<{ [key: string]: number }> => {
+  try {
+    const query = groq`*[_type == "stockRegistry"][0] {
+      stockData
+    }`;
+
+    const registry = await client.fetch(query);
+    const results: { [key: string]: number } = {};
+
+    if (registry?.stockData?.items) {
+      // Create lookup sets for faster checking
+      const itemIdSet = new Set(stockItemIds);
+      const binIdSet = new Set(binIds);
+
+      registry.stockData.items.forEach((item: any) => {
+        if (itemIdSet.has(item.stockItemId) && item.binQuantities?.bins) {
+          item.binQuantities.bins.forEach((bin: any) => {
+            if (binIdSet.has(bin.binId)) {
+              const key = `${item.stockItemId}-${bin.binId}`;
+              results[key] = bin.quantity || 0;
+            }
+          });
+        }
+      });
+    }
+
+    // Fill in missing combinations with 0
+    for (const binId of binIds) {
+      for (const itemId of stockItemIds) {
+        const key = `${itemId}-${binId}`;
+        if (results[key] === undefined) {
+          results[key] = 0;
+        }
+      }
+    }
+
+    return results;
+  } catch (error) {
+    console.error('Error querying stock registry:', error);
+
+    // Return zeros for all combinations
+    const results: { [key: string]: number } = {};
+    for (const binId of binIds) {
+      for (const itemId of stockItemIds) {
+        results[`${itemId}-${binId}`] = 0;
+      }
+    }
+    return results;
+  }
+};
 
 /**
  * ATTEMPT 1: Use Sanity transaction API for maximum efficiency
@@ -259,6 +338,109 @@ async function processBinBulkTransaction(
     results
   };
 }
+
+/**
+ * Migrate from old stockSnapshot documents to new single registry
+ */
+export const migrateToStockRegistry = async (): Promise<{
+  migrated: number;
+  errors: number;
+  registryId?: string;
+}> => {
+  console.log('🚚 Starting migration to stock registry...');
+
+  try {
+    // 1. Get all existing stock snapshots
+    const oldSnapshots = await client.fetch(groq`*[_type == "stockSnapshot"] {
+      _id,
+      "stockItemId": stockItem._ref,
+      "binId": bin._ref,
+      quantity,
+      lastUpdated,
+      lastTransaction,
+      lastTransactionType
+    }`);
+
+    console.log(`📊 Found ${oldSnapshots.length} old snapshots to migrate`);
+
+    if (oldSnapshots.length === 0) {
+      console.log('✅ No snapshots to migrate');
+      return { migrated: 0, errors: 0 };
+    }
+
+    // 2. Organize by stock item
+    const itemsMap = new Map<string, any>();
+
+    oldSnapshots.forEach((snapshot: any) => {
+      const { stockItemId, binId, quantity, lastUpdated, lastTransaction, lastTransactionType } = snapshot;
+
+      if (!itemsMap.has(stockItemId)) {
+        itemsMap.set(stockItemId, {
+          stockItemId,
+          binQuantities: { bins: [] },
+        });
+      }
+
+      const item = itemsMap.get(stockItemId);
+      item.binQuantities.bins.push({
+        binId,
+        quantity,
+        lastUpdated,
+        lastTransactionId: lastTransaction?._ref,
+        lastTransactionType,
+      });
+    });
+
+    // 3. Create registry data
+    const registryData = {
+      _type: 'stockRegistry',
+      title: 'Stock Registry v1',
+      stockData: {
+        items: Array.from(itemsMap.values()),
+      },
+      lastUpdated: new Date().toISOString(),
+      version: 1,
+    };
+
+    // 4. Check if registry already exists
+    const existingRegistry = await client.fetch(groq`*[_type == "stockRegistry"][0] { _id }`);
+
+    let registryId: string;
+
+    if (existingRegistry) {
+      // Update existing
+      await writeClient
+        .patch(existingRegistry._id)
+        .set(registryData)
+        .commit();
+      registryId = existingRegistry._id;
+      console.log(`✅ Updated existing registry with ${itemsMap.size} items`);
+    } else {
+      // Create new
+      const result = await writeClient.create(registryData);
+      registryId = result._id;
+      console.log(`✅ Created new registry with ${itemsMap.size} items`);
+    }
+
+    // 5. Count how many old snapshots were migrated
+    const migrated = oldSnapshots.length;
+
+    console.log(`🎉 Migration complete! Migrated ${migrated} snapshots to single registry`);
+
+    return {
+      migrated,
+      errors: 0,
+      registryId,
+    };
+
+  } catch (error) {
+    console.error('❌ Migration failed:', error);
+    return {
+      migrated: 0,
+      errors: 1,
+    };
+  }
+};
 
 /**
  * ATTEMPT 2: Fallback to batched updates if bulk transaction fails
@@ -789,6 +971,7 @@ setInterval(cleanupSnapshotCache, 60000);
 // ========== PRIVATE HELPER FUNCTIONS ==========
 
 // Get or create stock snapshot with enhanced caching
+// Get or create stock snapshot with enhanced caching - NEW SINGLE DOCUMENT VERSION
 const getStockSnapshot = async (stockItemId: string, binId: string): Promise<number> => {
   const cacheKey = `${stockItemId}-${binId}`;
 
@@ -799,70 +982,169 @@ const getStockSnapshot = async (stockItemId: string, binId: string): Promise<num
   }
 
   try {
-    // 2. Check if snapshot exists in database
-    const query = groq`*[_type == "stockSnapshot" && stockItem._ref == $stockItemId && bin._ref == $binId][0]{
-      quantity,
-      lastUpdated
+    // 2. Get from single stock registry document
+    const query = groq`*[_type == "stockRegistry"][0] {
+      stockData
     }`;
 
-    const snapshot = await client.fetch(query, { stockItemId, binId });
+    const registry = await client.fetch(query);
 
-    if (snapshot) {
-      // 3. Snapshot exists - use it and cache
-      const quantity = snapshot.quantity || 0;
-      snapshotCache.set(cacheKey, quantity, { confidence: 'high' });
-      return quantity;
+    if (registry?.stockData?.items) {
+      // Find the item
+      const itemEntry = registry.stockData.items.find(
+        (item: any) => item.stockItemId === stockItemId
+      );
+
+      if (itemEntry?.binQuantities?.bins) {
+        // Find the bin
+        const binEntry = itemEntry.binQuantities.bins.find(
+          (bin: any) => bin.binId === binId
+        );
+
+        if (binEntry) {
+          const quantity = binEntry.quantity || 0;
+          snapshotCache.set(cacheKey, quantity, { confidence: 'high' });
+          return quantity;
+        }
+      }
     }
 
-    // 4. NO SNAPSHOT EXISTS - Calculate using exact logic
-    console.log(`🔍 No snapshot for ${stockItemId}-${binId}, calculating...`);
+    // 3. No entry found - calculate and create
+    console.log(`🔍 No registry entry for ${stockItemId}-${binId}, calculating...`);
     const calculatedStock = await calculateStockExactLogic(stockItemId, binId, true);
 
-    // 5. CREATE the snapshot for next time
-    await createStockSnapshot(stockItemId, binId, calculatedStock);
+    // 4. Update registry
+    await updateStockRegistry(stockItemId, binId, calculatedStock, 'auto_init', null);
 
-    // 6. Cache and return
+    // 5. Cache and return
     snapshotCache.set(cacheKey, calculatedStock, { confidence: 'high' });
     return calculatedStock;
 
   } catch (error) {
-    console.error('Error getting stock snapshot:', error);
+    console.error('Error getting stock from registry:', error);
     return 0;
   }
 };
 
 
+
+// Update single stock registry document
+const updateStockRegistry = async (
+  stockItemId: string,
+  binId: string,
+  quantity: number,
+  transactionType: string,
+  transactionId: string | null
+): Promise<void> => {
+  const startTime = Date.now();
+
+  try {
+    // 1. Get existing registry
+    const query = groq`*[_type == "stockRegistry"][0] {
+      _id,
+      stockData
+    }`;
+
+    const existingRegistry = await client.fetch(query);
+    const now = new Date().toISOString();
+
+    // 2. Prepare update
+    let registryData: any;
+
+    if (existingRegistry) {
+      // Update existing
+      registryData = existingRegistry.stockData || { items: [] };
+    } else {
+      // Create new
+      registryData = { items: [] };
+    }
+
+    // 3. Find or create item entry
+    let itemIndex = registryData.items.findIndex(
+      (item: any) => item.stockItemId === stockItemId
+    );
+
+    if (itemIndex === -1) {
+      // Create new item entry
+      registryData.items.push({
+        stockItemId,
+        binQuantities: { bins: [] },
+      });
+      itemIndex = registryData.items.length - 1;
+    }
+
+    // 4. Find or create bin entry
+    const itemEntry = registryData.items[itemIndex];
+    let binIndex = itemEntry.binQuantities.bins.findIndex(
+      (bin: any) => bin.binId === binId
+    );
+
+    if (binIndex === -1) {
+      // Create new bin entry
+      itemEntry.binQuantities.bins.push({
+        binId,
+        quantity,
+        lastUpdated: now,
+        lastTransactionId: transactionId,
+        lastTransactionType: transactionType,
+      });
+      binIndex = itemEntry.binQuantities.bins.length - 1;
+    } else {
+      // Update existing bin entry
+      itemEntry.binQuantities.bins[binIndex] = {
+        binId,
+        quantity,
+        lastUpdated: now,
+        lastTransactionId: transactionId,
+        lastTransactionType: transactionType,
+      };
+    }
+
+    // 5. Save to database
+    if (existingRegistry) {
+      await writeClient
+        .patch(existingRegistry._id)
+        .set({
+          stockData: registryData,
+          lastUpdated: now,
+        })
+        .commit();
+    } else {
+      await writeClient.create({
+        _type: 'stockRegistry',
+        title: 'Stock Registry v1',
+        stockData: registryData,
+        lastUpdated: now,
+        version: 1,
+      });
+    }
+
+    // 6. Update cache
+    const cacheKey = `${stockItemId}-${binId}`;
+    snapshotCache.set(cacheKey, quantity, { confidence: 'high' });
+    invalidateStockCache(stockItemId);
+    invalidateStockCache(binId);
+
+    const duration = Date.now() - startTime;
+    console.log(`📝 Updated registry for ${stockItemId}-${binId}: ${quantity} (${duration}ms)`);
+
+  } catch (error) {
+    console.error('Error updating stock registry:', error);
+    throw error;
+  }
+};
+
+
 /**
- * Create a new stock snapshot (doesn't update existing)
+ * Create a new stock entry in registry (doesn't update existing)
  */
 const createStockSnapshot = async (
   stockItemId: string,
   binId: string,
   quantity: number
 ): Promise<void> => {
-  try {
-    const now = new Date().toISOString();
-
-    await writeClient.create({
-      _type: 'stockSnapshot',
-      stockItem: {
-        _type: 'reference',
-        _ref: stockItemId,
-      },
-      bin: {
-        _type: 'reference',
-        _ref: binId,
-      },
-      quantity,
-      lastUpdated: now
-    });
-
-    console.log(`✅ Created snapshot for ${stockItemId}-${binId}: ${quantity}`);
-
-  } catch (error) {
-    console.error('Error creating stock snapshot:', error);
-    throw error;
-  }
+  // Use registry system
+  return updateStockRegistry(stockItemId, binId, quantity, 'initial', null);
 };
 
 // Calculate stock from transactions (for initial snapshot or validation)
@@ -1027,78 +1309,16 @@ const calculateStockFromTransactions = async (
 };
 
 // Update stock snapshot (internal use)
+// Update stock registry (replaces old updateStockSnapshot)
 const updateStockSnapshot = async (
   stockItemId: string,
   binId: string,
   quantity: number,
-  transactionType: string, // Keep parameter but don't use in DB
-  transactionId: string | null // Keep parameter but don't use in DB
+  transactionType: string,
+  transactionId: string | null
 ): Promise<void> => {
-  const startTime = Date.now();
-
-  try {
-    // Optimistic update to cache for immediate UI feedback
-    const cacheKey = `${stockItemId}-${binId}`;
-    // Use new snapshotCache.set signature
-    await atomicCacheUpdate(cacheKey, quantity, { confidence: 'high' });
-
-    // Invalidate bulk cache patterns for this item/bin
-    invalidateStockCache(stockItemId);
-    invalidateStockCache(binId);
-
-    // Check if snapshot exists
-    const existingSnapshot = await client.fetch(
-      groq`*[_type == "stockSnapshot" && stockItem._ref == $stockItemId && bin._ref == $binId][0]`,
-      { stockItemId, binId }
-    );
-
-    const now = new Date().toISOString();
-
-    if (existingSnapshot) {
-      // Update existing snapshot - only fields that exist in schema
-      await writeClient
-        .patch(existingSnapshot._id)
-        .set({
-          quantity,
-          lastUpdated: now
-        })
-        .commit();
-    } else {
-      // Create new snapshot - only fields that exist in schema
-      await writeClient.create({
-        _type: 'stockSnapshot',
-        stockItem: {
-          _type: 'reference',
-          _ref: stockItemId,
-        },
-        bin: {
-          _type: 'reference',
-          _ref: binId,
-        },
-        quantity,
-        lastUpdated: now
-      });
-    }
-
-    // Add to updateStockSnapshot
-    console.log('📊 Cache after update:', {
-      cacheKey,
-      cached: snapshotCache.get(cacheKey),
-      newQuantity: quantity
-    });
-
-    const duration = Date.now() - startTime;
-    console.log(`📝 ${existingSnapshot?._id ? 'Updated' : 'Created'} snapshot for ${stockItemId}-${binId}: ${quantity} (${duration}ms)`);
-
-  } catch (error) {
-    console.error('Error updating stock snapshot:', error);
-
-    // Revert optimistic update on error
-    const cacheKey = `${stockItemId}-${binId}`;
-    snapshotCache.delete(cacheKey);
-
-    throw error;
-  }
+  // Use new registry system
+  return updateStockRegistry(stockItemId, binId, quantity, transactionType, transactionId);
 };
 
 // Helper function to calculate stock for multiple items in one bin
@@ -1552,37 +1772,38 @@ export const calculateBulkStock = async (
     onProgress?.({ stage: 'Fetching snapshots...', percentage: 10 });
 
     // Fetch ALL snapshots in ONE query
-    const snapshotQuery = groq`{
-      "snapshots": *[
-        _type == "stockSnapshot" && 
-        stockItem._ref in $stockItemIds && 
-        bin._ref in $binIds
-      ] {
-        "itemId": stockItem._ref,
-        "binId": bin._ref,
-        quantity,
-        lastUpdated
-      },
-      "totalSnapshots": count(*[_type == "stockSnapshot"])
+    onProgress?.({ stage: 'Fetching from registry...', percentage: 10 });
+
+    // Fetch from single registry document
+    const registryQuery = groq`*[_type == "stockRegistry"][0] {
+      stockData
     }`;
 
-    const snapshotTimerKey = '🔍 Fetching snapshots';
+    const snapshotTimerKey = '🔍 Fetching from registry';
     if (!calculationManager.hasActiveTimer(snapshotTimerKey)) {
       calculationManager.startTimer(snapshotTimerKey);
     }
 
-    const snapshotData = await client.fetch(snapshotQuery, { stockItemIds, binIds });
+    const registry = await client.fetch(registryQuery);
 
     calculationManager.endTimer(snapshotTimerKey);
-
-    onProgress?.({ stage: 'Processing snapshots...', percentage: 30 });
+    onProgress?.({ stage: 'Processing registry data...', percentage: 30 });
 
     // Create a map for O(1) lookup
     const snapshotMap: { [key: string]: number } = {};
-    snapshotData.snapshots?.forEach((snapshot: any) => {
-      const key = `${snapshot.itemId}-${snapshot.binId}`;
-      snapshotMap[key] = snapshot.quantity || 0;
-    });
+
+    if (registry?.stockData?.items) {
+      registry.stockData.items.forEach((item: any) => {
+        if (stockItemIds.includes(item.stockItemId) && item.binQuantities?.bins) {
+          item.binQuantities.bins.forEach((bin: any) => {
+            if (binIds.includes(bin.binId)) {
+              const key = `${item.stockItemId}-${bin.binId}`;
+              snapshotMap[key] = bin.quantity || 0;
+            }
+          });
+        }
+      });
+    }
 
     const results: { [key: string]: number } = {};
     const itemsWithoutSnapshots: Array<{ itemId: string; binId: string }> = [];
@@ -1716,11 +1937,29 @@ export const calculateBulkStock = async (
 
     onProgress?.({ stage: 'Error occurred', percentage: 100 });
 
-    // Fallback to original method if optimized fails
-    console.log('🔄 Falling back to original method...');
-    const fallbackResults = await calculateBulkStockOriginal(stockItemIds, binIds);
-    setCachedStock(cacheKey, fallbackResults as any);
-    return fallbackResults;
+    // Create registry if it doesn't exist
+    console.log('🔄 No registry found, creating new one...');
+    try {
+      const newRegistry = await writeClient.create({
+        _type: 'stockRegistry',
+        title: 'Stock Registry v1',
+        stockData: { items: [] },
+        lastUpdated: new Date().toISOString(),
+        version: 1
+      });
+      console.log('✅ Created new registry:', newRegistry._id);
+    } catch (createError) {
+      console.error('❌ Failed to create registry:', createError);
+    }
+
+    // Return zeros for now (next load will have registry)
+    const emptyResults: { [key: string]: number } = {};
+    for (const binId of binIds) {
+      for (const itemId of stockItemIds) {
+        emptyResults[`${itemId}-${binId}`] = 0;
+      }
+    }
+    return emptyResults;
   } finally {
     releaseLock();
   }
@@ -2095,6 +2334,209 @@ async function fallbackToIndividualUpdates(
   console.log(`✅ Fallback updates completed for ${countedItems.length} items`);
 }
 
+/**
+ * 🚀 BULK UPDATE STOCK REGISTRY - Optimized for single document updates
+ * Updates multiple stock entries in ONE document
+ */
+export async function bulkUpdateStockRegistry(
+  updates: Array<{
+    stockItemId: string;
+    binId: string;
+    quantity: number; // Can be positive (add), negative (deduct), or absolute (set)
+    transactionType: 'procurement' | 'dispatch' | 'transfer' | 'inventoryCount' | 'adjustment';
+    transactionId: string;
+    isAbsolute?: boolean; // true for inventoryCount (SET value), false for others (ADJUST value)
+  }>,
+  options?: {
+    onProgress?: (progress: { processed: number; total: number }) => void;
+    maxRetries?: number;
+  }
+): Promise<{
+  success: number;
+  failed: number;
+}> {
+  const startTime = Date.now();
+  const maxRetries = options?.maxRetries || 3;
+
+  if (!updates || updates.length === 0) {
+    console.log('📭 No updates to process');
+    return { success: 0, failed: 0 };
+  }
+
+  console.log(`🚀 Starting bulk registry update for ${updates.length} items (${updates[0]?.transactionType})`);
+
+  // Remove duplicates (same item-bin combination)
+  const uniqueUpdates = Array.from(
+    new Map(
+      updates.map(update => [`${update.stockItemId}-${update.binId}`, update])
+    ).values()
+  );
+
+  console.log(`📊 Unique items to update: ${uniqueUpdates.length} (from ${updates.length} total)`);
+
+  let retryCount = 0;
+
+  while (retryCount <= maxRetries) {
+    try {
+      // 1. Get the current registry document
+      const registryQuery = groq`*[_type == "stockRegistry"][0] {
+        _id,
+        stockData,
+        version
+      }`;
+
+      const existingRegistry = await client.fetch(registryQuery);
+      const now = new Date().toISOString();
+
+      // 2. Prepare registry data
+      let registryData = existingRegistry?.stockData || { items: [] };
+
+      // Create lookup maps for faster updates
+      const itemMap = new Map<string, { item: any; index: number }>();
+      registryData.items?.forEach((item: any, index: number) => {
+        if (item.stockItemId) {
+          itemMap.set(item.stockItemId, { item, index });
+        }
+      });
+
+      // 3. Apply all updates
+      const results: { success: number; failed: number } = { success: 0, failed: 0 };
+
+      for (let i = 0; i < uniqueUpdates.length; i++) {
+        const update = uniqueUpdates[i];
+
+        try {
+          const { stockItemId, binId, quantity, transactionType, transactionId, isAbsolute } = update;
+
+          // Find or create item entry
+          let itemEntry = itemMap.get(stockItemId);
+          if (!itemEntry) {
+            // Create new item
+            const newItem = {
+              stockItemId,
+              binQuantities: { bins: [] },
+            };
+            registryData.items.push(newItem);
+            const itemIndex = registryData.items.length - 1;
+            itemMap.set(stockItemId, { item: newItem, index: itemIndex });
+            itemEntry = { item: newItem, index: itemIndex };
+          }
+
+          // Find or create bin entry
+          const item = itemEntry.item;
+          let binEntry = item.binQuantities?.bins?.find((b: any) => b.binId === binId);
+
+          // Calculate new quantity
+          let currentQty = binEntry?.quantity || 0;
+          let newQuantity: number;
+
+          if (isAbsolute || transactionType === 'inventoryCount') {
+            // SET absolute value
+            newQuantity = quantity;
+          } else {
+            // ADJUST by amount
+            newQuantity = currentQty + quantity;
+
+            // Safety check for dispatches
+            if (transactionType === 'dispatch' && newQuantity < 0) {
+              console.warn(`⚠️ Dispatch would make stock negative: ${stockItemId} in ${binId}`);
+              newQuantity = 0; // or handle differently
+            }
+          }
+
+          // Update or create bin entry
+          const updatedBinEntry = {
+            binId,
+            quantity: newQuantity,
+            lastUpdated: now,
+            lastTransactionId: transactionId,
+            lastTransactionType: transactionType,
+          };
+
+          if (binEntry) {
+            // Update existing bin
+            const binIndex = item.binQuantities.bins.findIndex((b: any) => b.binId === binId);
+            if (binIndex !== -1) {
+              item.binQuantities.bins[binIndex] = updatedBinEntry;
+            }
+          } else {
+            // Create new bin
+            if (!item.binQuantities) {
+              item.binQuantities = { bins: [] };
+            }
+            if (!item.binQuantities.bins) {
+              item.binQuantities.bins = [];
+            }
+            item.binQuantities.bins.push(updatedBinEntry);
+          }
+
+          // Update cache
+          const cacheKey = `${stockItemId}-${binId}`;
+          snapshotCache.set(cacheKey, newQuantity, {
+            confidence: 'high',
+            transactionType,
+            timestamp: Date.now()
+          });
+          invalidateStockCache(stockItemId);
+          invalidateStockCache(binId);
+
+          results.success++;
+
+          // Report progress
+          if (options?.onProgress && i % 10 === 0) {
+            options.onProgress({
+              processed: i + 1,
+              total: uniqueUpdates.length,
+            });
+          }
+
+        } catch (error) {
+          console.error(`❌ Failed to process update for ${update.stockItemId}-${update.binId}:`, error);
+          results.failed++;
+        }
+      }
+
+      // 4. Save to database
+      const updateData = {
+        stockData: registryData,
+        lastUpdated: now,
+        version: (existingRegistry?.version || 0) + 1,
+      };
+
+      if (existingRegistry) {
+        await writeClient
+          .patch(existingRegistry._id)
+          .set(updateData)
+          .commit();
+      } else {
+        await writeClient.create({
+          _type: 'stockRegistry',
+          title: 'Stock Registry v1',
+          ...updateData,
+        });
+      }
+
+      const duration = Date.now() - startTime;
+      console.log(`✅ Registry bulk update: ${results.success} succeeded, ${results.failed} failed in ${duration}ms`);
+
+      return results;
+
+    } catch (error) {
+      console.error(`❌ Registry bulk update failed (attempt ${retryCount + 1}/${maxRetries + 1}):`, error);
+      retryCount++;
+
+      if (retryCount <= maxRetries) {
+        console.log(`🔄 Retrying in ${1000 * retryCount}ms...`);
+        await new Promise(resolve => setTimeout(resolve, 1000 * retryCount));
+      } else {
+        throw error;
+      }
+    }
+  }
+
+  return { success: 0, failed: uniqueUpdates.length };
+}
+
 // 5. Hook to update snapshots when transactions occur
 // 5. Hook to update snapshots when transactions occur
 export async function updateStockForTransaction(
@@ -2372,11 +2814,12 @@ export async function updateStockForTransaction(
     console.log(`🚀 Processing ${bulkUpdates.length} items for ${transactionType} ${transactionId}`);
 
     // Use the bulk update function
-    const result = await bulkUpdateStockSnapshots(bulkUpdates, {
+    // Use the new registry-based bulk update
+    const result = await bulkUpdateStockRegistry(bulkUpdates, {
       onProgress: (progress) => {
         // Optional: Could emit event for UI progress bar here
         if (progress.processed % 10 === 0 || progress.processed === progress.total) {
-          console.log(`📈 Progress: ${progress.processed}/${progress.total} items processed (batch ${progress.batch})`);
+          console.log(`📈 Progress: ${progress.processed}/${progress.total} items processed`);
         }
       },
       maxRetries: 3
@@ -2396,13 +2839,8 @@ export async function updateStockForTransaction(
 
     // Report failed items if any
     if (result.failed > 0) {
-      const failedItems = result.results.filter(r => !r.success);
       console.warn(`⚠️ ${result.failed} items failed to update:`, {
-        failedItems: failedItems.map(f => ({
-          stockItemId: f.stockItemId,
-          binId: f.binId,
-          error: f.error
-        })),
+        failedItems: result,
         transactionType,
         transactionId
       });
@@ -4444,57 +4882,79 @@ export const getCurrentStockSnapshots = async (
   lastUpdated: string;
 }>> => {
   try {
-    console.log('📊 Fetching current stock snapshots...');
+    console.log('📊 Fetching current stock from registry...');
 
-    let query = groq`*[_type == "stockSnapshot"]`;
-    const params: any = {};
+    // Get registry data
+    const registryQuery = groq`*[_type == "stockRegistry"][0] {
+      stockData
+    }`;
 
-    // Add filters if provided
-    if (stockItemIds && stockItemIds.length > 0) {
-      query += `[stockItem._ref in $stockItemIds]`;
-      params.stockItemIds = stockItemIds;
-    }
+    const registry = await client.fetch(registryQuery);
+    const snapshots: any[] = [];
 
-    if (binIds && binIds.length > 0) {
-      const prefix = stockItemIds ? '&&' : '[';
-      query += ` ${prefix} bin._ref in $binIds]`;
-      params.binIds = binIds;
-    }
+    if (registry?.stockData?.items) {
+      // Get item and bin details for the ones we need
+      const itemIds = stockItemIds || [];
+      const binIdsList = binIds || [];
 
-    // If no filters, close the array
-    if (!stockItemIds && !binIds) {
-      query += `]`;
-    }
+      // Fetch item details
+      let itemQuery = groq`*[_type == "StockItem"]`;
+      if (itemIds.length > 0) {
+        itemQuery += `[_id in $itemIds]`;
+      }
+      itemQuery += ` { _id, name, sku, unitOfMeasure, minimumStockLevel }`;
 
-    // Add the rest of the query - ONLY FIELDS THAT EXIST IN SCHEMA
-    query += ` {
-      _id,
-      "stockItem": stockItem->{
-        _id,
-        name,
-        sku,
-        unitOfMeasure,
-        minimumStockLevel
-      },
-      "bin": bin->{
-        _id,
-        name,
-        "site": site->{
-          _id,
-          name
+      const items = await client.fetch(itemQuery, { itemIds });
+
+      // Fetch bin details
+      let binQuery = groq`*[_type == "Bin"]`;
+      if (binIdsList.length > 0) {
+        binQuery += `[_id in $binIds]`;
+      }
+      binQuery += ` { _id, name, "site": site->{ _id, name } }`;
+
+      const bins = await client.fetch(binQuery, { binIds: binIdsList });
+
+      // Create lookup maps
+      const itemMap = new Map(items.map((item: any) => [item._id, item]));
+      const binMap = new Map(bins.map((bin: any) => [bin._id, bin]));
+
+      // Build snapshots from registry
+      registry.stockData.items.forEach((item: any) => {
+        // Skip if filtering by itemIds and this item isn't included
+        if (itemIds.length > 0 && !itemIds.includes(item.stockItemId)) {
+          return;
         }
-      },
-      quantity,
-      lastUpdated
-    } | order(lastUpdated desc)`;
 
-    const snapshots = await client.fetch(query, params);
+        if (item.binQuantities?.bins) {
+          item.binQuantities.bins.forEach((bin: any) => {
+            // Skip if filtering by binIds and this bin isn't included
+            if (binIdsList.length > 0 && !binIdsList.includes(bin.binId)) {
+              return;
+            }
 
-    console.log(`✅ Found ${snapshots.length} stock snapshots`);
+            const itemDetails = itemMap.get(item.stockItemId);
+            const binDetails = binMap.get(bin.binId);
+
+            if (itemDetails && binDetails) {
+              snapshots.push({
+                _id: `registry-${item.stockItemId}-${bin.binId}`,
+                stockItem: itemDetails,
+                bin: binDetails,
+                quantity: bin.quantity || 0,
+                lastUpdated: bin.lastUpdated || new Date().toISOString(),
+              });
+            }
+          });
+        }
+      });
+    }
+
+    console.log(`✅ Found ${snapshots.length} stock entries in registry`);
     return snapshots;
 
   } catch (error) {
-    console.error('❌ Error fetching stock snapshots:', error);
+    console.error('❌ Error fetching from stock registry:', error);
     return [];
   }
 };

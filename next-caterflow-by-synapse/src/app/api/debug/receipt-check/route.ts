@@ -33,7 +33,7 @@ export async function GET(request: Request) {
 		return NextResponse.json({ error: 'Receipt not found' }, { status: 404 });
 	}
 
-	// Check stock snapshots for each item
+	// Check stock registry for each item
 	const stockChecks = await Promise.all(
 		receipt.receivedItems.map(async (item: any) => {
 			if (!item.binId) {
@@ -50,14 +50,33 @@ export async function GET(request: Request) {
 			}
 
 			try {
-				// Get current stock snapshot
-				const snapshot = await client.fetch(
-					groq`*[_type == "stockSnapshot" && stockItem._ref == $stockItemId && bin._ref == $binId][0]{
-            quantity,
-            lastUpdated
+				// Get current stock from registry
+				const registry = await client.fetch(
+					groq`*[_type == "stockRegistry"][0] {
+            stockData
           }`,
 					{ stockItemId: item.stockItemId, binId: item.binId }
 				);
+
+				let currentStock = 0;
+				let lastUpdated = null;
+
+				if (registry?.stockData?.items) {
+					const itemEntry = registry.stockData.items.find(
+						(i: any) => i.stockItemId === item.stockItemId
+					);
+
+					if (itemEntry?.binQuantities?.bins) {
+						const binEntry = itemEntry.binQuantities.bins.find(
+							(b: any) => b.binId === item.binId
+						);
+
+						if (binEntry) {
+							currentStock = binEntry.quantity || 0;
+							lastUpdated = binEntry.lastUpdated;
+						}
+					}
+				}
 
 				return {
 					item: item.stockItemName,
@@ -66,10 +85,10 @@ export async function GET(request: Request) {
 					received: item.receivedQuantity,
 					unitPrice: item.unitPrice,
 					totalPrice: item.totalPrice,
-					currentStock: snapshot?.quantity || 0,
-					lastUpdated: snapshot?.lastUpdated,
+					currentStock,
+					lastUpdated,
 					shouldIncreaseBy: item.receivedQuantity,
-					willBe: (snapshot?.quantity || 0) + item.receivedQuantity
+					willBe: currentStock + item.receivedQuantity
 				};
 			} catch (error) {
 				return {

@@ -1,7 +1,9 @@
+// src/app/api/admin/reset-stock/route.ts
 import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { client, writeClient } from '@/lib/sanity';
+import { groq } from 'next-sanity';
 
 export async function POST(request: Request) {
 	try {
@@ -20,7 +22,7 @@ export async function POST(request: Request) {
 		let snapshotsDeleted = 0;
 		let batches = 0;
 
-		// Delete StockSnapshots in batches
+		// Delete old StockSnapshots in batches (for cleanup)
 		while (true) {
 			const snapshots = await client.fetch(
 				`*[_type == "stockSnapshot"] | order(_createdAt asc) [0...${batchSize}] { _id }`
@@ -46,12 +48,37 @@ export async function POST(request: Request) {
 			.set({ quantity: 0 })
 			.commit();
 
+		// Create or reset stock registry to empty
+		const existingRegistry = await client.fetch(groq`*[_type == "stockRegistry"][0] { _id }`);
+
+		if (existingRegistry) {
+			await writeClient
+				.patch(existingRegistry._id)
+				.set({
+					stockData: { items: [] },
+					lastUpdated: new Date().toISOString(),
+					version: (existingRegistry.version || 0) + 1
+				})
+				.commit();
+			console.log('✅ Reset existing stock registry');
+		} else {
+			await writeClient.create({
+				_type: 'stockRegistry',
+				title: 'Stock Registry v1',
+				stockData: { items: [] },
+				lastUpdated: new Date().toISOString(),
+				version: 1
+			});
+			console.log('✅ Created new empty stock registry');
+		}
+
 		return NextResponse.json({
 			success: true,
 			snapshotsDeleted,
 			binStockReset: binStockCount,
 			batchesProcessed: batches,
-			message: 'Stock data cleared successfully'
+			registryReset: true,
+			message: 'Stock data cleared and registry reset successfully'
 		});
 
 	} catch (error: any) {

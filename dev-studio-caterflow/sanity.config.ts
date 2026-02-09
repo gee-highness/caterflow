@@ -9,7 +9,7 @@ export default defineConfig({
   name: 'default',
   title: 'Caterflow by Synapse',
 
-    projectId: 'ml4r1dn2',
+  projectId: 'ml4r1dn2',
   dataset: 'production',
 
 
@@ -82,8 +82,8 @@ export default defineConfig({
                     S.documentTypeListItem('GoodsReceipt').title('Goods Receipts'),
                     S.documentTypeListItem('DispatchLog').title('Dispatch Logs'),
                     S.documentTypeListItem('InternalTransfer').title('Internal Transfers'),
-                    S.documentTypeListItem('StockAdjustment').title('Stock Adjustments'),
                     S.documentTypeListItem('InventoryCount').title('Inventory Counts'),
+                    S.documentTypeListItem('StockRegistry').title('Stock Registry'),
                   ])
               ),
             S.divider(),

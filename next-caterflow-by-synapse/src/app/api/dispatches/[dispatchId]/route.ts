@@ -46,7 +46,7 @@ const getSellingPriceForSite = async (dispatchTypeId: string, siteId: string): P
     }
 };
 
-// In the GET function, update the query:
+// In the GET function, update the query (around line 50-60):
 export async function GET(request: Request, { params }: { params: Promise<{ dispatchId: string }> }) {
     try {
         const { dispatchId } = await params;
@@ -55,122 +55,125 @@ export async function GET(request: Request, { params }: { params: Promise<{ disp
             return NextResponse.json({ error: 'Dispatch ID is required' }, { status: 400 });
         }
 
-        const query = groq`*[_type == "DispatchLog" && _id == $dispatchId][0] {
-            _id,
-            dispatchNumber,
-            dispatchDate,
-            evidenceStatus,
-            peopleFed,
-            notes,
-            status,
-            totalCost,
-            costPerPerson,
-            sellingPrice,
-            totalSales,
-            completedAt,
-            "dispatchType": dispatchType->{
+        const query = groq`{
+            "dispatch": *[_type == "DispatchLog" && _id == $dispatchId][0] {
                 _id,
-                name,
-                description,
-                defaultTime,
+                dispatchNumber,
+                dispatchDate,
+                evidenceStatus,
+                peopleFed,
+                notes,
+                status,
+                totalCost,
+                costPerPerson,
                 sellingPrice,
-                sitePrices[]{
-                    _key,
+                totalSales,
+                completedAt,
+                "dispatchType": dispatchType->{
+                    _id,
+                    name,
+                    description,
+                    defaultTime,
+                    sellingPrice,
+                    sitePrices[]{
+                        _key,
+                        "site": site->{
+                            _id,
+                            name
+                        },
+                        price
+                    }
+                },
+                // Handle both old and new structures
+                "sourceSite": coalesce(sourceSite->{
+                    _id,
+                    name,
+                    location,
+                    code
+                }, sourceBin->site->{
+                    _id,
+                    name,
+                    location,
+                    code
+                }),
+                "sourceBin": sourceBin->{
+                    _id,
+                    name,
                     "site": site->{
                         _id,
                         name
-                    },
-                    price
-                }
-            },
-            // Handle both old and new structures
-            "sourceSite": coalesce(sourceSite->{
-                _id,
-                name,
-                location,
-                code
-            }, sourceBin->site->{
-                _id,
-                name,
-                location,
-                code
-            }),
-            "sourceBin": sourceBin->{
-                _id,
-                name,
-                "site": site->{
-                    _id,
-                    name
-                }
-            },
-            "dispatchedBy": dispatchedBy->{
-                _id,
-                name,
-                email,
-                role,
-                "assignedSite": associatedSite->{
-                    _id,
-                    name
-                }
-            },
-            "dispatchedItems": coalesce(dispatchedItems[]{
-                _key,
-                dispatchedQuantity,
-                unitPrice,
-                totalCost,
-                notes,
-                // Handle both old and new structures
-                "sourceBin": coalesce(
-                    sourceBin->{
-                        _id,
-                        name,
-                        "site": site->{
-                            _id,
-                            name
-                        }
-                    },
-                    ^.sourceBin->{
-                        _id,
-                        name,
-                        "site": site->{
-                            _id,
-                            name
-                        }
                     }
-                ),
-                "stockItem": stockItem->{
+                },
+                "dispatchedBy": dispatchedBy->{
                     _id,
                     name,
-                    sku,
-                    unitOfMeasure,
-                    "currentStock": *[_type == "stockSnapshot" && stockItem._ref == ^._id && bin._ref == coalesce(^.sourceBin._ref, ^.sourceBin._ref)][0]{
-                        quantity
-                    }.quantity,
-                    "category": category->{
+                    email,
+                    role,
+                    "assignedSite": associatedSite->{
                         _id,
-                        title
+                        name
                     }
-                }
-            }, []),
-            "attachments": coalesce(attachments[]->{
-                _id,
-                fileName,
-                fileType,
-                description,
-                uploadedAt,
-                "file": file{
-                    "asset": asset->{
+                },
+                "dispatchedItems": coalesce(dispatchedItems[]{
+                    _key,
+                    dispatchedQuantity,
+                    unitPrice,
+                    totalCost,
+                    notes,
+                    // Handle both old and new structures
+                    "sourceBin": coalesce(
+                        sourceBin->{
+                            _id,
+                            name,
+                            "site": site->{
+                                _id,
+                                name
+                            }
+                        },
+                        ^.sourceBin->{
+                            _id,
+                            name,
+                            "site": site->{
+                                _id,
+                                name
+                            }
+                        }
+                    ),
+                    "stockItem": stockItem->{
                         _id,
-                        _type,
-                        url,
-                        originalFilename,
-                        mimeType
+                        name,
+                        sku,
+                        unitOfMeasure,
+                        "category": category->{
+                            _id,
+                            title
+                        }
                     }
-                }
-            }, [])
+                }, []),
+                "attachments": coalesce(attachments[]->{
+                    _id,
+                    fileName,
+                    fileType,
+                    description,
+                    uploadedAt,
+                    "file": file{
+                        "asset": asset->{
+                            _id,
+                            _type,
+                            url,
+                            originalFilename,
+                            mimeType
+                        }
+                    }
+                }, [])
+            },
+            "registry": *[_type == "stockRegistry"][0] {
+                stockData
+            }
         }`;
 
-        const dispatch = await client.fetch(query, { dispatchId });
+        const data = await client.fetch(query, { dispatchId });
+        const dispatch = data.dispatch;
 
         if (!dispatch) {
             return NextResponse.json({ error: 'Dispatch not found' }, { status: 404 });
@@ -183,6 +186,40 @@ export async function GET(request: Request, { params }: { params: Promise<{ disp
                 ...item,
                 sourceBin: item.sourceBin || dispatch.sourceBin
             }));
+        }
+
+        // Add current stock from registry to each item
+        if (data.registry?.stockData?.items && dispatch.dispatchedItems) {
+            dispatch.dispatchedItems = dispatch.dispatchedItems.map((item: any) => {
+                if (item.stockItem?._id && item.sourceBin?._id) {
+                    const itemEntry = data.registry.stockData.items.find(
+                        (i: any) => i.stockItemId === item.stockItem._id
+                    );
+
+                    if (itemEntry?.binQuantities?.bins) {
+                        const binEntry = itemEntry.binQuantities.bins.find(
+                            (b: any) => b.binId === item.sourceBin._id
+                        );
+
+                        if (binEntry) {
+                            return {
+                                ...item,
+                                stockItem: {
+                                    ...item.stockItem,
+                                    currentStock: binEntry.quantity || 0
+                                }
+                            };
+                        }
+                    }
+                }
+                return {
+                    ...item,
+                    stockItem: {
+                        ...item.stockItem,
+                        currentStock: 0
+                    }
+                };
+            });
         }
 
         return NextResponse.json(dispatch);
