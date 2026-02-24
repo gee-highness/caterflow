@@ -376,9 +376,18 @@ interface EnhancedAnalyticsData {
     byStatus: Array<{ name: string; value: number }>;
     accuracy: number;
     varianceAnalysis: {
-      positive: number;
-      negative: number;
-      zero: number;
+      positive: {
+        quantity: number;
+        cost: number;
+      };
+      negative: {
+        quantity: number;
+        cost: number;
+      };
+      zero: {
+        quantity: number;
+        cost: number;
+      };
     };
   };
   financial: {
@@ -593,9 +602,9 @@ const getEmptyAnalyticsData = (): EnhancedAnalyticsData => ({
     byStatus: [],
     accuracy: 0,
     varianceAnalysis: {
-      positive: 0,
-      negative: 0,
-      zero: 0,
+      positive: { quantity: 0, cost: 0 },
+      negative: { quantity: 0, cost: 0 },
+      zero: { quantity: 0, cost: 0 },
     },
   },
   financial: {
@@ -642,6 +651,99 @@ const getEmptyAnalyticsData = (): EnhancedAnalyticsData => ({
     },
   },
 });
+
+// Add this helper function after the existing getEmptyAnalyticsData function
+// This will filter any array of items by site ID on the client side
+const filterDataBySite = <T extends any[]>(
+  data: T,
+  siteId: string | null,
+  itemType:
+    | "purchaseOrder"
+    | "goodsReceipt"
+    | "dispatch"
+    | "transfer"
+    | "binCount"
+    | "stockItem"
+    | "supplier"
+    | "user",
+): T => {
+  if (!siteId || siteId === "all" || !data || !Array.isArray(data)) {
+    return data;
+  }
+
+  console.log(`🔍 Filtering ${itemType} data by site: ${siteId}`);
+
+  return data.filter((item: any) => {
+    try {
+      switch (itemType) {
+        case "purchaseOrder":
+          // Purchase orders have direct site reference
+          return item.site?._id === siteId || item.site === siteId;
+
+        case "goodsReceipt":
+          // Goods receipts: check purchase order site OR receiving bin site
+          return (
+            item.purchaseOrder?.site?._id === siteId ||
+            item.purchaseOrder?.site === siteId ||
+            item.receivingBin?.site?._id === siteId ||
+            item.receivingBin?.site === siteId ||
+            item.receivedItems?.some(
+              (ri: any) =>
+                ri.receivingBin?.site?._id === siteId ||
+                ri.receivingBin?.site === siteId,
+            )
+          );
+
+        case "dispatch":
+          // Dispatches: check source bin site
+          return (
+            item.sourceBin?.site?._id === siteId ||
+            item.sourceBin?.site === siteId ||
+            item.dispatchedItems?.some(
+              (di: any) =>
+                di.sourceBin?.site?._id === siteId ||
+                di.sourceBin?.site === siteId,
+            )
+          );
+
+        case "transfer":
+          // Transfers: check from bin site OR to bin site
+          return (
+            item.fromBin?.site?._id === siteId ||
+            item.fromBin?.site === siteId ||
+            item.toBin?.site?._id === siteId ||
+            item.toBin?.site === siteId
+          );
+
+        case "binCount":
+          // Bin counts: check bin site
+          return item.bin?.site?._id === siteId || item.bin?.site === siteId;
+
+        case "stockItem":
+          // Stock items don't have direct site - they exist across sites
+          // We'll handle this separately in the inventory calculation
+          return true;
+
+        case "supplier":
+          // Suppliers aren't site-specific
+          return true;
+
+        case "user":
+          // Users have associated site
+          return (
+            item.associatedSite?._id === siteId ||
+            item.associatedSite === siteId
+          );
+
+        default:
+          return true;
+      }
+    } catch (error) {
+      console.warn(`Error filtering ${itemType} item:`, error);
+      return false;
+    }
+  }) as T;
+};
 
 // Chart color schemes
 const CHART_COLORS = {
@@ -1664,49 +1766,51 @@ export default function ComprehensiveReportsPage() {
         // Replace the existing getSiteBreakdown function with this:
         const getSiteBreakdown = (items: any[]) => {
           const siteCounts: { [key: string]: number } = {};
+
+          // IMPORTANT: We DON'T apply any filtering here anymore
+          // We just count what's in the already-filtered data
           items.forEach((item) => {
+            let siteId = null;
             let siteName = "Unknown Site";
 
             // Determine site based on item type
             if (item._type === "DispatchLog" || item.dispatchType) {
               // Dispatch - use compatibility helper
-              siteName = getDispatchSite(item).name || "Unknown Site";
+              const site = getDispatchSite(item);
+              siteId = site._id;
+              siteName = site.name || "Unknown Site";
             } else if (item._type === "GoodsReceipt" || item.receiptNumber) {
               // Goods receipt - use compatibility helper
-              siteName = getGoodsReceiptSite(item).name || "Unknown Site";
-            } else if (item.site?.name) {
+              const site = getGoodsReceiptSite(item);
+              siteId = site._id;
+              siteName = site.name || "Unknown Site";
+            } else if (item.site?._id) {
               // Direct site reference (purchase orders)
+              siteId = item.site._id;
               siteName = item.site.name;
-            } else if (item.purchaseOrder?.site?.name) {
+            } else if (item.site?.name) {
+              // Site name only (fallback)
+              siteId = item.site._id;
+              siteName = item.site.name;
+            } else if (item.purchaseOrder?.site?._id) {
               // Through purchase order
+              siteId = item.purchaseOrder.site._id;
               siteName = item.purchaseOrder.site.name;
-            } else if (item.sourceBin?.site?.name) {
+            } else if (item.sourceBin?.site?._id) {
               // Old dispatch structure
+              siteId = item.sourceBin.site._id;
               siteName = item.sourceBin.site.name;
-            } else if (item.receivingBin?.site?.name) {
+            } else if (item.receivingBin?.site?._id) {
               // Old goods receipt structure
+              siteId = item.receivingBin.site._id;
               siteName = item.receivingBin.site.name;
             }
 
-            // For single-site users, only count if it matches their site
-            if (
-              !userSiteInfo.canAccessMultipleSites &&
-              userSiteInfo.userSiteId
-            ) {
-              const itemSiteId =
-                item.site?._id ||
-                item.purchaseOrder?.site?._id ||
-                getDispatchSite(item)._id ||
-                getGoodsReceiptSite(item)._id;
-
-              if (itemSiteId === userSiteInfo.userSiteId) {
-                siteCounts[siteName] = (siteCounts[siteName] || 0) + 1;
-              }
-            } else {
-              // For multi-site users, count all
-              siteCounts[siteName] = (siteCounts[siteName] || 0) + 1;
-            }
+            // Simply count ALL items - no filtering here
+            // The data is already filtered at a higher level
+            siteCounts[siteName] = (siteCounts[siteName] || 0) + 1;
           });
+
           return Object.entries(siteCounts).map(([name, value]) => ({
             name,
             value,
@@ -1861,7 +1965,7 @@ export default function ComprehensiveReportsPage() {
           (Array.isArray(stockItemsArray) ? stockItemsArray.length : 0) -
           lowStock.length;
 
-        // Process bin counts with accurate data
+        // Process bin counts with accurate data - UPDATE THIS SECTION
         const binCountAccuracy =
           periodBinCounts.length > 0
             ? periodBinCounts.reduce((sum: number, count: any) => {
@@ -1876,16 +1980,33 @@ export default function ComprehensiveReportsPage() {
         const varianceAnalysis = periodBinCounts
           .flatMap(
             (count: any) =>
-              count.countedItems?.map((item: any) => item.variance) || [],
+              count.countedItems?.map((item: any) => ({
+                variance: item.variance || 0,
+                varianceCost: item.varianceCost || 0,
+                unitPrice: item.unitPrice || item.stockItem?.unitPrice || 0,
+              })) || [],
           )
           .reduce(
-            (acc: any, variance: number) => {
-              if (variance > 0) acc.positive++;
-              else if (variance < 0) acc.negative++;
-              else acc.zero++;
+            (acc: any, item: any) => {
+              // Quantity variance counts
+              if (item.variance > 0) acc.positive.quantity++;
+              else if (item.variance < 0) acc.negative.quantity++;
+              else acc.zero.quantity++;
+
+              // Cost variance totals
+              if (item.varianceCost > 0) {
+                acc.positive.cost += item.varianceCost;
+              } else if (item.varianceCost < 0) {
+                acc.negative.cost += Math.abs(item.varianceCost);
+              }
+
               return acc;
             },
-            { positive: 0, negative: 0, zero: 0 },
+            {
+              positive: { quantity: 0, cost: 0 },
+              negative: { quantity: 0, cost: 0 },
+              zero: { quantity: 0, cost: 0 },
+            },
           );
 
         // Process suppliers with VAT data
@@ -2195,7 +2316,7 @@ export default function ComprehensiveReportsPage() {
     [filterDataByDateRange, calculateOpeningStockForDate],
   );
 
-  // Enhanced fetchAllData function with VAT calculations AND site filtering
+  // Enhanced fetchAllData function - CLIENT-SIDE FILTERING VERSION
   const fetchAllData = useCallback(
     async (forceRefresh = false) => {
       setAnalyticsLoading(true);
@@ -2205,6 +2326,7 @@ export default function ComprehensiveReportsPage() {
           {
             forceRefresh,
             userSiteInfo,
+            selectedFilterSite,
           },
         );
 
@@ -2221,16 +2343,24 @@ export default function ComprehensiveReportsPage() {
           return;
         }
 
-        // Build URLs with site filter parameters for single-site users
+        // Build URLs WITHOUT site filtering - we'll fetch ALL data
         const buildUrl = (endpoint: string) => {
           const url = new URL(endpoint, window.location.origin);
-          if (!userSiteInfo.canAccessMultipleSites && userSiteInfo.userSiteId) {
-            url.searchParams.set("siteId", userSiteInfo.userSiteId);
+
+          // Add date range parameters if needed by APIs
+          url.searchParams.set("startDate", primaryDateRange.start);
+          url.searchParams.set("endDate", primaryDateRange.end);
+
+          // For multi-site users, we can add a parameter to get ALL data
+          // Some APIs might need this to override their own site filtering
+          if (userSiteInfo.canAccessMultipleSites) {
+            url.searchParams.set("includeAllSites", "true");
           }
+
           return url.toString();
         };
 
-        // FIXED: Use correct API endpoints that exist
+        // Use correct API endpoints
         const endpoints = [
           buildUrl("/api/purchase-orders"),
           buildUrl("/api/goods-receipts"),
@@ -2245,13 +2375,13 @@ export default function ComprehensiveReportsPage() {
         ];
 
         console.log(
-          "📡 Fetching from endpoints with site filtering:",
-          endpoints,
+          "📡 Fetching from endpoints (NO site filtering - getting ALL data):",
+          endpoints.map((e) => e.split("?")[0]),
         );
 
         const results = await Promise.allSettled(
           endpoints.map(async (endpoint) => {
-            console.log(`📡 Fetching from ${endpoint}...`);
+            console.log(`📡 Fetching from ${endpoint.split("?")[0]}...`);
             const response = await fetch(endpoint);
             if (!response.ok) {
               throw new Error(
@@ -2278,20 +2408,21 @@ export default function ComprehensiveReportsPage() {
           if (result.status === "fulfilled") {
             const data = result.value;
             console.log(
-              `✅ Successfully fetched from ${endpoints[index]}:`,
-              data?.length || "data received",
+              `✅ Successfully fetched from ${endpoints[index].split("?")[0]}:`,
+              Array.isArray(data) ? data.length : "object received",
             );
             return data;
           } else {
             console.error(
-              `❌ Failed to fetch from ${endpoints[index]}:`,
+              `❌ Failed to fetch from ${endpoints[index].split("?")[0]}:`,
               result.reason,
             );
             return [];
           }
         });
 
-        // Apply VAT calculations to data
+        // Apply VAT calculations to ALL data (before filtering)
+        console.log("🧮 Applying VAT calculations to all data...");
         const purchaseOrdersWithVAT = calculatePurchaseOrderVAT(
           purchaseOrders || [],
         );
@@ -2321,9 +2452,8 @@ export default function ComprehensiveReportsPage() {
           console.warn("⚠️ No data received from any API endpoint");
           toast({
             title: "No Data Available",
-            description: userSiteInfo.canAccessMultipleSites
-              ? "No data was returned from the server. Please check your connection."
-              : `No data available for your site${userSiteInfo.userSiteName ? ` (${userSiteInfo.userSiteName})` : ""}.`,
+            description:
+              "No data was returned from the server. Please check your connection.",
             status: "warning",
             duration: 5000,
             isClosable: true,
@@ -2331,7 +2461,7 @@ export default function ComprehensiveReportsPage() {
           return;
         }
 
-        // Store raw data for export (with VAT calculations)
+        // Store ALL raw data (unfiltered) for export
         const newRawData = {
           purchaseOrders: purchaseOrdersWithVAT,
           goodsReceipts: goodsReceiptsWithVAT,
@@ -2346,9 +2476,10 @@ export default function ComprehensiveReportsPage() {
         };
 
         setRawData(newRawData);
+        console.log("✅ All raw data stored with VAT calculations");
 
-        // Process analytics data with VAT
-        const analytics = await processAnalyticsData(
+        // Process analytics data WITH CLIENT-SIDE FILTERING
+        await processFilteredAnalyticsData(
           {
             purchaseOrders: purchaseOrdersWithVAT,
             goodsReceipts: goodsReceiptsWithVAT,
@@ -2372,10 +2503,29 @@ export default function ComprehensiveReportsPage() {
             sites: sites || [],
           },
           dateRangeMemo,
+          selectedFilterSite, // Pass the selected filter site
         );
 
-        setAnalyticsData(analytics);
-        console.log("✅ Analytics data with VAT processed successfully");
+        // Show success message with site context
+        let successMessage = "Data loaded successfully";
+        if (!userSiteInfo.canAccessMultipleSites && userSiteInfo.userSiteName) {
+          successMessage = `Loaded data for ${userSiteInfo.userSiteName}`;
+        } else if (selectedFilterSite) {
+          const siteName = availableSites.find(
+            (s) => s._id === selectedFilterSite,
+          )?.name;
+          successMessage = `Loaded data for ${siteName || "selected site"} (client-side filtered)`;
+        } else {
+          successMessage = "Loaded all sites data";
+        }
+
+        toast({
+          title: "Success",
+          description: successMessage,
+          status: "success",
+          duration: 3000,
+          isClosable: true,
+        });
       } catch (error) {
         console.error("❌ Error fetching analytics data:", error);
         toast({
@@ -2398,144 +2548,168 @@ export default function ComprehensiveReportsPage() {
       calculateGoodsReceiptVAT,
       calculateDispatchVAT,
       calculateInventoryVAT,
-      processAnalyticsData,
       userSiteInfo,
       selectedFilterSite,
+      availableSites,
+      primaryDateRange.start,
+      primaryDateRange.end,
     ],
   );
 
-  // Function to fetch data with a specific site filter
+  // New function to process analytics data with client-side filtering
+  const processFilteredAnalyticsData = useCallback(
+    async (
+      data: any,
+      dateRange: { start: Date; end: Date },
+      filterSiteId: string | null,
+    ) => {
+      try {
+        console.log(
+          "🔍 Processing analytics data with client-side filtering...",
+          {
+            filterSiteId,
+            dateRange,
+          },
+        );
+
+        // Apply client-side filtering based on selected site
+        const filteredData = {
+          purchaseOrders: filterDataBySite(
+            data.purchaseOrders,
+            filterSiteId,
+            "purchaseOrder",
+          ),
+          goodsReceipts: filterDataBySite(
+            data.goodsReceipts,
+            filterSiteId,
+            "goodsReceipt",
+          ),
+          dispatches: filterDataBySite(
+            data.dispatches,
+            filterSiteId,
+            "dispatch",
+          ),
+          transfers: filterDataBySite(data.transfers, filterSiteId, "transfer"),
+          binCounts: filterDataBySite(data.binCounts, filterSiteId, "binCount"),
+          stockValues: data.stockValues, // Stock items need special handling
+          lowStock: data.lowStock, // Low stock will be recalculated from filtered data
+          suppliers: data.suppliers, // Suppliers not site-specific
+          users: filterDataBySite(data.users, filterSiteId, "user"),
+          sites: data.sites,
+        };
+
+        console.log("📊 After client-side filtering:", {
+          purchaseOrders: filteredData.purchaseOrders.length,
+          goodsReceipts: filteredData.goodsReceipts.length,
+          dispatches: filteredData.dispatches.length,
+          transfers: filteredData.transfers.length,
+          binCounts: filteredData.binCounts.length,
+          users: filteredData.users.length,
+        });
+
+        // For inventory, we need to recalculate based on filtered bins
+        let filteredStockValues = data.stockValues;
+        if (filterSiteId) {
+          // Get bins for this site
+          const siteBins = data.sites
+            ?.flatMap((site: any) => site.bins || [])
+            .filter(
+              (bin: any) =>
+                bin.site?._id === filterSiteId || bin.site === filterSiteId,
+            );
+
+          const siteBinIds = new Set(
+            siteBins?.map((bin: any) => bin._id) || [],
+          );
+
+          // Filter stock items to only include quantities from this site's bins
+          // This is complex - for now, we'll use the original stock values
+          // but mark that they're not site-filtered
+          console.log(
+            "⚠️ Inventory values are for all sites (not filtered by site)",
+          );
+        }
+
+        // Process analytics with filtered data
+        const analytics = await processAnalyticsData(
+          {
+            ...filteredData,
+            stockValues: filteredStockValues,
+          },
+          dateRange,
+        );
+
+        setAnalyticsData(analytics);
+        console.log(
+          "✅ Analytics data with client-side filtering processed successfully",
+        );
+      } catch (error) {
+        console.error("❌ Error processing filtered analytics data:", error);
+        setAnalyticsData(getEmptyAnalyticsData());
+      }
+    },
+    [processAnalyticsData],
+  );
+
+  // Simplified function for site filtering - now just re-filters existing data
   const fetchWithSiteFilter = useCallback(
     async (siteId: string) => {
       setAnalyticsLoading(true);
       try {
-        console.log("🔄 Fetching data with site filter:", siteId);
+        console.log("🔄 Applying client-side site filter:", siteId);
 
-        // Build URLs with the selected site filter
-        const buildFilteredUrl = (endpoint: string) => {
-          const url = new URL(endpoint, window.location.origin);
-          url.searchParams.set("siteId", siteId);
-          return url.toString();
-        };
+        const siteName =
+          availableSites.find((s) => s._id === siteId)?.name || "selected site";
 
-        const endpoints = [
-          buildFilteredUrl("/api/purchase-orders"),
-          buildFilteredUrl("/api/goods-receipts"),
-          buildFilteredUrl("/api/dispatches"),
-          buildFilteredUrl("/api/transfers"),
-          buildFilteredUrl("/api/bin-counts"),
-          buildFilteredUrl("/api/analytics/stock-values"),
-          buildFilteredUrl("/api/low-stock"),
-          buildFilteredUrl("/api/suppliers"),
-          buildFilteredUrl("/api/users"),
-          buildFilteredUrl("/api/sites"),
-        ];
-
-        const results = await Promise.allSettled(
-          endpoints.map(async (endpoint) => {
-            const response = await fetch(endpoint);
-            if (!response.ok) {
-              throw new Error(
-                `Failed to fetch ${endpoint}: ${response.status}`,
-              );
-            }
-            return response.json();
-          }),
-        );
-
-        // Process results (same as in fetchAllData)
-        const [
-          purchaseOrders,
-          goodsReceipts,
-          dispatches,
-          transfers,
-          binCounts,
-          stockValues,
-          lowStock,
-          suppliers,
-          users,
-          sites,
-        ] = results.map((result, index) => {
-          if (result.status === "fulfilled") {
-            return result.value;
-          } else {
-            console.error(
-              `❌ Failed to fetch from ${endpoints[index]}:`,
-              result.reason,
-            );
-            return [];
-          }
-        });
-
-        // Apply VAT calculations
-        const purchaseOrdersWithVAT = calculatePurchaseOrderVAT(
-          purchaseOrders || [],
-        );
-        const goodsReceiptsWithVAT = calculateGoodsReceiptVAT(
-          goodsReceipts || [],
-        );
-        const dispatchesWithVAT = calculateDispatchVAT(dispatches || []);
-        const inventoryWithVAT = calculateInventoryVAT(
-          stockValues?.items || stockValues || [],
-        );
-
-        // Store raw data
-        const newRawData = {
-          purchaseOrders: purchaseOrdersWithVAT,
-          goodsReceipts: goodsReceiptsWithVAT,
-          dispatches: dispatchesWithVAT,
-          transfers: transfers || [],
-          binCounts: binCounts || [],
-          stockItems: inventoryWithVAT.items,
-          lowStock: lowStock || [],
-          suppliers: suppliers || [],
-          users: users || [],
-          sites: sites || [],
-        };
-
-        setRawData(newRawData);
-
-        // Process analytics data
-        const analytics = await processAnalyticsData(
-          {
-            purchaseOrders: purchaseOrdersWithVAT,
-            goodsReceipts: goodsReceiptsWithVAT,
-            dispatches: dispatchesWithVAT,
-            transfers: transfers || [],
-            binCounts: binCounts || [],
-            stockValues: {
-              items: inventoryWithVAT.items,
-              summary: {
-                totalInventoryValue: inventoryWithVAT.items.reduce(
-                  (sum: number, item: any) =>
-                    sum + (item.currentStock || 0) * (item.unitPrice || 0),
-                  0,
-                ),
-                totalVAT: inventoryWithVAT.totalVAT,
+        // Check if we have raw data to filter
+        if (Object.keys(rawData).length === 0) {
+          console.log("⚠️ No raw data available, fetching all data first...");
+          await fetchAllData(true);
+        } else {
+          // Re-process existing raw data with new filter
+          await processFilteredAnalyticsData(
+            {
+              purchaseOrders: rawData.purchaseOrders || [],
+              goodsReceipts: rawData.goodsReceipts || [],
+              dispatches: rawData.dispatches || [],
+              transfers: rawData.transfers || [],
+              binCounts: rawData.binCounts || [],
+              stockValues: {
+                items: rawData.stockItems || [],
+                summary: {
+                  totalInventoryValue: (rawData.stockItems || []).reduce(
+                    (sum: number, item: any) =>
+                      sum + (item.currentStock || 0) * (item.unitPrice || 0),
+                    0,
+                  ),
+                  totalVAT: (rawData.stockItems || []).reduce(
+                    (sum: number, item: any) => sum + (item.stockVAT || 0),
+                    0,
+                  ),
+                },
               },
+              lowStock: rawData.lowStock || [],
+              suppliers: rawData.suppliers || [],
+              users: rawData.users || [],
+              sites: rawData.sites || [],
             },
-            lowStock: lowStock || [],
-            suppliers: suppliers || [],
-            users: users || [],
-            sites: sites || [],
-          },
-          dateRangeMemo,
-        );
-
-        setAnalyticsData(analytics);
+            dateRangeMemo,
+            siteId,
+          );
+        }
 
         toast({
           title: "Filter Applied",
-          description: `Showing data for: ${availableSites.find((s) => s._id === siteId)?.name || "selected site"}`,
+          description: `Showing data for: ${siteName} (client-side filtered)`,
           status: "success",
           duration: 3000,
           isClosable: true,
         });
       } catch (error) {
-        console.error("❌ Error fetching filtered data:", error);
+        console.error("❌ Error applying site filter:", error);
         toast({
-          title: "Error",
-          description: "Failed to load filtered data",
+          title: "Filter Error",
+          description: "Failed to apply site filter",
           status: "error",
           duration: 5000,
           isClosable: true,
@@ -2545,18 +2719,17 @@ export default function ComprehensiveReportsPage() {
       }
     },
     [
-      calculatePurchaseOrderVAT,
-      calculateGoodsReceiptVAT,
-      calculateDispatchVAT,
-      calculateInventoryVAT,
-      processAnalyticsData,
+      rawData,
       dateRangeMemo,
       availableSites,
+      fetchAllData,
+      processFilteredAnalyticsData,
       toast,
     ],
   );
 
   const handleUpdateAnalytics = () => {
+    // Always fetch fresh data when manually updating
     fetchAllData(true);
   };
 
@@ -3941,6 +4114,7 @@ export default function ComprehensiveReportsPage() {
   }, [currentReport, fetchReportData, status, userSiteInfo]); // Add userSiteInfo here
 
   // Auto-load data on mount and when date range changes
+  // Auto-load data on mount and when date range changes
   useEffect(() => {
     if (status === "authenticated" && activeTab === 0) {
       const timer = setTimeout(() => {
@@ -3950,7 +4124,7 @@ export default function ComprehensiveReportsPage() {
 
       return () => clearTimeout(timer);
     }
-  }, [status, activeTab, fetchAllData, userSiteInfo]); // Add userSiteInfo here
+  }, [status, activeTab, fetchAllData]); // Remove userSiteInfo dependency // Add userSiteInfo here
 
   // Get user site info from session
   useEffect(() => {
@@ -4261,6 +4435,39 @@ export default function ComprehensiveReportsPage() {
           </CardBody>
         </Card>
 
+        {/* Data Scope Summary */}
+        <Card bg="gray.50" borderColor="gray.200">
+          <CardBody py={2}>
+            <HStack spacing={4} wrap="wrap">
+              <HStack>
+                <Icon as={FiFilter} color="gray.500" />
+                <Text fontSize="sm" fontWeight="medium">
+                  Showing data for:
+                </Text>
+              </HStack>
+
+              {selectedFilterSite ? (
+                <Badge colorScheme="purple" fontSize="sm" px={3} py={1}>
+                  {availableSites.find((s) => s._id === selectedFilterSite)
+                    ?.name || "Selected Site"}
+                </Badge>
+              ) : !userSiteInfo.canAccessMultipleSites ? (
+                <Badge colorScheme="green" fontSize="sm" px={3} py={1}>
+                  {userSiteInfo.userSiteName || "Your Site"}
+                </Badge>
+              ) : (
+                <Badge colorScheme="blue" fontSize="sm" px={3} py={1}>
+                  All Sites
+                </Badge>
+              )}
+
+              <Text fontSize="sm" color="gray.600">
+                {primaryDateRange.start} to {primaryDateRange.end}
+              </Text>
+            </HStack>
+          </CardBody>
+        </Card>
+
         {/* Quick Date Range Presets */}
         <Card>
           <CardBody>
@@ -4384,11 +4591,86 @@ export default function ComprehensiveReportsPage() {
                                               );
 
                                               if (siteId === "all") {
-                                                // Clear site filter and refetch all data
-                                                fetchAllData(true);
+                                                // Clear site filter - re-process with no filter
+                                                if (
+                                                  Object.keys(rawData).length >
+                                                  0
+                                                ) {
+                                                  processFilteredAnalyticsData(
+                                                    {
+                                                      purchaseOrders:
+                                                        rawData.purchaseOrders ||
+                                                        [],
+                                                      goodsReceipts:
+                                                        rawData.goodsReceipts ||
+                                                        [],
+                                                      dispatches:
+                                                        rawData.dispatches ||
+                                                        [],
+                                                      transfers:
+                                                        rawData.transfers || [],
+                                                      binCounts:
+                                                        rawData.binCounts || [],
+                                                      stockValues: {
+                                                        items:
+                                                          rawData.stockItems ||
+                                                          [],
+                                                        summary: {
+                                                          totalInventoryValue: (
+                                                            rawData.stockItems ||
+                                                            []
+                                                          ).reduce(
+                                                            (
+                                                              sum: number,
+                                                              item: any,
+                                                            ) =>
+                                                              sum +
+                                                              (item.currentStock ||
+                                                                0) *
+                                                                (item.unitPrice ||
+                                                                  0),
+                                                            0,
+                                                          ),
+                                                          totalVAT: (
+                                                            rawData.stockItems ||
+                                                            []
+                                                          ).reduce(
+                                                            (
+                                                              sum: number,
+                                                              item: any,
+                                                            ) =>
+                                                              sum +
+                                                              (item.stockVAT ||
+                                                                0),
+                                                            0,
+                                                          ),
+                                                        },
+                                                      },
+                                                      lowStock:
+                                                        rawData.lowStock || [],
+                                                      suppliers:
+                                                        rawData.suppliers || [],
+                                                      users:
+                                                        rawData.users || [],
+                                                      sites:
+                                                        rawData.sites || [],
+                                                    },
+                                                    dateRangeMemo,
+                                                    null,
+                                                  );
+                                                } else {
+                                                  fetchAllData(true);
+                                                }
                                               } else if (siteId) {
-                                                // Refetch data with selected site filter
-                                                fetchWithSiteFilter(siteId);
+                                                // Apply site filter using existing data if available
+                                                if (
+                                                  Object.keys(rawData).length >
+                                                  0
+                                                ) {
+                                                  fetchWithSiteFilter(siteId);
+                                                } else {
+                                                  fetchAllData(true);
+                                                }
                                               }
                                             }}
                                           >
@@ -4409,7 +4691,76 @@ export default function ComprehensiveReportsPage() {
                                               size="sm"
                                               onClick={() => {
                                                 setSelectedFilterSite(null);
-                                                fetchAllData(true);
+                                                // Re-process with no filter
+                                                if (
+                                                  Object.keys(rawData).length >
+                                                  0
+                                                ) {
+                                                  processFilteredAnalyticsData(
+                                                    {
+                                                      purchaseOrders:
+                                                        rawData.purchaseOrders ||
+                                                        [],
+                                                      goodsReceipts:
+                                                        rawData.goodsReceipts ||
+                                                        [],
+                                                      dispatches:
+                                                        rawData.dispatches ||
+                                                        [],
+                                                      transfers:
+                                                        rawData.transfers || [],
+                                                      binCounts:
+                                                        rawData.binCounts || [],
+                                                      stockValues: {
+                                                        items:
+                                                          rawData.stockItems ||
+                                                          [],
+                                                        summary: {
+                                                          totalInventoryValue: (
+                                                            rawData.stockItems ||
+                                                            []
+                                                          ).reduce(
+                                                            (
+                                                              sum: number,
+                                                              item: any,
+                                                            ) =>
+                                                              sum +
+                                                              (item.currentStock ||
+                                                                0) *
+                                                                (item.unitPrice ||
+                                                                  0),
+                                                            0,
+                                                          ),
+                                                          totalVAT: (
+                                                            rawData.stockItems ||
+                                                            []
+                                                          ).reduce(
+                                                            (
+                                                              sum: number,
+                                                              item: any,
+                                                            ) =>
+                                                              sum +
+                                                              (item.stockVAT ||
+                                                                0),
+                                                            0,
+                                                          ),
+                                                        },
+                                                      },
+                                                      lowStock:
+                                                        rawData.lowStock || [],
+                                                      suppliers:
+                                                        rawData.suppliers || [],
+                                                      users:
+                                                        rawData.users || [],
+                                                      sites:
+                                                        rawData.sites || [],
+                                                    },
+                                                    dateRangeMemo,
+                                                    null,
+                                                  );
+                                                } else {
+                                                  fetchAllData(true);
+                                                }
                                               }}
                                             >
                                               Clear
@@ -4640,7 +4991,7 @@ export default function ComprehensiveReportsPage() {
                                   (status: any) => status.value > 0,
                                 ) || []
                               }
-                              title="Purchase Orders by Status"
+                              title="Purchase Orders by Status (Detailed)"
                               colors={[
                                 CHART_COLORS.primary[0],
                                 CHART_COLORS.warning[0],
@@ -4863,12 +5214,28 @@ export default function ComprehensiveReportsPage() {
                           </CardBody>
                         </Card>
 
-                        {/* Supplier Performance */}
+                        {/* Supplier Performance - Filter by site */}
                         {analyticsData.suppliers.performance.length > 0 && (
                           <Card>
                             <CardBody>
                               <Heading size="sm" mb={4}>
                                 Top Suppliers
+                                {!userSiteInfo.canAccessMultipleSites &&
+                                  userSiteInfo.userSiteName && (
+                                    <Badge ml={2} colorScheme="green">
+                                      {userSiteInfo.userSiteName}
+                                    </Badge>
+                                  )}
+                                {selectedFilterSite && (
+                                  <Badge ml={2} colorScheme="purple">
+                                    Filtered:{" "}
+                                    {
+                                      availableSites.find(
+                                        (s) => s._id === selectedFilterSite,
+                                      )?.name
+                                    }
+                                  </Badge>
+                                )}
                               </Heading>
                               <TableContainer>
                                 <Table variant="simple">
@@ -5502,26 +5869,78 @@ const VisualAnalyticsTab = ({
                 colorScheme="blue"
                 size="lg"
               />
-              <Wrap spacing={4}>
-                <WrapItem>
-                  <Badge colorScheme="green">
-                    Zero Variance:{" "}
-                    {analyticsData.binCounts.varianceAnalysis.zero}
-                  </Badge>
-                </WrapItem>
-                <WrapItem>
-                  <Badge colorScheme="red">
-                    Negative:{" "}
-                    {analyticsData.binCounts.varianceAnalysis.negative}
-                  </Badge>
-                </WrapItem>
-                <WrapItem>
-                  <Badge colorScheme="orange">
-                    Positive:{" "}
-                    {analyticsData.binCounts.varianceAnalysis.positive}
-                  </Badge>
-                </WrapItem>
-              </Wrap>
+
+              {/* Quantity Variance Breakdown */}
+              <Box mt={2}>
+                <Text fontWeight="medium" fontSize="sm" mb={2}>
+                  Quantity Variance
+                </Text>
+                <Wrap spacing={4}>
+                  <WrapItem>
+                    <Badge colorScheme="green" px={3} py={1}>
+                      Zero:{" "}
+                      {analyticsData.binCounts.varianceAnalysis.zero.quantity}
+                    </Badge>
+                  </WrapItem>
+                  <WrapItem>
+                    <Badge colorScheme="red" px={3} py={1}>
+                      Negative:{" "}
+                      {
+                        analyticsData.binCounts.varianceAnalysis.negative
+                          .quantity
+                      }
+                    </Badge>
+                  </WrapItem>
+                  <WrapItem>
+                    <Badge colorScheme="orange" px={3} py={1}>
+                      Positive:{" "}
+                      {
+                        analyticsData.binCounts.varianceAnalysis.positive
+                          .quantity
+                      }
+                    </Badge>
+                  </WrapItem>
+                </Wrap>
+              </Box>
+
+              {/* Cost Variance Breakdown */}
+              <Box mt={2}>
+                <Text fontWeight="medium" fontSize="sm" mb={2}>
+                  Cost Variance (E)
+                </Text>
+                <SimpleGrid columns={3} spacing={2}>
+                  <Box>
+                    <Text fontSize="xs" color="gray.500">
+                      Zero Cost
+                    </Text>
+                    <Badge colorScheme="gray" fontSize="sm" px={2}>
+                      E 0.00
+                    </Badge>
+                  </Box>
+                  <Box>
+                    <Text fontSize="xs" color="gray.500">
+                      Negative (Under)
+                    </Text>
+                    <Badge colorScheme="green" fontSize="sm" px={2}>
+                      E{" "}
+                      {analyticsData.binCounts.varianceAnalysis.negative.cost.toFixed(
+                        2,
+                      )}
+                    </Badge>
+                  </Box>
+                  <Box>
+                    <Text fontSize="xs" color="gray.500">
+                      Positive (Over)
+                    </Text>
+                    <Badge colorScheme="orange" fontSize="sm" px={2}>
+                      E{" "}
+                      {analyticsData.binCounts.varianceAnalysis.positive.cost.toFixed(
+                        2,
+                      )}
+                    </Badge>
+                  </Box>
+                </SimpleGrid>
+              </Box>
             </VStack>
           </CardBody>
         </Card>
