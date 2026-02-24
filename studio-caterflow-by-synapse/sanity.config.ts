@@ -9,7 +9,7 @@ export default defineConfig({
   name: 'default',
   title: 'Caterflow by Synapse',
 
-  projectId: 'ml4r1dn2',
+  projectId: 'v3sfsmld',
   dataset: 'production',
 
 

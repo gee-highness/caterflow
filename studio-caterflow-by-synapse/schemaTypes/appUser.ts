@@ -61,7 +61,7 @@ export default defineType({
             name: 'password',
             title: 'Password',
             type: 'string',
-            hidden: true, // This makes the field hidden in the Studio
+            hidden: false, // This makes the field hidden in the Studio
             description: 'Hashed password for authentication. This field is automatically managed.',
         }),
         defineField({

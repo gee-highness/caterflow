@@ -115,6 +115,17 @@ import {
 import { calculateBulkStock } from "@/lib/stockCalculations";
 import { getUserSiteInfo } from "@/lib/siteFiltering"; // Add this import
 
+// Add this at the top of your component after the imports
+const filterTransitionStyle = {
+  transition: "opacity 0.2s ease-in-out",
+  opacity: 1,
+};
+
+const filterLoadingStyle = {
+  opacity: 0.6,
+  pointerEvents: "none" as const,
+};
+
 // Add this hook at the top of your component file, after imports
 const useChartReady = () => {
   const [isReady, setIsReady] = useState(false);
@@ -721,7 +732,7 @@ const filterDataBySite = <T extends any[]>(
 
         case "stockItem":
           // Stock items don't have direct site - they exist across sites
-          // We'll handle this separately in the inventory calculation
+          // We'll handle this separately in getFilteredStockValues
           return true;
 
         case "supplier":
@@ -2556,12 +2567,125 @@ export default function ComprehensiveReportsPage() {
     ],
   );
 
-  // New function to process analytics data with client-side filtering
+  // Add this helper function to get stock values filtered by site
+  const getFilteredStockValues = useCallback(
+    async (
+      stockItems: any[],
+      filterSiteId: string | null,
+      sites: any[],
+    ): Promise<{
+      items: any[];
+      summary: { totalInventoryValue: number; totalVAT: number };
+    }> => {
+      if (!filterSiteId || !sites || sites.length === 0) {
+        // No filter - return all stock
+        return {
+          items: stockItems,
+          summary: {
+            totalInventoryValue: stockItems.reduce(
+              (sum: number, item: any) =>
+                sum + (item.currentStock || 0) * (item.unitPrice || 0),
+              0,
+            ),
+            totalVAT: stockItems.reduce(
+              (sum: number, item: any) => sum + (item.stockVAT || 0),
+              0,
+            ),
+          },
+        };
+      }
+
+      try {
+        console.log(`🔍 Getting filtered stock for site: ${filterSiteId}`);
+
+        // Get bins for this site
+        const binsResponse = await fetch(`/api/bins?siteId=${filterSiteId}`);
+        if (!binsResponse.ok) {
+          throw new Error("Failed to fetch bins for site");
+        }
+        const siteBins = await binsResponse.json();
+
+        // Extract bin IDs with proper typing
+        const binIds: string[] = siteBins
+          .map((bin: any) => bin._id)
+          .filter(Boolean);
+
+        console.log(`📦 Found ${binIds.length} bins for site ${filterSiteId}`);
+
+        // Get all stock item IDs with proper typing
+        const stockItemIds: string[] = stockItems
+          .map((item: any) => item._id)
+          .filter(Boolean);
+
+        if (stockItemIds.length === 0 || binIds.length === 0) {
+          return {
+            items: [],
+            summary: {
+              totalInventoryValue: 0,
+              totalVAT: 0,
+            },
+          };
+        }
+
+        // Calculate stock for this site's bins
+        const stockResults = await calculateBulkStock(stockItemIds, binIds);
+
+        // Calculate values for each item
+        let totalInventoryValue = 0;
+        let totalVAT = 0;
+
+        const itemsWithSiteStock = stockItems.map((item: any) => {
+          let totalQuantity = 0;
+          binIds.forEach((binId: string) => {
+            const key = `${item._id}-${binId}`;
+            totalQuantity += stockResults[key] || 0;
+          });
+
+          const stockValue = totalQuantity * (item.unitPrice || 0);
+          const isVATApplicable = item.isVATApplicable !== false;
+          const vatAmount = isVATApplicable ? stockValue * 0.15 : 0;
+
+          totalInventoryValue += stockValue;
+          totalVAT += vatAmount;
+
+          return {
+            ...item,
+            currentStock: totalQuantity,
+            stockValue,
+            vatAmount,
+            stockValueWithVAT: stockValue + vatAmount,
+          };
+        });
+
+        console.log(
+          `💰 Site-filtered inventory: ${totalInventoryValue} (${itemsWithSiteStock.length} items)`,
+        );
+
+        return {
+          items: itemsWithSiteStock,
+          summary: {
+            totalInventoryValue,
+            totalVAT,
+          },
+        };
+      } catch (error) {
+        console.error("❌ Error filtering stock by site:", error);
+        return {
+          items: [],
+          summary: { totalInventoryValue: 0, totalVAT: 0 },
+        };
+      }
+    },
+    [],
+  );
+
+  // Replace the existing processFilteredAnalyticsData with this optimized version
   const processFilteredAnalyticsData = useCallback(
     async (
       data: any,
       dateRange: { start: Date; end: Date },
       filterSiteId: string | null,
+      skipAnalytics: boolean = false, // New parameter to skip heavy analytics when just filtering
     ) => {
       try {
         console.log(
@@ -2569,6 +2693,7 @@ export default function ComprehensiveReportsPage() {
           {
             filterSiteId,
             dateRange,
+            skipAnalytics,
           },
         );
 
@@ -2591,9 +2716,9 @@ export default function ComprehensiveReportsPage() {
           ),
           transfers: filterDataBySite(data.transfers, filterSiteId, "transfer"),
           binCounts: filterDataBySite(data.binCounts, filterSiteId, "binCount"),
-          stockValues: data.stockValues, // Stock items need special handling
-          lowStock: data.lowStock, // Low stock will be recalculated from filtered data
-          suppliers: data.suppliers, // Suppliers not site-specific
+          stockValues: data.stockValues, // Will be replaced if filterSiteId exists
+          lowStock: data.lowStock,
+          suppliers: data.suppliers,
           users: filterDataBySite(data.users, filterSiteId, "user"),
           sites: data.sites,
         };
@@ -2607,34 +2732,87 @@ export default function ComprehensiveReportsPage() {
           users: filteredData.users.length,
         });
 
-        // For inventory, we need to recalculate based on filtered bins
+        // IMPORTANT FIX: Get site-specific stock values
         let filteredStockValues = data.stockValues;
-        if (filterSiteId) {
-          // Get bins for this site
-          const siteBins = data.sites
-            ?.flatMap((site: any) => site.bins || [])
-            .filter(
-              (bin: any) =>
-                bin.site?._id === filterSiteId || bin.site === filterSiteId,
-            );
+        if (filterSiteId && data.stockItems) {
+          console.log(`🔍 Getting filtered stock for site: ${filterSiteId}`);
 
-          const siteBinIds = new Set(
-            siteBins?.map((bin: any) => bin._id) || [],
+          // Use the new helper function to get site-specific stock
+          filteredStockValues = await getFilteredStockValues(
+            data.stockItems,
+            filterSiteId,
+            data.sites || [],
           );
-
-          // Filter stock items to only include quantities from this site's bins
-          // This is complex - for now, we'll use the original stock values
-          // but mark that they're not site-filtered
-          console.log(
-            "⚠️ Inventory values are for all sites (not filtered by site)",
-          );
+        } else {
+          console.log("📊 Using unfiltered stock values (all sites)");
         }
 
-        // Process analytics with filtered data
+        // If skipAnalytics is true, we're just updating the filter
+        // and can use the existing analytics data with updated filteredData
+        if (skipAnalytics && analyticsData) {
+          console.log("⚡ Using cached analytics with updated filters");
+
+          // Create a new analytics object with updated filtered data
+          // but keep the heavy calculations from the original analytics
+          const updatedAnalytics = {
+            ...analyticsData,
+            summary: {
+              ...analyticsData.summary,
+              totalPurchaseOrders: filteredData.purchaseOrders.length,
+              totalGoodsReceipts: filteredData.goodsReceipts.length,
+              totalDispatches: filteredData.dispatches.length,
+              totalTransfers: filteredData.transfers.length,
+              totalBinCounts: filteredData.binCounts.length,
+              totalUsers: filteredData.users.length,
+              totalInventoryValue:
+                filteredStockValues.summary.totalInventoryValue,
+              totalVATCollected: analyticsData.summary.totalVATCollected, // Keep original
+              totalVATPaid: analyticsData.summary.totalVATPaid,
+              netVATLiability: analyticsData.summary.netVATLiability,
+            },
+            purchaseOrders: {
+              ...analyticsData.purchaseOrders,
+              bySite: filteredData.purchaseOrders.reduce(
+                (acc: any[], po: any) => {
+                  const siteName = po.site?.name || "Unknown";
+                  const existing = acc.find((item) => item.name === siteName);
+                  if (existing) {
+                    existing.value++;
+                  } else {
+                    acc.push({ name: siteName, value: 1 });
+                  }
+                  return acc;
+                },
+                [],
+              ),
+            },
+            inventory: {
+              ...analyticsData.inventory,
+              totalValue: filteredStockValues.summary.totalInventoryValue,
+              vatIncluded: filteredStockValues.summary.totalVAT,
+            },
+            financial: {
+              ...analyticsData.financial,
+              openingStock: filteredStockValues.summary.totalInventoryValue,
+              closingStockValue:
+                filteredStockValues.summary.totalInventoryValue,
+            },
+          };
+
+          setAnalyticsData(updatedAnalytics);
+          console.log(
+            "✅ Analytics updated with client-side filtering (fast path)",
+          );
+          return;
+        }
+
+        // Full analytics processing (slower, for initial load)
+        console.log("🔄 Running full analytics processing...");
         const analytics = await processAnalyticsData(
           {
             ...filteredData,
             stockValues: filteredStockValues,
+            stockItems: filteredStockValues.items, // Pass filtered stock items
           },
           dateRange,
         );
@@ -2648,10 +2826,10 @@ export default function ComprehensiveReportsPage() {
         setAnalyticsData(getEmptyAnalyticsData());
       }
     },
-    [processAnalyticsData],
+    [processAnalyticsData, analyticsData, getFilteredStockValues],
   );
 
-  // Simplified function for site filtering - now just re-filters existing data
+  // Simplified function for site filtering - optimized to use cached data
   const fetchWithSiteFilter = useCallback(
     async (siteId: string) => {
       setAnalyticsLoading(true);
@@ -2666,7 +2844,7 @@ export default function ComprehensiveReportsPage() {
           console.log("⚠️ No raw data available, fetching all data first...");
           await fetchAllData(true);
         } else {
-          // Re-process existing raw data with new filter
+          // OPTIMIZED: Use skipAnalytics=true to avoid heavy recalculations
           await processFilteredAnalyticsData(
             {
               purchaseOrders: rawData.purchaseOrders || [],
@@ -2674,6 +2852,7 @@ export default function ComprehensiveReportsPage() {
               dispatches: rawData.dispatches || [],
               transfers: rawData.transfers || [],
               binCounts: rawData.binCounts || [],
+              stockItems: rawData.stockItems || [], // Make sure this is included
               stockValues: {
                 items: rawData.stockItems || [],
                 summary: {
@@ -2695,14 +2874,15 @@ export default function ComprehensiveReportsPage() {
             },
             dateRangeMemo,
             siteId,
+            true, // Skip full analytics processing - use fast path
           );
         }
 
         toast({
           title: "Filter Applied",
-          description: `Showing data for: ${siteName} (client-side filtered)`,
+          description: `Showing data for: ${siteName}`,
           status: "success",
-          duration: 3000,
+          duration: 2000, // Shorter duration for better UX
           isClosable: true,
         });
       } catch (error) {
@@ -4306,692 +4486,683 @@ export default function ComprehensiveReportsPage() {
   };
 
   return (
-    <Box p={{ base: 4, md: 8 }} bg={bgPrimary} minH="100vh">
-      <VStack spacing={6} align="stretch">
-        {/* Header */}
-        <Flex
-          justify="space-between"
-          align={{ base: "flex-start", md: "center" }}
-          direction={{ base: "column", md: "row" }}
-          gap={4}
-        >
-          <Box>
-            <Heading
-              as="h1"
-              size={{ base: "xl", md: "2xl" }}
-              color={primaryTextColor}
-              mb={2}
-            >
-              Analytics & Reports
-            </Heading>
-            <Text color={secondaryTextColor}>
-              Comprehensive analytics and exportable reports with VAT
-              calculations (Eswatini 15%)
-            </Text>
-          </Box>
-
-          <HStack spacing={3}>
-            <Button
-              leftIcon={<FiRefreshCw />}
-              onClick={() => fetchAllData(true)}
-              isLoading={analyticsLoading}
-              variant="outline"
-            >
-              Refresh Data
-            </Button>
-            {activeTab === 0 && (
-              <Button
-                leftIcon={<FiDownload />}
-                colorScheme="green"
-                onClick={exportToExcel}
-                isLoading={exportLoading}
-                size="lg"
+    <Box style={analyticsLoading ? filterLoadingStyle : filterTransitionStyle}>
+      <Box p={{ base: 4, md: 8 }} bg={bgPrimary} minH="100vh">
+        <VStack spacing={6} align="stretch">
+          {/* Header */}
+          <Flex
+            justify="space-between"
+            align={{ base: "flex-start", md: "center" }}
+            direction={{ base: "column", md: "row" }}
+            gap={4}
+          >
+            <Box>
+              <Heading
+                as="h1"
+                size={{ base: "xl", md: "2xl" }}
+                color={primaryTextColor}
+                mb={2}
               >
-                Export Full Report with VAT
+                Analytics & Reports
+              </Heading>
+              <Text color={secondaryTextColor}>
+                Comprehensive analytics and exportable reports with VAT
+                calculations (Eswatini 15%)
+              </Text>
+            </Box>
+
+            <HStack spacing={3}>
+              <Button
+                leftIcon={<FiRefreshCw />}
+                onClick={() => fetchAllData(true)}
+                isLoading={analyticsLoading}
+                variant="outline"
+              >
+                Refresh Data
               </Button>
-            )}
-          </HStack>
-        </Flex>
-
-        {/* VAT Rate Display */}
-        <Card bg={bgCard} borderColor="blue.200">
-          <CardBody>
-            <HStack justify="space-between">
-              <HStack>
-                <Icon as={FiPercent} color="blue.500" />
-                <VStack align="start" spacing={0}>
-                  <Text fontWeight="bold" color="blue.700">
-                    VAT Rate Applied
-                  </Text>
-                  <Text color="blue.600">
-                    Eswatini Standard Rate: {VAT_CONFIG.ratePercentage}%
-                  </Text>
-                </VStack>
-              </HStack>
-              <Badge colorScheme="blue" fontSize="lg" p={2}>
-                VAT {VAT_CONFIG.ratePercentage}%
-              </Badge>
+              {activeTab === 0 && (
+                <Button
+                  leftIcon={<FiDownload />}
+                  colorScheme="green"
+                  onClick={exportToExcel}
+                  isLoading={exportLoading}
+                  size="lg"
+                >
+                  Export Full Report with VAT
+                </Button>
+              )}
             </HStack>
-          </CardBody>
-        </Card>
+          </Flex>
 
-        {/* Site Info Banner */}
-        <Card
-          bg={userSiteInfo.canAccessMultipleSites ? "blue.50" : "green.50"}
-          borderColor={
-            userSiteInfo.canAccessMultipleSites ? "blue.200" : "green.200"
-          }
-        >
-          <CardBody py={3}>
-            <HStack justify="space-between">
-              <HStack>
-                <Icon
-                  as={userSiteInfo.canAccessMultipleSites ? FiEye : FiEyeOff}
-                  color={
-                    userSiteInfo.canAccessMultipleSites
-                      ? "blue.500"
-                      : "green.500"
-                  }
-                />
-                <VStack align="start" spacing={0}>
-                  <Text
-                    fontWeight="bold"
-                    color={
-                      userSiteInfo.canAccessMultipleSites
-                        ? "blue.700"
-                        : "green.700"
-                    }
-                  >
-                    {userSiteInfo.canAccessMultipleSites
-                      ? "Multi-Site View"
-                      : "Single-Site View"}
-                  </Text>
-                  <Text
-                    color={
-                      userSiteInfo.canAccessMultipleSites
-                        ? "blue.600"
-                        : "green.600"
-                    }
-                    fontSize="sm"
-                  >
-                    {userSiteInfo.canAccessMultipleSites
-                      ? "You have access to all sites data"
-                      : `Showing data for: ${userSiteInfo.userSiteName || "your assigned site"}`}
-                  </Text>
-                </VStack>
+          {/* VAT Rate Display */}
+          <Card bg={bgCard} borderColor="blue.200">
+            <CardBody>
+              <HStack justify="space-between">
+                <HStack>
+                  <Icon as={FiPercent} color="blue.500" />
+                  <VStack align="start" spacing={0}>
+                    <Text fontWeight="bold" color="blue.700">
+                      VAT Rate Applied
+                    </Text>
+                    <Text color="blue.600">
+                      Eswatini Standard Rate: {VAT_CONFIG.ratePercentage}%
+                    </Text>
+                  </VStack>
+                </HStack>
+                <Badge colorScheme="blue" fontSize="lg" p={2}>
+                  VAT {VAT_CONFIG.ratePercentage}%
+                </Badge>
               </HStack>
-              {!userSiteInfo.canAccessMultipleSites &&
-                userSiteInfo.userSiteName && (
-                  <Badge colorScheme="green" fontSize="md" p={2}>
-                    {userSiteInfo.userSiteName}
+            </CardBody>
+          </Card>
+
+          {/* Site Info Banner */}
+          <Card
+            borderColor={
+              userSiteInfo.canAccessMultipleSites ? "blue.200" : "green.200"
+            }
+          >
+            <CardBody py={3}>
+              <HStack justify="space-between">
+                <HStack>
+                  <Icon
+                    as={userSiteInfo.canAccessMultipleSites ? FiEye : FiEyeOff}
+                    color={
+                      userSiteInfo.canAccessMultipleSites
+                        ? "blue.500"
+                        : "green.500"
+                    }
+                  />
+                  <VStack align="start" spacing={0}>
+                    <Text
+                      fontWeight="bold"
+                      color={
+                        userSiteInfo.canAccessMultipleSites
+                          ? "blue.700"
+                          : "green.700"
+                      }
+                    >
+                      {userSiteInfo.canAccessMultipleSites
+                        ? "Multi-Site View"
+                        : "Single-Site View"}
+                    </Text>
+                    <Text
+                      color={
+                        userSiteInfo.canAccessMultipleSites
+                          ? "blue.600"
+                          : "green.600"
+                      }
+                      fontSize="sm"
+                    >
+                      {userSiteInfo.canAccessMultipleSites
+                        ? "You have access to all sites data"
+                        : `Showing data for: ${userSiteInfo.userSiteName || "your assigned site"}`}
+                    </Text>
+                  </VStack>
+                </HStack>
+                {!userSiteInfo.canAccessMultipleSites &&
+                  userSiteInfo.userSiteName && (
+                    <Badge colorScheme="green" fontSize="md" p={2}>
+                      {userSiteInfo.userSiteName}
+                    </Badge>
+                  )}
+                {userSiteInfo.canAccessMultipleSites && (
+                  <Badge colorScheme="blue" fontSize="md" p={2}>
+                    Role: {userSiteInfo.userRole}
                   </Badge>
                 )}
-              {userSiteInfo.canAccessMultipleSites && (
-                <Badge colorScheme="blue" fontSize="md" p={2}>
-                  Role: {userSiteInfo.userRole}
-                </Badge>
-              )}
-            </HStack>
-          </CardBody>
-        </Card>
+              </HStack>
+            </CardBody>
+          </Card>
 
-        {/* Data Scope Summary */}
-        <Card bg="gray.50" borderColor="gray.200">
-          <CardBody py={2}>
-            <HStack spacing={4} wrap="wrap">
-              <HStack>
-                <Icon as={FiFilter} color="gray.500" />
-                <Text fontSize="sm" fontWeight="medium">
-                  Showing data for:
+          {/* Data Scope Summary */}
+          <Card borderColor="gray.200">
+            <CardBody py={2}>
+              <HStack spacing={4} wrap="wrap">
+                <HStack>
+                  <Icon as={FiFilter} color="gray.500" />
+                  <Text fontSize="sm" fontWeight="medium">
+                    Showing data for:
+                  </Text>
+                </HStack>
+
+                {selectedFilterSite ? (
+                  <Badge colorScheme="purple" fontSize="sm" px={3} py={1}>
+                    {availableSites.find((s) => s._id === selectedFilterSite)
+                      ?.name || "Selected Site"}
+                  </Badge>
+                ) : !userSiteInfo.canAccessMultipleSites ? (
+                  <Badge colorScheme="green" fontSize="sm" px={3} py={1}>
+                    {userSiteInfo.userSiteName || "Your Site"}
+                  </Badge>
+                ) : (
+                  <Badge colorScheme="blue" fontSize="sm" px={3} py={1}>
+                    All Sites
+                  </Badge>
+                )}
+
+                <Text fontSize="sm" color="gray.600">
+                  {primaryDateRange.start} to {primaryDateRange.end}
                 </Text>
               </HStack>
+            </CardBody>
+          </Card>
 
-              {selectedFilterSite ? (
-                <Badge colorScheme="purple" fontSize="sm" px={3} py={1}>
-                  {availableSites.find((s) => s._id === selectedFilterSite)
-                    ?.name || "Selected Site"}
-                </Badge>
-              ) : !userSiteInfo.canAccessMultipleSites ? (
-                <Badge colorScheme="green" fontSize="sm" px={3} py={1}>
-                  {userSiteInfo.userSiteName || "Your Site"}
-                </Badge>
-              ) : (
-                <Badge colorScheme="blue" fontSize="sm" px={3} py={1}>
-                  All Sites
-                </Badge>
-              )}
+          {/* Quick Date Range Presets */}
+          <Card>
+            <CardBody>
+              <VStack align="start" spacing={4}>
+                <Text fontWeight="medium">Quick Date Ranges</Text>
+                <Wrap spacing={3}>
+                  {quickDateRanges.map((range, index) => (
+                    <Button
+                      key={index}
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setPrimaryDateRange(range)}
+                      isDisabled={analyticsLoading}
+                    >
+                      {range.label}
+                    </Button>
+                  ))}
+                </Wrap>
+              </VStack>
+            </CardBody>
+          </Card>
 
-              <Text fontSize="sm" color="gray.600">
-                {primaryDateRange.start} to {primaryDateRange.end}
-              </Text>
-            </HStack>
-          </CardBody>
-        </Card>
+          {/* Main Tabs - Analytics and Reports */}
+          <Card bg={bgCard} border="1px" borderColor={borderColor}>
+            <CardBody p={0}>
+              <Tabs
+                variant="line"
+                onChange={setAnalyticsTab}
+                colorScheme="brand"
+                index={analyticsTab}
+              >
+                <TabList>
+                  <Tab>
+                    <HStack spacing={2}>
+                      <Icon as={FiTrendingUp} />
+                      <Text>Executive Dashboard</Text>
+                    </HStack>
+                  </Tab>
+                  <Tab>
+                    <HStack spacing={2}>
+                      <Icon as={FiBarChart2} />
+                      <Text>Visual Analytics</Text>
+                    </HStack>
+                  </Tab>
+                  <Tab>
+                    <HStack spacing={2}>
+                      <Icon as={FiDownload} />
+                      <Text>Data Export</Text>
+                    </HStack>
+                  </Tab>
+                </TabList>
 
-        {/* Quick Date Range Presets */}
-        <Card>
-          <CardBody>
-            <VStack align="start" spacing={4}>
-              <Text fontWeight="medium">Quick Date Ranges</Text>
-              <Wrap spacing={3}>
-                {quickDateRanges.map((range, index) => (
-                  <Button
-                    key={index}
-                    size="sm"
-                    variant="outline"
-                    onClick={() => setPrimaryDateRange(range)}
-                    isDisabled={analyticsLoading}
-                  >
-                    {range.label}
-                  </Button>
-                ))}
-              </Wrap>
-            </VStack>
-          </CardBody>
-        </Card>
+                <TabPanels>
+                  {/* Executive Dashboard Tab */}
+                  <TabPanel>
+                    <VStack spacing={6} align="stretch">
+                      {/* Date Range Controls */}
+                      <Card>
+                        <CardBody>
+                          <VStack align="start" spacing={4}>
+                            <HStack wrap="wrap" spacing={4}>
+                              <VStack align="start">
+                                <Text fontWeight="medium">Analysis Period</Text>
+                                <HStack>
+                                  <Input
+                                    type="date"
+                                    value={primaryDateRange.start}
+                                    onChange={(e) =>
+                                      setPrimaryDateRange((prev) => ({
+                                        ...prev,
+                                        start: e.target.value,
+                                      }))
+                                    }
+                                  />
+                                  <Text>to</Text>
+                                  <Input
+                                    type="date"
+                                    value={primaryDateRange.end}
+                                    onChange={(e) =>
+                                      setPrimaryDateRange((prev) => ({
+                                        ...prev,
+                                        end: e.target.value,
+                                      }))
+                                    }
+                                  />
+                                </HStack>
 
-        {/* Main Tabs - Analytics and Reports */}
-        <Card bg={bgCard} border="1px" borderColor={borderColor}>
-          <CardBody p={0}>
-            <Tabs
-              variant="line"
-              onChange={setAnalyticsTab}
-              colorScheme="brand"
-              index={analyticsTab}
-            >
-              <TabList>
-                <Tab>
-                  <HStack spacing={2}>
-                    <Icon as={FiTrendingUp} />
-                    <Text>Executive Dashboard</Text>
-                  </HStack>
-                </Tab>
-                <Tab>
-                  <HStack spacing={2}>
-                    <Icon as={FiBarChart2} />
-                    <Text>Visual Analytics</Text>
-                  </HStack>
-                </Tab>
-                <Tab>
-                  <HStack spacing={2}>
-                    <Icon as={FiDownload} />
-                    <Text>Data Export</Text>
-                  </HStack>
-                </Tab>
-              </TabList>
+                                {userSiteInfo.canAccessMultipleSites && (
+                                  <Button
+                                    leftIcon={<FiFilter />}
+                                    onClick={() =>
+                                      setShowSiteFilter(!showSiteFilter)
+                                    }
+                                    variant={
+                                      showSiteFilter ? "solid" : "outline"
+                                    }
+                                    colorScheme="purple"
+                                  >
+                                    {showSiteFilter
+                                      ? "Hide Site Filter"
+                                      : "Show Site Filter"}
+                                  </Button>
+                                )}
 
-              <TabPanels>
-                {/* Executive Dashboard Tab */}
-                <TabPanel>
-                  <VStack spacing={6} align="stretch">
-                    {/* Date Range Controls */}
-                    <Card>
-                      <CardBody>
-                        <VStack align="start" spacing={4}>
-                          <HStack wrap="wrap" spacing={4}>
-                            <VStack align="start">
-                              <Text fontWeight="medium">Analysis Period</Text>
-                              <HStack>
-                                <Input
-                                  type="date"
-                                  value={primaryDateRange.start}
-                                  onChange={(e) =>
-                                    setPrimaryDateRange((prev) => ({
-                                      ...prev,
-                                      start: e.target.value,
-                                    }))
-                                  }
-                                />
-                                <Text>to</Text>
-                                <Input
-                                  type="date"
-                                  value={primaryDateRange.end}
-                                  onChange={(e) =>
-                                    setPrimaryDateRange((prev) => ({
-                                      ...prev,
-                                      end: e.target.value,
-                                    }))
-                                  }
-                                />
-                              </HStack>
+                                {showSiteFilter &&
+                                  userSiteInfo.canAccessMultipleSites && (
+                                    <Card mt={4} w="100%">
+                                      <CardBody>
+                                        <VStack align="start" spacing={3}>
+                                          <Text fontWeight="medium">
+                                            Filter by Site
+                                          </Text>
+                                          <HStack width="100%">
+                                            <Select
+                                              placeholder="All Sites"
+                                              value={selectedFilterSite || ""}
+                                              onChange={(e) => {
+                                                const siteId = e.target.value;
+                                                setSelectedFilterSite(
+                                                  siteId === "all"
+                                                    ? null
+                                                    : siteId,
+                                                );
 
-                              {userSiteInfo.canAccessMultipleSites && (
-                                <Button
-                                  leftIcon={<FiFilter />}
-                                  onClick={() =>
-                                    setShowSiteFilter(!showSiteFilter)
-                                  }
-                                  variant={showSiteFilter ? "solid" : "outline"}
-                                  colorScheme="purple"
-                                >
-                                  {showSiteFilter
-                                    ? "Hide Site Filter"
-                                    : "Show Site Filter"}
-                                </Button>
-                              )}
-
-                              {showSiteFilter &&
-                                userSiteInfo.canAccessMultipleSites && (
-                                  <Card mt={4} w="100%">
-                                    <CardBody>
-                                      <VStack align="start" spacing={3}>
-                                        <Text fontWeight="medium">
-                                          Filter by Site
-                                        </Text>
-                                        <HStack width="100%">
-                                          <Select
-                                            placeholder="All Sites"
-                                            value={selectedFilterSite || ""}
-                                            onChange={(e) => {
-                                              const siteId = e.target.value;
-                                              setSelectedFilterSite(
-                                                siteId === "all"
-                                                  ? null
-                                                  : siteId,
-                                              );
-
-                                              if (siteId === "all") {
-                                                // Clear site filter - re-process with no filter
-                                                if (
-                                                  Object.keys(rawData).length >
-                                                  0
-                                                ) {
-                                                  processFilteredAnalyticsData(
-                                                    {
-                                                      purchaseOrders:
-                                                        rawData.purchaseOrders ||
-                                                        [],
-                                                      goodsReceipts:
-                                                        rawData.goodsReceipts ||
-                                                        [],
-                                                      dispatches:
-                                                        rawData.dispatches ||
-                                                        [],
-                                                      transfers:
-                                                        rawData.transfers || [],
-                                                      binCounts:
-                                                        rawData.binCounts || [],
-                                                      stockValues: {
-                                                        items:
-                                                          rawData.stockItems ||
+                                                if (siteId === "all") {
+                                                  // Clear site filter - re-process with no filter
+                                                  if (
+                                                    Object.keys(rawData)
+                                                      .length > 0
+                                                  ) {
+                                                    processFilteredAnalyticsData(
+                                                      {
+                                                        purchaseOrders:
+                                                          rawData.purchaseOrders ||
                                                           [],
-                                                        summary: {
-                                                          totalInventoryValue: (
-                                                            rawData.stockItems ||
-                                                            []
-                                                          ).reduce(
-                                                            (
-                                                              sum: number,
-                                                              item: any,
-                                                            ) =>
-                                                              sum +
-                                                              (item.currentStock ||
-                                                                0) *
-                                                                (item.unitPrice ||
-                                                                  0),
-                                                            0,
-                                                          ),
-                                                          totalVAT: (
-                                                            rawData.stockItems ||
-                                                            []
-                                                          ).reduce(
-                                                            (
-                                                              sum: number,
-                                                              item: any,
-                                                            ) =>
-                                                              sum +
-                                                              (item.stockVAT ||
-                                                                0),
-                                                            0,
-                                                          ),
-                                                        },
-                                                      },
-                                                      lowStock:
-                                                        rawData.lowStock || [],
-                                                      suppliers:
-                                                        rawData.suppliers || [],
-                                                      users:
-                                                        rawData.users || [],
-                                                      sites:
-                                                        rawData.sites || [],
-                                                    },
-                                                    dateRangeMemo,
-                                                    null,
-                                                  );
-                                                } else {
-                                                  fetchAllData(true);
-                                                }
-                                              } else if (siteId) {
-                                                // Apply site filter using existing data if available
-                                                if (
-                                                  Object.keys(rawData).length >
-                                                  0
-                                                ) {
-                                                  fetchWithSiteFilter(siteId);
-                                                } else {
-                                                  fetchAllData(true);
-                                                }
-                                              }
-                                            }}
-                                          >
-                                            <option value="all">
-                                              All Sites
-                                            </option>
-                                            {availableSites.map((site) => (
-                                              <option
-                                                key={site._id}
-                                                value={site._id}
-                                              >
-                                                {site.name}
-                                              </option>
-                                            ))}
-                                          </Select>
-                                          {selectedFilterSite && (
-                                            <Button
-                                              size="sm"
-                                              onClick={() => {
-                                                setSelectedFilterSite(null);
-                                                // Re-process with no filter
-                                                if (
-                                                  Object.keys(rawData).length >
-                                                  0
-                                                ) {
-                                                  processFilteredAnalyticsData(
-                                                    {
-                                                      purchaseOrders:
-                                                        rawData.purchaseOrders ||
-                                                        [],
-                                                      goodsReceipts:
-                                                        rawData.goodsReceipts ||
-                                                        [],
-                                                      dispatches:
-                                                        rawData.dispatches ||
-                                                        [],
-                                                      transfers:
-                                                        rawData.transfers || [],
-                                                      binCounts:
-                                                        rawData.binCounts || [],
-                                                      stockValues: {
-                                                        items:
-                                                          rawData.stockItems ||
+                                                        goodsReceipts:
+                                                          rawData.goodsReceipts ||
                                                           [],
-                                                        summary: {
-                                                          totalInventoryValue: (
+                                                        dispatches:
+                                                          rawData.dispatches ||
+                                                          [],
+                                                        transfers:
+                                                          rawData.transfers ||
+                                                          [],
+                                                        binCounts:
+                                                          rawData.binCounts ||
+                                                          [],
+                                                        stockValues: {
+                                                          items:
                                                             rawData.stockItems ||
-                                                            []
-                                                          ).reduce(
-                                                            (
-                                                              sum: number,
-                                                              item: any,
-                                                            ) =>
-                                                              sum +
-                                                              (item.currentStock ||
-                                                                0) *
-                                                                (item.unitPrice ||
+                                                            [],
+                                                          summary: {
+                                                            totalInventoryValue:
+                                                              (
+                                                                rawData.stockItems ||
+                                                                []
+                                                              ).reduce(
+                                                                (
+                                                                  sum: number,
+                                                                  item: any,
+                                                                ) =>
+                                                                  sum +
+                                                                  (item.currentStock ||
+                                                                    0) *
+                                                                    (item.unitPrice ||
+                                                                      0),
+                                                                0,
+                                                              ),
+                                                            totalVAT: (
+                                                              rawData.stockItems ||
+                                                              []
+                                                            ).reduce(
+                                                              (
+                                                                sum: number,
+                                                                item: any,
+                                                              ) =>
+                                                                sum +
+                                                                (item.stockVAT ||
                                                                   0),
-                                                            0,
-                                                          ),
-                                                          totalVAT: (
-                                                            rawData.stockItems ||
-                                                            []
-                                                          ).reduce(
-                                                            (
-                                                              sum: number,
-                                                              item: any,
-                                                            ) =>
-                                                              sum +
-                                                              (item.stockVAT ||
-                                                                0),
-                                                            0,
-                                                          ),
+                                                              0,
+                                                            ),
+                                                          },
                                                         },
+                                                        lowStock:
+                                                          rawData.lowStock ||
+                                                          [],
+                                                        suppliers:
+                                                          rawData.suppliers ||
+                                                          [],
+                                                        users:
+                                                          rawData.users || [],
+                                                        sites:
+                                                          rawData.sites || [],
                                                       },
-                                                      lowStock:
-                                                        rawData.lowStock || [],
-                                                      suppliers:
-                                                        rawData.suppliers || [],
-                                                      users:
-                                                        rawData.users || [],
-                                                      sites:
-                                                        rawData.sites || [],
-                                                    },
-                                                    dateRangeMemo,
-                                                    null,
-                                                  );
-                                                } else {
-                                                  fetchAllData(true);
+                                                      dateRangeMemo,
+                                                      null,
+                                                    );
+                                                  } else {
+                                                    fetchAllData(true);
+                                                  }
+                                                } else if (siteId) {
+                                                  // Apply site filter using existing data if available
+                                                  if (
+                                                    Object.keys(rawData)
+                                                      .length > 0
+                                                  ) {
+                                                    fetchWithSiteFilter(siteId);
+                                                  } else {
+                                                    fetchAllData(true);
+                                                  }
                                                 }
                                               }}
                                             >
-                                              Clear
-                                            </Button>
+                                              <option value="all">
+                                                All Sites
+                                              </option>
+                                              {availableSites.map((site) => (
+                                                <option
+                                                  key={site._id}
+                                                  value={site._id}
+                                                >
+                                                  {site.name}
+                                                </option>
+                                              ))}
+                                            </Select>
+                                            {selectedFilterSite && (
+                                              <Button
+                                                size="sm"
+                                                onClick={() => {
+                                                  setSelectedFilterSite(null);
+                                                  // Re-process with no filter
+                                                  if (
+                                                    Object.keys(rawData)
+                                                      .length > 0
+                                                  ) {
+                                                    processFilteredAnalyticsData(
+                                                      {
+                                                        purchaseOrders:
+                                                          rawData.purchaseOrders ||
+                                                          [],
+                                                        goodsReceipts:
+                                                          rawData.goodsReceipts ||
+                                                          [],
+                                                        dispatches:
+                                                          rawData.dispatches ||
+                                                          [],
+                                                        transfers:
+                                                          rawData.transfers ||
+                                                          [],
+                                                        binCounts:
+                                                          rawData.binCounts ||
+                                                          [],
+                                                        stockValues: {
+                                                          items:
+                                                            rawData.stockItems ||
+                                                            [],
+                                                          summary: {
+                                                            totalInventoryValue:
+                                                              (
+                                                                rawData.stockItems ||
+                                                                []
+                                                              ).reduce(
+                                                                (
+                                                                  sum: number,
+                                                                  item: any,
+                                                                ) =>
+                                                                  sum +
+                                                                  (item.currentStock ||
+                                                                    0) *
+                                                                    (item.unitPrice ||
+                                                                      0),
+                                                                0,
+                                                              ),
+                                                            totalVAT: (
+                                                              rawData.stockItems ||
+                                                              []
+                                                            ).reduce(
+                                                              (
+                                                                sum: number,
+                                                                item: any,
+                                                              ) =>
+                                                                sum +
+                                                                (item.stockVAT ||
+                                                                  0),
+                                                              0,
+                                                            ),
+                                                          },
+                                                        },
+                                                        lowStock:
+                                                          rawData.lowStock ||
+                                                          [],
+                                                        suppliers:
+                                                          rawData.suppliers ||
+                                                          [],
+                                                        users:
+                                                          rawData.users || [],
+                                                        sites:
+                                                          rawData.sites || [],
+                                                      },
+                                                      dateRangeMemo,
+                                                      null,
+                                                    );
+                                                  } else {
+                                                    fetchAllData(true);
+                                                  }
+                                                }}
+                                              >
+                                                Clear
+                                              </Button>
+                                            )}
+                                          </HStack>
+
+                                          {selectedFilterSite && (
+                                            <Badge colorScheme="purple">
+                                              Filtering by:{" "}
+                                              {
+                                                availableSites.find(
+                                                  (s) =>
+                                                    s._id ===
+                                                    selectedFilterSite,
+                                                )?.name
+                                              }
+                                            </Badge>
                                           )}
-                                        </HStack>
+                                        </VStack>
+                                      </CardBody>
+                                    </Card>
+                                  )}
+                              </VStack>
 
-                                        {selectedFilterSite && (
-                                          <Badge colorScheme="purple">
-                                            Filtering by:{" "}
-                                            {
-                                              availableSites.find(
-                                                (s) =>
-                                                  s._id === selectedFilterSite,
-                                              )?.name
-                                            }
-                                          </Badge>
-                                        )}
-                                      </VStack>
-                                    </CardBody>
-                                  </Card>
-                                )}
-                            </VStack>
+                              <Button
+                                leftIcon={<FiFilter />}
+                                onClick={handleUpdateAnalytics}
+                                isLoading={analyticsLoading}
+                                colorScheme="brand"
+                              >
+                                Update Analytics
+                              </Button>
+                            </HStack>
+                          </VStack>
+                        </CardBody>
+                      </Card>
 
-                            <Button
-                              leftIcon={<FiFilter />}
-                              onClick={handleUpdateAnalytics}
-                              isLoading={analyticsLoading}
-                              colorScheme="brand"
-                            >
-                              Update Analytics
-                            </Button>
-                          </HStack>
-                        </VStack>
-                      </CardBody>
-                    </Card>
+                      {analyticsLoading ? (
+                        <Flex justify="center" align="center" py={10}>
+                          <VStack spacing={4}>
+                            <Spinner size="xl" />
+                            <Text>
+                              Loading analytics data with VAT calculations...
+                            </Text>
+                          </VStack>
+                        </Flex>
+                      ) : !analyticsData ? (
+                        <Alert status="info" borderRadius="md">
+                          <AlertIcon />
+                          No analytics data available. Click "Update Analytics"
+                          to load data with VAT calculations.
+                        </Alert>
+                      ) : (
+                        <>
+                          {/* Key Metrics Summary with VAT */}
+                          <Card>
+                            <CardBody>
+                              <Heading size="md" mb={6}>
+                                Key Performance Indicators
+                              </Heading>
+                              <SimpleGrid
+                                columns={{ base: 1, md: 2, lg: 4 }}
+                                spacing={6}
+                              >
+                                <Stat>
+                                  <StatLabel>
+                                    <HStack>
+                                      <Icon as={FiShoppingCart} />
+                                      <Text>Purchase Orders</Text>
+                                    </HStack>
+                                  </StatLabel>
+                                  <StatNumber>
+                                    {analyticsData.summary.totalPurchaseOrders}
+                                  </StatNumber>
+                                  <StatHelpText>
+                                    {analyticsData.purchaseOrders.totalValue.toLocaleString()}{" "}
+                                    excl. VAT
+                                  </StatHelpText>
+                                </Stat>
+                                <Stat>
+                                  <StatLabel>
+                                    <HStack>
+                                      <Icon as={FiUsers} />
+                                      <Text>People Served</Text>
+                                    </HStack>
+                                  </StatLabel>
+                                  <StatNumber>
+                                    {analyticsData.summary.totalPeopleFed.toLocaleString()}
+                                  </StatNumber>
+                                  <StatHelpText>
+                                    {analyticsData.dispatches.costPerPerson.toFixed(
+                                      2,
+                                    )}{" "}
+                                    per person
+                                  </StatHelpText>
+                                </Stat>
+                                <Stat>
+                                  <StatLabel>
+                                    <HStack>
+                                      <Icon as={FiPercent} />
+                                      <Text>VAT Payable</Text>
+                                    </HStack>
+                                  </StatLabel>
+                                  <StatNumber
+                                    color={
+                                      analyticsData.summary.netVATLiability >= 0
+                                        ? "red.500"
+                                        : "green.500"
+                                    }
+                                  >
+                                    SZL{" "}
+                                    {Math.abs(
+                                      analyticsData.summary.netVATLiability,
+                                    ).toLocaleString()}
+                                  </StatNumber>
+                                  <StatHelpText>
+                                    {analyticsData.summary.netVATLiability >= 0
+                                      ? "Payable"
+                                      : "Refundable"}
+                                  </StatHelpText>
+                                </Stat>
+                                <Stat>
+                                  <StatLabel>
+                                    <HStack>
+                                      <Icon as={FiAlertTriangle} />
+                                      <Text>Low Stock</Text>
+                                    </HStack>
+                                  </StatLabel>
+                                  <StatNumber>
+                                    {analyticsData.summary.lowStockItems}
+                                  </StatNumber>
+                                  <StatHelpText>
+                                    {analyticsData.summary.criticalStockItems}{" "}
+                                    critical
+                                  </StatHelpText>
+                                </Stat>
+                              </SimpleGrid>
+                            </CardBody>
+                          </Card>
 
-                    {analyticsLoading ? (
-                      <Flex justify="center" align="center" py={10}>
-                        <VStack spacing={4}>
-                          <Spinner size="xl" />
-                          <Text>
-                            Loading analytics data with VAT calculations...
-                          </Text>
-                        </VStack>
-                      </Flex>
-                    ) : !analyticsData ? (
-                      <Alert status="info" borderRadius="md">
-                        <AlertIcon />
-                        No analytics data available. Click "Update Analytics" to
-                        load data with VAT calculations.
-                      </Alert>
-                    ) : (
-                      <>
-                        {/* Key Metrics Summary with VAT */}
-                        <Card>
-                          <CardBody>
-                            <Heading size="md" mb={6}>
-                              Key Performance Indicators
-                            </Heading>
-                            <SimpleGrid
-                              columns={{ base: 1, md: 2, lg: 4 }}
-                              spacing={6}
-                            >
-                              <Stat>
-                                <StatLabel>
-                                  <HStack>
-                                    <Icon as={FiShoppingCart} />
-                                    <Text>Purchase Orders</Text>
-                                  </HStack>
-                                </StatLabel>
-                                <StatNumber>
-                                  {analyticsData.summary.totalPurchaseOrders}
-                                </StatNumber>
-                                <StatHelpText>
-                                  {analyticsData.purchaseOrders.totalValue.toLocaleString()}{" "}
-                                  excl. VAT
-                                </StatHelpText>
-                              </Stat>
-                              <Stat>
-                                <StatLabel>
-                                  <HStack>
-                                    <Icon as={FiUsers} />
-                                    <Text>People Served</Text>
-                                  </HStack>
-                                </StatLabel>
-                                <StatNumber>
-                                  {analyticsData.summary.totalPeopleFed.toLocaleString()}
-                                </StatNumber>
-                                <StatHelpText>
-                                  {analyticsData.dispatches.costPerPerson.toFixed(
-                                    2,
-                                  )}{" "}
-                                  per person
-                                </StatHelpText>
-                              </Stat>
-                              <Stat>
-                                <StatLabel>
-                                  <HStack>
-                                    <Icon as={FiPercent} />
-                                    <Text>VAT Payable</Text>
-                                  </HStack>
-                                </StatLabel>
-                                <StatNumber
-                                  color={
-                                    analyticsData.summary.netVATLiability >= 0
-                                      ? "red.500"
-                                      : "green.500"
-                                  }
-                                >
-                                  SZL{" "}
-                                  {Math.abs(
-                                    analyticsData.summary.netVATLiability,
-                                  ).toLocaleString()}
-                                </StatNumber>
-                                <StatHelpText>
-                                  {analyticsData.summary.netVATLiability >= 0
-                                    ? "Payable"
-                                    : "Refundable"}
-                                </StatHelpText>
-                              </Stat>
-                              <Stat>
-                                <StatLabel>
-                                  <HStack>
-                                    <Icon as={FiAlertTriangle} />
-                                    <Text>Low Stock</Text>
-                                  </HStack>
-                                </StatLabel>
-                                <StatNumber>
-                                  {analyticsData.summary.lowStockItems}
-                                </StatNumber>
-                                <StatHelpText>
-                                  {analyticsData.summary.criticalStockItems}{" "}
-                                  critical
-                                </StatHelpText>
-                              </Stat>
-                            </SimpleGrid>
-                          </CardBody>
-                        </Card>
+                          {/* VAT Summary Card */}
+                          <Card borderLeft="4px" borderColor="blue.500">
+                            <CardBody>
+                              <Heading size="md" mb={4} color="blue.700">
+                                <HStack>
+                                  <Icon as={FiPercent} />
+                                  <Text>
+                                    VAT Summary (Eswatini{" "}
+                                    {VAT_CONFIG.ratePercentage}%)
+                                  </Text>
+                                </HStack>
+                              </Heading>
+                              <SimpleGrid
+                                columns={{ base: 1, md: 3 }}
+                                spacing={6}
+                              >
+                                <Stat>
+                                  <StatLabel>Output VAT (Sales)</StatLabel>
+                                  <StatNumber>
+                                    SZL{" "}
+                                    {analyticsData.vat.summary.totalOutputVAT.toLocaleString()}
+                                  </StatNumber>
+                                  <StatHelpText>
+                                    VAT collected on sales
+                                  </StatHelpText>
+                                </Stat>
+                                <Stat>
+                                  <StatLabel>Input VAT (Purchases)</StatLabel>
+                                  <StatNumber>
+                                    SZL{" "}
+                                    {analyticsData.vat.summary.totalInputVAT.toLocaleString()}
+                                  </StatNumber>
+                                  <StatHelpText>
+                                    VAT paid on purchases
+                                  </StatHelpText>
+                                </Stat>
+                                <Stat>
+                                  <StatLabel>Net VAT Payable</StatLabel>
+                                  <StatNumber
+                                    color={
+                                      analyticsData.vat.summary.netVATPayable >=
+                                      0
+                                        ? "red.500"
+                                        : "green.500"
+                                    }
+                                  >
+                                    SZL{" "}
+                                    {Math.abs(
+                                      analyticsData.vat.summary.netVATPayable,
+                                    ).toLocaleString()}
+                                  </StatNumber>
+                                  <StatHelpText>
+                                    {analyticsData.vat.summary.netVATPayable >=
+                                    0
+                                      ? "Amount due to tax authority"
+                                      : "Refund claimable"}
+                                  </StatHelpText>
+                                </Stat>
+                              </SimpleGrid>
+                            </CardBody>
+                          </Card>
 
-                        {/* VAT Summary Card */}
-                        <Card borderLeft="4px" borderColor="blue.500">
-                          <CardBody>
-                            <Heading size="md" mb={4} color="blue.700">
-                              <HStack>
-                                <Icon as={FiPercent} />
-                                <Text>
-                                  VAT Summary (Eswatini{" "}
-                                  {VAT_CONFIG.ratePercentage}%)
-                                </Text>
-                              </HStack>
-                            </Heading>
-                            <SimpleGrid
-                              columns={{ base: 1, md: 3 }}
-                              spacing={6}
-                            >
-                              <Stat>
-                                <StatLabel>Output VAT (Sales)</StatLabel>
-                                <StatNumber>
-                                  SZL{" "}
-                                  {analyticsData.vat.summary.totalOutputVAT.toLocaleString()}
-                                </StatNumber>
-                                <StatHelpText>
-                                  VAT collected on sales
-                                </StatHelpText>
-                              </Stat>
-                              <Stat>
-                                <StatLabel>Input VAT (Purchases)</StatLabel>
-                                <StatNumber>
-                                  SZL{" "}
-                                  {analyticsData.vat.summary.totalInputVAT.toLocaleString()}
-                                </StatNumber>
-                                <StatHelpText>
-                                  VAT paid on purchases
-                                </StatHelpText>
-                              </Stat>
-                              <Stat>
-                                <StatLabel>Net VAT Payable</StatLabel>
-                                <StatNumber
-                                  color={
-                                    analyticsData.vat.summary.netVATPayable >= 0
-                                      ? "red.500"
-                                      : "green.500"
-                                  }
-                                >
-                                  SZL{" "}
-                                  {Math.abs(
-                                    analyticsData.vat.summary.netVATPayable,
-                                  ).toLocaleString()}
-                                </StatNumber>
-                                <StatHelpText>
-                                  {analyticsData.vat.summary.netVATPayable >= 0
-                                    ? "Amount due to tax authority"
-                                    : "Refund claimable"}
-                                </StatHelpText>
-                              </Stat>
-                            </SimpleGrid>
-                          </CardBody>
-                        </Card>
-
-                        {/* Operational Overview */}
-                        <SimpleGrid columns={{ base: 1, lg: 2 }} spacing={6}>
-                          <StatusPieChart
-                            data={analyticsData.purchaseOrders?.byStatus || []}
-                            title="Purchase Orders by Status"
-                            colors={[
-                              CHART_COLORS.primary[0],
-                              CHART_COLORS.warning[0],
-                              CHART_COLORS.success[0],
-                              CHART_COLORS.error[0],
-                            ]}
-                            isLoading={analyticsLoading}
-                          />
-
-                          {/* For multi-site users: Show by Site chart */}
-                          {/* For single-site users: Show by Status chart (filtered) */}
-                          {userSiteInfo.canAccessMultipleSites ? (
-                            <BarChartComponent
-                              data={analyticsData.purchaseOrders?.bySite || []}
-                              title="Purchase Orders by Site"
-                              dataKey="value"
-                              isLoading={analyticsLoading}
-                            />
-                          ) : (
+                          {/* Operational Overview */}
+                          <SimpleGrid columns={{ base: 1, lg: 2 }} spacing={6}>
                             <StatusPieChart
                               data={
-                                analyticsData.purchaseOrders?.byStatus?.filter(
-                                  (status: any) => status.value > 0,
-                                ) || []
+                                analyticsData.purchaseOrders?.byStatus || []
                               }
-                              title="Purchase Orders by Status (Detailed)"
+                              title="Purchase Orders by Status"
                               colors={[
                                 CHART_COLORS.primary[0],
                                 CHART_COLORS.warning[0],
@@ -5000,302 +5171,339 @@ export default function ComprehensiveReportsPage() {
                               ]}
                               isLoading={analyticsLoading}
                             />
-                          )}
-                        </SimpleGrid>
 
-                        {/* Dispatch & Inventory Analytics */}
-                        <SimpleGrid columns={{ base: 1, lg: 2 }} spacing={6}>
-                          <StatusPieChart
-                            data={analyticsData.dispatches?.byType || []}
-                            title="Dispatches by Type"
-                            colors={CHART_COLORS.success}
-                            isLoading={analyticsLoading}
-                          />
-                          <StatusPieChart
-                            data={analyticsData.inventory?.byCategory || []}
-                            title="Inventory by Category"
-                            colors={CHART_COLORS.purple}
-                            isLoading={analyticsLoading}
-                          />
-                        </SimpleGrid>
+                            {/* For multi-site users: Show by Site chart */}
+                            {/* For single-site users: Show by Status chart (filtered) */}
+                            {userSiteInfo.canAccessMultipleSites ? (
+                              <BarChartComponent
+                                data={
+                                  analyticsData.purchaseOrders?.bySite || []
+                                }
+                                title="Purchase Orders by Site"
+                                dataKey="value"
+                                isLoading={analyticsLoading}
+                              />
+                            ) : (
+                              <StatusPieChart
+                                data={
+                                  analyticsData.purchaseOrders?.byStatus?.filter(
+                                    (status: any) => status.value > 0,
+                                  ) || []
+                                }
+                                title="Purchase Orders by Status (Detailed)"
+                                colors={[
+                                  CHART_COLORS.primary[0],
+                                  CHART_COLORS.warning[0],
+                                  CHART_COLORS.success[0],
+                                  CHART_COLORS.error[0],
+                                ]}
+                                isLoading={analyticsLoading}
+                              />
+                            )}
+                          </SimpleGrid>
 
-                        {/* Financial Metrics - PERIOD-BASED CALCULATIONS WITH VAT */}
-                        <Card>
-                          <CardBody>
-                            <Heading size="md" mb={4}>
-                              Financial Performance (With VAT Accounting)
-                            </Heading>
+                          {/* Dispatch & Inventory Analytics */}
+                          <SimpleGrid columns={{ base: 1, lg: 2 }} spacing={6}>
+                            <StatusPieChart
+                              data={analyticsData.dispatches?.byType || []}
+                              title="Dispatches by Type"
+                              colors={CHART_COLORS.success}
+                              isLoading={analyticsLoading}
+                            />
+                            <StatusPieChart
+                              data={analyticsData.inventory?.byCategory || []}
+                              title="Inventory by Category"
+                              colors={CHART_COLORS.purple}
+                              isLoading={analyticsLoading}
+                            />
+                          </SimpleGrid>
 
-                            {/* Success message when we have accurate data */}
-                            <Alert status="success" mb={4} fontSize="sm">
-                              <AlertIcon />
-                              <Box>
-                                <Text fontWeight="bold">
-                                  Accurate period accounting with VAT enabled
-                                </Text>
-                                <Text>
-                                  Eswatini VAT rate of{" "}
-                                  {VAT_CONFIG.ratePercentage}% applied to all
-                                  transactions
-                                </Text>
-                              </Box>
-                            </Alert>
-
-                            <SimpleGrid
-                              columns={{ base: 1, md: 2, lg: 4 }}
-                              spacing={6}
-                            >
-                              <Stat>
-                                <StatLabel>Opening Stock</StatLabel>
-                                <StatNumber>
-                                  SZL{" "}
-                                  {analyticsData?.financial?.openingStock?.toLocaleString() ||
-                                    "0"}
-                                </StatNumber>
-                                <StatHelpText>
-                                  As of{" "}
-                                  {format(
-                                    new Date(primaryDateRange.start),
-                                    "MMM dd, yyyy",
-                                  )}
-                                </StatHelpText>
-                              </Stat>
-                              <Stat>
-                                <StatLabel>Goods Received</StatLabel>
-                                <StatNumber>
-                                  SZL{" "}
-                                  {analyticsData?.financial?.periodPurchases?.toLocaleString() ||
-                                    "0"}
-                                </StatNumber>
-                                <StatHelpText>
-                                  {analyticsData?.summary.totalGoodsReceipts}{" "}
-                                  receipts
-                                </StatHelpText>
-                              </Stat>
-                              <Stat>
-                                <StatLabel>Dispatch Consumption</StatLabel>
-                                <StatNumber>
-                                  SZL{" "}
-                                  {analyticsData?.financial?.periodConsumption?.toLocaleString() ||
-                                    "0"}
-                                </StatNumber>
-                                <StatHelpText>
-                                  {analyticsData?.summary.totalDispatches}{" "}
-                                  dispatches
-                                </StatHelpText>
-                              </Stat>
-                              <Stat>
-                                <StatLabel>Stock Variances</StatLabel>
-                                <StatNumber>
-                                  SZL{" "}
-                                  {analyticsData?.financial?.netVariances?.toLocaleString() ||
-                                    "0"}
-                                </StatNumber>
-                                <StatHelpText>
-                                  {analyticsData?.summary.totalBinCounts} counts
-                                </StatHelpText>
-                              </Stat>
-                              <Stat>
-                                <StatLabel>Closing Stock</StatLabel>
-                                <StatNumber>
-                                  SZL{" "}
-                                  {analyticsData?.financial?.closingStockValue?.toLocaleString() ||
-                                    "0"}
-                                </StatNumber>
-                                <StatHelpText>Calculated value</StatHelpText>
-                              </Stat>
-                              <Stat>
-                                <StatLabel>Cost of Goods Sold (COGS)</StatLabel>
-                                <StatNumber>
-                                  SZL{" "}
-                                  {analyticsData?.financial?.periodConsumption?.toLocaleString() ||
-                                    "0"}
-                                </StatNumber>
-                                <StatHelpText>Actual consumption</StatHelpText>
-                              </Stat>
-                              <Stat>
-                                <StatLabel>Period Sales</StatLabel>
-                                <StatNumber>
-                                  SZL{" "}
-                                  {analyticsData?.financial?.periodSales?.toLocaleString() ||
-                                    "0"}
-                                </StatNumber>
-                                <StatHelpText>
-                                  {analyticsData?.summary.totalPeopleFed?.toLocaleString()}{" "}
-                                  people fed
-                                </StatHelpText>
-                              </Stat>
-                              <Stat>
-                                <StatLabel>VAT Payable</StatLabel>
-                                <StatNumber
-                                  color={
-                                    analyticsData?.financial?.netVATPayable >= 0
-                                      ? "red.500"
-                                      : "green.500"
-                                  }
-                                >
-                                  SZL{" "}
-                                  {Math.abs(
-                                    analyticsData?.financial?.netVATPayable ||
-                                      0,
-                                  ).toLocaleString()}
-                                </StatNumber>
-                                <StatHelpText>
-                                  {analyticsData?.financial?.netVATPayable >= 0
-                                    ? "Due"
-                                    : "Refund"}
-                                </StatHelpText>
-                              </Stat>
-                              <Stat>
-                                <StatLabel>Gross Profit</StatLabel>
-                                <StatNumber
-                                  color={
-                                    analyticsData?.financial
-                                      ?.grossProfitAfterVAT >= 0
-                                      ? "green.500"
-                                      : "red.500"
-                                  }
-                                >
-                                  SZL{" "}
-                                  {analyticsData?.financial?.grossProfitAfterVAT?.toLocaleString() ||
-                                    "0"}
-                                </StatNumber>
-                                <StatHelpText>
-                                  {analyticsData?.financial?.profitPercentage?.toFixed(
-                                    1,
-                                  ) || "0"}
-                                  % margin
-                                </StatHelpText>
-                              </Stat>
-                            </SimpleGrid>
-
-                            {/* Add calculation explanation with VAT */}
-                            <Box
-                              mt={4}
-                              p={3}
-                              borderRadius="md"
-                              border="1px"
-                              borderColor={CHART_COLORS.primary[0]}
-                              bg={"transparent"}
-                            >
-                              <Text fontSize="sm" fontWeight="medium">
-                                Calculation Method (With VAT):
-                              </Text>
-                              <Text fontSize="sm">
-                                • Opening Stock: Reconstructed from transaction
-                                history
-                              </Text>
-                              <Text fontSize="sm">
-                                • Goods Received: Actual receipts in period (SZL{" "}
-                                {analyticsData?.financial?.periodPurchases?.toLocaleString()}
-                                )
-                              </Text>
-                              <Text fontSize="sm">
-                                • Closing Stock: Calculated value (SZL{" "}
-                                {analyticsData?.financial?.closingStockValue?.toLocaleString()}
-                                )
-                              </Text>
-                              <Text fontSize="sm">
-                                • COGS: Actual consumption (dispatched items
-                                cost)
-                              </Text>
-                              <Text fontSize="sm">
-                                • Gross Profit Before VAT: Sales - COGS
-                              </Text>
-                              <Text fontSize="sm">
-                                • Gross Profit After VAT: Gross Profit Before
-                                VAT - Net VAT Payable
-                              </Text>
-                              <Text fontSize="sm">
-                                • VAT Rate: {VAT_CONFIG.ratePercentage}%
-                                (Eswatini Standard Rate)
-                              </Text>
-                            </Box>
-                          </CardBody>
-                        </Card>
-
-                        {/* Supplier Performance - Filter by site */}
-                        {analyticsData.suppliers.performance.length > 0 && (
+                          {/* Financial Metrics - PERIOD-BASED CALCULATIONS WITH VAT */}
                           <Card>
                             <CardBody>
-                              <Heading size="sm" mb={4}>
-                                Top Suppliers
-                                {!userSiteInfo.canAccessMultipleSites &&
-                                  userSiteInfo.userSiteName && (
-                                    <Badge ml={2} colorScheme="green">
-                                      {userSiteInfo.userSiteName}
-                                    </Badge>
-                                  )}
-                                {selectedFilterSite && (
-                                  <Badge ml={2} colorScheme="purple">
-                                    Filtered:{" "}
-                                    {
-                                      availableSites.find(
-                                        (s) => s._id === selectedFilterSite,
-                                      )?.name
-                                    }
-                                  </Badge>
-                                )}
+                              <Heading size="md" mb={4}>
+                                Financial Performance (With VAT Accounting)
                               </Heading>
-                              <TableContainer>
-                                <Table variant="simple">
-                                  <Thead>
-                                    <Tr>
-                                      <Th>Supplier</Th>
-                                      <Th isNumeric>Orders</Th>
-                                      <Th isNumeric>Total Value</Th>
-                                      <Th isNumeric>VAT Amount</Th>
-                                    </Tr>
-                                  </Thead>
-                                  <Tbody>
-                                    {analyticsData.suppliers.performance
-                                      .slice(0, 5)
-                                      .map((supplier, index) => (
-                                        <Tr key={supplier.name}>
-                                          <Td>{supplier.name}</Td>
-                                          <Td isNumeric>{supplier.orders}</Td>
-                                          <Td isNumeric>
-                                            SZL{" "}
-                                            {supplier.value.toLocaleString()}
-                                          </Td>
-                                          <Td isNumeric>
-                                            SZL{" "}
-                                            {supplier.vatAmount.toLocaleString()}
-                                          </Td>
-                                        </Tr>
-                                      ))}
-                                  </Tbody>
-                                </Table>
-                              </TableContainer>
+
+                              {/* Success message when we have accurate data */}
+                              <Alert status="success" mb={4} fontSize="sm">
+                                <AlertIcon />
+                                <Box>
+                                  <Text fontWeight="bold">
+                                    Accurate period accounting with VAT enabled
+                                  </Text>
+                                  <Text>
+                                    Eswatini VAT rate of{" "}
+                                    {VAT_CONFIG.ratePercentage}% applied to all
+                                    transactions
+                                  </Text>
+                                </Box>
+                              </Alert>
+
+                              <SimpleGrid
+                                columns={{ base: 1, md: 2, lg: 4 }}
+                                spacing={6}
+                              >
+                                <Stat>
+                                  <StatLabel>Opening Stock</StatLabel>
+                                  <StatNumber>
+                                    SZL{" "}
+                                    {analyticsData?.financial?.openingStock?.toLocaleString() ||
+                                      "0"}
+                                  </StatNumber>
+                                  <StatHelpText>
+                                    As of{" "}
+                                    {format(
+                                      new Date(primaryDateRange.start),
+                                      "MMM dd, yyyy",
+                                    )}
+                                  </StatHelpText>
+                                </Stat>
+                                <Stat>
+                                  <StatLabel>Goods Received</StatLabel>
+                                  <StatNumber>
+                                    SZL{" "}
+                                    {analyticsData?.financial?.periodPurchases?.toLocaleString() ||
+                                      "0"}
+                                  </StatNumber>
+                                  <StatHelpText>
+                                    {analyticsData?.summary.totalGoodsReceipts}{" "}
+                                    receipts
+                                  </StatHelpText>
+                                </Stat>
+                                <Stat>
+                                  <StatLabel>Dispatch Consumption</StatLabel>
+                                  <StatNumber>
+                                    SZL{" "}
+                                    {analyticsData?.financial?.periodConsumption?.toLocaleString() ||
+                                      "0"}
+                                  </StatNumber>
+                                  <StatHelpText>
+                                    {analyticsData?.summary.totalDispatches}{" "}
+                                    dispatches
+                                  </StatHelpText>
+                                </Stat>
+                                <Stat>
+                                  <StatLabel>Stock Variances</StatLabel>
+                                  <StatNumber>
+                                    SZL{" "}
+                                    {analyticsData?.financial?.netVariances?.toLocaleString() ||
+                                      "0"}
+                                  </StatNumber>
+                                  <StatHelpText>
+                                    {analyticsData?.summary.totalBinCounts}{" "}
+                                    counts
+                                  </StatHelpText>
+                                </Stat>
+                                <Stat>
+                                  <StatLabel>Closing Stock</StatLabel>
+                                  <StatNumber>
+                                    SZL{" "}
+                                    {analyticsData?.financial?.closingStockValue?.toLocaleString() ||
+                                      "0"}
+                                  </StatNumber>
+                                  <StatHelpText>Calculated value</StatHelpText>
+                                </Stat>
+                                <Stat>
+                                  <StatLabel>
+                                    Cost of Goods Sold (COGS)
+                                  </StatLabel>
+                                  <StatNumber>
+                                    SZL{" "}
+                                    {analyticsData?.financial?.periodConsumption?.toLocaleString() ||
+                                      "0"}
+                                  </StatNumber>
+                                  <StatHelpText>
+                                    Actual consumption
+                                  </StatHelpText>
+                                </Stat>
+                                <Stat>
+                                  <StatLabel>Period Sales</StatLabel>
+                                  <StatNumber>
+                                    SZL{" "}
+                                    {analyticsData?.financial?.periodSales?.toLocaleString() ||
+                                      "0"}
+                                  </StatNumber>
+                                  <StatHelpText>
+                                    {analyticsData?.summary.totalPeopleFed?.toLocaleString()}{" "}
+                                    people fed
+                                  </StatHelpText>
+                                </Stat>
+                                <Stat>
+                                  <StatLabel>VAT Payable</StatLabel>
+                                  <StatNumber
+                                    color={
+                                      analyticsData?.financial?.netVATPayable >=
+                                      0
+                                        ? "red.500"
+                                        : "green.500"
+                                    }
+                                  >
+                                    SZL{" "}
+                                    {Math.abs(
+                                      analyticsData?.financial?.netVATPayable ||
+                                        0,
+                                    ).toLocaleString()}
+                                  </StatNumber>
+                                  <StatHelpText>
+                                    {analyticsData?.financial?.netVATPayable >=
+                                    0
+                                      ? "Due"
+                                      : "Refund"}
+                                  </StatHelpText>
+                                </Stat>
+                                <Stat>
+                                  <StatLabel>Gross Profit</StatLabel>
+                                  <StatNumber
+                                    color={
+                                      analyticsData?.financial
+                                        ?.grossProfitAfterVAT >= 0
+                                        ? "green.500"
+                                        : "red.500"
+                                    }
+                                  >
+                                    SZL{" "}
+                                    {analyticsData?.financial?.grossProfitAfterVAT?.toLocaleString() ||
+                                      "0"}
+                                  </StatNumber>
+                                  <StatHelpText>
+                                    {analyticsData?.financial?.profitPercentage?.toFixed(
+                                      1,
+                                    ) || "0"}
+                                    % margin
+                                  </StatHelpText>
+                                </Stat>
+                              </SimpleGrid>
+
+                              {/* Add calculation explanation with VAT */}
+                              <Box
+                                mt={4}
+                                p={3}
+                                borderRadius="md"
+                                border="1px"
+                                borderColor={CHART_COLORS.primary[0]}
+                                bg={"transparent"}
+                              >
+                                <Text fontSize="sm" fontWeight="medium">
+                                  Calculation Method (With VAT):
+                                </Text>
+                                <Text fontSize="sm">
+                                  • Opening Stock: Reconstructed from
+                                  transaction history
+                                </Text>
+                                <Text fontSize="sm">
+                                  • Goods Received: Actual receipts in period
+                                  (SZL{" "}
+                                  {analyticsData?.financial?.periodPurchases?.toLocaleString()}
+                                  )
+                                </Text>
+                                <Text fontSize="sm">
+                                  • Closing Stock: Calculated value (SZL{" "}
+                                  {analyticsData?.financial?.closingStockValue?.toLocaleString()}
+                                  )
+                                </Text>
+                                <Text fontSize="sm">
+                                  • COGS: Actual consumption (dispatched items
+                                  cost)
+                                </Text>
+                                <Text fontSize="sm">
+                                  • Gross Profit Before VAT: Sales - COGS
+                                </Text>
+                                <Text fontSize="sm">
+                                  • Gross Profit After VAT: Gross Profit Before
+                                  VAT - Net VAT Payable
+                                </Text>
+                                <Text fontSize="sm">
+                                  • VAT Rate: {VAT_CONFIG.ratePercentage}%
+                                  (Eswatini Standard Rate)
+                                </Text>
+                              </Box>
                             </CardBody>
                           </Card>
-                        )}
-                      </>
-                    )}
-                  </VStack>
-                </TabPanel>
 
-                {/* Visual Analytics Tab */}
-                <TabPanel>
-                  <VisualAnalyticsTab
-                    analyticsData={analyticsData}
-                    loading={analyticsLoading}
-                  />
-                </TabPanel>
+                          {/* Supplier Performance - Filter by site */}
+                          {analyticsData.suppliers.performance.length > 0 && (
+                            <Card>
+                              <CardBody>
+                                <Heading size="sm" mb={4}>
+                                  Top Suppliers
+                                  {!userSiteInfo.canAccessMultipleSites &&
+                                    userSiteInfo.userSiteName && (
+                                      <Badge ml={2} colorScheme="green">
+                                        {userSiteInfo.userSiteName}
+                                      </Badge>
+                                    )}
+                                  {selectedFilterSite && (
+                                    <Badge ml={2} colorScheme="purple">
+                                      Filtered:{" "}
+                                      {
+                                        availableSites.find(
+                                          (s) => s._id === selectedFilterSite,
+                                        )?.name
+                                      }
+                                    </Badge>
+                                  )}
+                                </Heading>
+                                <TableContainer>
+                                  <Table variant="simple">
+                                    <Thead>
+                                      <Tr>
+                                        <Th>Supplier</Th>
+                                        <Th isNumeric>Orders</Th>
+                                        <Th isNumeric>Total Value</Th>
+                                        <Th isNumeric>VAT Amount</Th>
+                                      </Tr>
+                                    </Thead>
+                                    <Tbody>
+                                      {analyticsData.suppliers.performance
+                                        .slice(0, 5)
+                                        .map((supplier, index) => (
+                                          <Tr key={supplier.name}>
+                                            <Td>{supplier.name}</Td>
+                                            <Td isNumeric>{supplier.orders}</Td>
+                                            <Td isNumeric>
+                                              SZL{" "}
+                                              {supplier.value.toLocaleString()}
+                                            </Td>
+                                            <Td isNumeric>
+                                              SZL{" "}
+                                              {supplier.vatAmount.toLocaleString()}
+                                            </Td>
+                                          </Tr>
+                                        ))}
+                                    </Tbody>
+                                  </Table>
+                                </TableContainer>
+                              </CardBody>
+                            </Card>
+                          )}
+                        </>
+                      )}
+                    </VStack>
+                  </TabPanel>
 
-                {/* Data Export Tab */}
-                <TabPanel>
-                  <DataExportTab
-                    exportToExcel={exportToExcel}
-                    loading={exportLoading}
-                    dataAvailable={!!analyticsData}
-                  />
-                </TabPanel>
-              </TabPanels>
-            </Tabs>
-          </CardBody>
-        </Card>
-      </VStack>
+                  {/* Visual Analytics Tab */}
+                  <TabPanel>
+                    <VisualAnalyticsTab
+                      analyticsData={analyticsData}
+                      loading={analyticsLoading}
+                    />
+                  </TabPanel>
+
+                  {/* Data Export Tab */}
+                  <TabPanel>
+                    <DataExportTab
+                      exportToExcel={exportToExcel}
+                      loading={exportLoading}
+                      dataAvailable={!!analyticsData}
+                    />
+                  </TabPanel>
+                </TabPanels>
+              </Tabs>
+            </CardBody>
+          </Card>
+        </VStack>
+      </Box>
     </Box>
   );
 }
