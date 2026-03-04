@@ -36,7 +36,7 @@ export async function logSanityInteraction(
     };
 
     // Use writeClient directly instead of client.withConfig()
-    await writeClient.create(logDocument);
+    //await writeClient.create(logDocument);
     appLogger.info(`SanityLogger: Logged interaction: ${operationType} - ${message}`);
   } catch (error: any) {
     appLogger.error('SanityLogger: Failed to log interaction to Sanity:', {
