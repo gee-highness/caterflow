@@ -1356,6 +1356,9 @@ export default function ComprehensiveReportsPage() {
   // SIMPLIFIED opening stock calculation - using current stock as fallback
   // CORRECTED: Use the same calculation as other pages
   // Replace the existing calculateOpeningStockForDate function with this CORRECTED version:
+  // ============================================
+  // REPLACE THIS ENTIRE FUNCTION (lines ~1359-1524)
+  // ============================================
   const calculateOpeningStockForDate = useCallback(
     async (
       targetDate: Date,
@@ -1368,107 +1371,33 @@ export default function ComprehensiveReportsPage() {
           targetDate.toISOString().split("T")[0],
         );
 
-        // 1. FIRST: Get ACTUAL current stock value using the SAME method as current stock page
-        console.log("📊 Fetching current stock using current page logic...");
-        let currentStockValue = 0;
-
-        try {
-          // REPLICATE THE EXACT LOGIC FROM CURRENT STOCK PAGE:
-          // Step 1: Fetch all stock items
-          const stockItemsResponse = await fetch("/api/stock-items");
-          if (!stockItemsResponse.ok) {
-            throw new Error("Failed to fetch stock items");
-          }
-          const stockItems = await stockItemsResponse.json();
-          console.log("✅ Stock items fetched:", stockItems.length, "items");
-
-          if (stockItems.length === 0) {
-            console.log("⚠️ No stock items found");
-            return 0;
-          }
-
-          // Step 2: Fetch all bins (no site filtering for reports)
-          const binsResponse = await fetch("/api/bins");
-          if (!binsResponse.ok) {
-            throw new Error("Failed to fetch bins");
-          }
-          const bins = await binsResponse.json();
-          const binIds = bins.map((bin: any) => bin._id);
-          console.log("✅ Bins fetched:", bins.length, "bins");
-
-          if (binIds.length === 0) {
-            console.log("⚠️ No bins found");
-            return 0;
-          }
-
-          // Step 3: Get all stock item IDs
-          const stockItemIds = stockItems.map((item: any) => item._id);
-          console.log(
-            "🔢 Calculating stock for",
-            stockItemIds.length,
-            "items across",
-            binIds.length,
-            "bins",
-          );
-
-          // Step 4: Calculate current stock for all items in all bins
-          const stockResults = await calculateBulkStock(stockItemIds, binIds);
-
-          console.log(
-            "✅ Bulk stock calculation complete. Results:",
-            Object.keys(stockResults).length,
-            "item-bin pairs",
-          );
-
-          // Step 5: Calculate TOTAL current stock value (sum of all item quantities × unit prices)
-          // Process results to get total value
-          stockItems.forEach((item: any) => {
-            let totalQuantityForItem = 0;
-            binIds.forEach((binId: string) => {
-              const key = `${item._id}-${binId}`;
-              totalQuantityForItem += stockResults[key] || 0;
-            });
-
-            const unitPrice = item.unitPrice || 0;
-            currentStockValue += totalQuantityForItem * unitPrice;
-          });
-
-          console.log(
-            "📊 CALCULATED Total current stock value:",
-            currentStockValue,
-          );
-        } catch (error) {
-          console.error("❌ Failed to fetch/calculate current stock:", error);
-          return 0;
-        }
-
-        // 2. Filter transactions AFTER target date (not before!)
-        const receiptsAfterDate = allGoodsReceipts.filter((gr) => {
+        // CORRECT: Filter transactions BEFORE or ON the target date
+        const receiptsBeforeDate = allGoodsReceipts.filter((gr) => {
           try {
             const receiptDate = new Date(gr.receiptDate);
-            return receiptDate > targetDate; // > NOT <
+            return receiptDate <= targetDate;
           } catch {
             return false;
           }
         });
 
-        const dispatchesAfterDate = allDispatches.filter((d) => {
+        const dispatchesBeforeDate = allDispatches.filter((d) => {
           try {
             const dispatchDate = new Date(d.dispatchDate);
-            return dispatchDate > targetDate; // > NOT <
+            return dispatchDate <= targetDate;
           } catch {
             return false;
           }
         });
 
         console.log(
-          `📦 Transactions AFTER ${targetDate.toISOString().split("T")[0]}:`,
+          `📦 Transactions BEFORE ${targetDate.toISOString().split("T")[0]}:`,
         );
-        console.log(`  - Receipts AFTER: ${receiptsAfterDate.length}`);
-        console.log(`  - Dispatches AFTER: ${dispatchesAfterDate.length}`);
+        console.log(`  - Receipts BEFORE: ${receiptsBeforeDate.length}`);
+        console.log(`  - Dispatches BEFORE: ${dispatchesBeforeDate.length}`);
 
-        // 3. Calculate values of transactions AFTER target date
-        const receiptsValueAfter = receiptsAfterDate.reduce(
+        // Calculate values of transactions BEFORE target date
+        const receiptsValueBefore = receiptsBeforeDate.reduce(
           (sum: number, gr: any) => {
             return (
               sum +
@@ -1483,7 +1412,7 @@ export default function ComprehensiveReportsPage() {
           0,
         );
 
-        const dispatchesValueAfter = dispatchesAfterDate.reduce(
+        const dispatchesValueBefore = dispatchesBeforeDate.reduce(
           (sum: number, d: any) => {
             return (
               sum +
@@ -1498,19 +1427,17 @@ export default function ComprehensiveReportsPage() {
           0,
         );
 
-        console.log("💰 Transaction values AFTER date:", {
-          receiptsValueAfter,
-          dispatchesValueAfter,
+        console.log("💰 Transaction values BEFORE date:", {
+          receiptsValueBefore,
+          dispatchesValueBefore,
         });
 
-        // 4. CORRECT FORMULA: Opening Stock = Current Stock - Receipts(after) + Dispatches(after)
-        const openingStock =
-          currentStockValue - receiptsValueAfter + dispatchesValueAfter;
+        // CORRECT FORMULA: Opening Stock = Receipts before - Dispatches before
+        const openingStock = receiptsValueBefore - dispatchesValueBefore;
 
         console.log("✅ FINAL Opening stock calculation:", {
-          actualCurrentStock: currentStockValue,
-          receiptsAfterValue: receiptsValueAfter,
-          dispatchesAfterValue: dispatchesValueAfter,
+          receiptsBeforeValue: receiptsValueBefore,
+          dispatchesBeforeValue: dispatchesValueBefore,
           openingStock,
         });
 
@@ -1524,10 +1451,16 @@ export default function ComprehensiveReportsPage() {
   );
 
   // UPDATED processAnalyticsData function with VAT calculations - CORRECTED VERSION
+  // ============================================
+  // REPLACE THIS ENTIRE FUNCTION (lines ~1527-2328)
+  // ============================================
   const processAnalyticsData = useCallback(
     async (
       data: any,
       dateRange: { start: Date; end: Date },
+      // NEW PARAMETERS - pass in pre-filtered transactions
+      filteredGoodsReceipts?: any[],
+      filteredDispatches?: any[],
     ): Promise<EnhancedAnalyticsData> => {
       try {
         // Validate data
@@ -1555,76 +1488,31 @@ export default function ComprehensiveReportsPage() {
 
         // Filter data by date range for period-based calculations
         const periodPOs = filterDataByDateRange(purchaseOrders, "orderDate");
+
+        // USE FILTERED DATA IF PROVIDED, OTHERWISE USE RAW DATA
         const periodGoodsReceipts = filterDataByDateRange(
-          goodsReceipts,
+          filteredGoodsReceipts || goodsReceipts,
           "receiptDate",
         );
         const periodDispatches = filterDataByDateRange(
-          dispatches,
+          filteredDispatches || dispatches,
           "dispatchDate",
         );
         const periodBinCounts = filterDataByDateRange(binCounts, "countDate");
 
-        // CORRECTED FINANCIAL CALCULATIONS - USING SAME METHOD AS OTHER PAGES
-        // 1. Calculate opening stock using the SAME function as current stock page
+        // CORRECTED FINANCIAL CALCULATIONS - USING TRANSACTION HISTORY
+        // 1. Calculate opening stock using filtered transactions
         setCalculatingOpeningStock(true);
 
-        // Get all stock items for opening stock calculation
-        const allStockItems = await fetch("/api/stock-items").then((res) =>
-          res.json(),
-        );
         const openingStockValue = await calculateOpeningStockForDate(
           dateRange.start,
-          goodsReceipts,
-          dispatches,
+          filteredGoodsReceipts || goodsReceipts,
+          filteredDispatches || dispatches,
         );
-
-        // 2. Calculate current stock using the SAME function as current stock page
-        // Get current stock value using the SAME method as current stock page
-        let currentStockValue = 0;
-        try {
-          // Replicate the exact logic from above
-          const stockItemsResponse = await fetch("/api/stock-items");
-          const stockItems = await stockItemsResponse.json();
-
-          const binsResponse = await fetch("/api/bins");
-          const bins = await binsResponse.json();
-          const binIds = bins.map((bin: any) => bin._id);
-
-          const stockItemIds = stockItems.map((item: any) => item._id);
-          const stockResults = await calculateBulkStock(stockItemIds, binIds);
-
-          // Calculate total value
-          stockItems.forEach((item: any) => {
-            let totalQuantityForItem = 0;
-            binIds.forEach((binId: string) => {
-              const key = `${item._id}-${binId}`;
-              totalQuantityForItem += stockResults[key] || 0;
-            });
-
-            const unitPrice = item.unitPrice || 0;
-            currentStockValue += totalQuantityForItem * unitPrice;
-          });
-
-          console.log("📊 TODAY Current stock value:", currentStockValue);
-        } catch (error) {
-          console.error("Failed to fetch current stock:", error);
-        }
 
         setCalculatingOpeningStock(false);
 
-        console.log("📊 Stock calculations for period:", {
-          openingDate: dateRange.start.toDateString(),
-          openingStock: openingStockValue,
-          currentStock: currentStockValue,
-          periodLength:
-            Math.ceil(
-              (dateRange.end.getTime() - dateRange.start.getTime()) /
-                (1000 * 60 * 60 * 24),
-            ) + " days",
-        });
-
-        // 3. PERIOD PURCHASES = Goods receipts in the period
+        // 2. PERIOD PURCHASES = Goods receipts in the period
         const periodPurchasesExclVAT = periodGoodsReceipts.reduce(
           (sum: number, gr: any) => {
             const receiptValue =
@@ -1639,7 +1527,7 @@ export default function ComprehensiveReportsPage() {
           0,
         );
 
-        // 4. PERIOD CONSUMPTION = Dispatch costs in the period
+        // 3. PERIOD CONSUMPTION = Dispatch costs in the period
         const periodConsumptionExclVAT = periodDispatches.reduce(
           (sum: number, d: any) => {
             const dispatchCost =
@@ -1653,10 +1541,7 @@ export default function ComprehensiveReportsPage() {
           0,
         );
 
-        // 5. CLOSING STOCK CALCULATION (using the same method as current stock page)
-        // This is already calculated as currentStockValue above
-
-        // 6. SALES = People fed × selling price
+        // 4. SALES = People fed × selling price
         const periodSalesExclVAT = periodDispatches.reduce(
           (sum: number, d: any) => {
             const sellingPriceExclVAT =
@@ -1667,7 +1552,7 @@ export default function ComprehensiveReportsPage() {
           0,
         );
 
-        // 7. VAT calculations
+        // 5. VAT calculations
         const vatOnPurchases = periodGoodsReceipts.reduce(
           (sum: number, gr: any) => sum + (gr.vatAmount || 0),
           0,
@@ -1676,11 +1561,11 @@ export default function ComprehensiveReportsPage() {
         const vatOnSales = periodSalesExclVAT * VAT_CONFIG.rate;
         const netVATPayable = vatOnSales - vatOnPurchases;
 
-        // 8. PROFIT CALCULATIONS - ADD MISSING VARIABLES
+        // 6. PROFIT CALCULATIONS
         const COGS = periodConsumptionExclVAT;
         const grossProfitBeforeVAT = periodSalesExclVAT - COGS;
 
-        // Calculate net variances from bin counts
+        // 7. Calculate net variances from bin counts
         const netVariancesValue = periodBinCounts.reduce(
           (sum: number, count: any) =>
             sum +
@@ -1692,74 +1577,30 @@ export default function ComprehensiveReportsPage() {
           0,
         );
 
-        // Calculate closing stock value
+        // 8. Calculate closing stock value
         const closingStockValue =
           openingStockValue +
           periodPurchasesExclVAT -
           periodConsumptionExclVAT +
           netVariancesValue;
 
-        // Calculate net profit (gross profit after VAT)
+        // 9. Calculate net profit (gross profit after VAT)
         const netProfit = grossProfitBeforeVAT - netVATPayable;
         const profitPercentage =
           periodSalesExclVAT > 0 ? (netProfit / periodSalesExclVAT) * 100 : 0;
 
-        console.log(
-          "💰 FINAL Financial calculations (consistent with other pages):",
-          {
-            openingStockValue,
-            periodPurchasesExclVAT,
-            periodConsumptionExclVAT,
-            currentStockValue,
-            periodSalesExclVAT,
-            vatOnPurchases,
-            vatOnSales,
-            netVATPayable,
-            grossProfitBeforeVAT,
-            profitPercentage: profitPercentage.toFixed(1) + "%",
-          },
-        );
-        // In processAnalyticsData function, add validation:
-        console.log("🔍 VALIDATING Financial Calculations:", {
-          dispatchesCount: periodDispatches.length,
-          totalDispatchedItems: periodDispatches.reduce(
-            (sum, d) => sum + (d.dispatchedItems?.length || 0),
-            0,
-          ),
-          totalDispatchedCost: periodDispatches.reduce(
-            (sum, d) => sum + (d.totalCost || 0),
-            0,
-          ),
-          totalPeopleFed: periodDispatches.reduce(
-            (sum, d) => sum + (d.peopleFed || 0),
-            0,
-          ),
-          avgSellingPrice:
-            periodDispatches[0]?.dispatchType?.sellingPrice ||
-            periodDispatches[0]?.sellingPrice,
+        console.log("💰 FINAL Financial calculations:", {
+          openingStockValue,
+          periodPurchasesExclVAT,
+          periodConsumptionExclVAT,
+          periodSalesExclVAT,
+          vatOnPurchases,
+          vatOnSales,
+          netVATPayable,
+          grossProfitBeforeVAT,
+          profitPercentage: profitPercentage.toFixed(1) + "%",
+          closingStockValue,
         });
-
-        // Validate consumption calculation
-        const validatedConsumption = periodDispatches.reduce(
-          (sum: number, d: any) => {
-            const dispatchCost =
-              d.dispatchedItems?.reduce((itemSum: number, item: any) => {
-                // Make sure we're using actual cost, not calculated
-                return (
-                  itemSum +
-                  (item.totalCost ||
-                    (item.dispatchedQuantity || 0) * (item.unitPrice || 0))
-                );
-              }, 0) || 0;
-            console.log(
-              `📊 Dispatch ${d.dispatchNumber}: Cost = ${dispatchCost}, Items = ${d.dispatchedItems?.length}`,
-            );
-            return sum + dispatchCost;
-          },
-          0,
-        );
-
-        console.log("✅ Validated Consumption:", validatedConsumption);
 
         // Helper functions
         const getStatusBreakdown = (items: any[]) => {
@@ -1774,51 +1615,37 @@ export default function ComprehensiveReportsPage() {
           }));
         };
 
-        // Replace the existing getSiteBreakdown function with this:
         const getSiteBreakdown = (items: any[]) => {
           const siteCounts: { [key: string]: number } = {};
-
-          // IMPORTANT: We DON'T apply any filtering here anymore
-          // We just count what's in the already-filtered data
           items.forEach((item) => {
             let siteId = null;
             let siteName = "Unknown Site";
 
-            // Determine site based on item type
             if (item._type === "DispatchLog" || item.dispatchType) {
-              // Dispatch - use compatibility helper
               const site = getDispatchSite(item);
               siteId = site._id;
               siteName = site.name || "Unknown Site";
             } else if (item._type === "GoodsReceipt" || item.receiptNumber) {
-              // Goods receipt - use compatibility helper
               const site = getGoodsReceiptSite(item);
               siteId = site._id;
               siteName = site.name || "Unknown Site";
             } else if (item.site?._id) {
-              // Direct site reference (purchase orders)
               siteId = item.site._id;
               siteName = item.site.name;
             } else if (item.site?.name) {
-              // Site name only (fallback)
               siteId = item.site._id;
               siteName = item.site.name;
             } else if (item.purchaseOrder?.site?._id) {
-              // Through purchase order
               siteId = item.purchaseOrder.site._id;
               siteName = item.purchaseOrder.site.name;
             } else if (item.sourceBin?.site?._id) {
-              // Old dispatch structure
               siteId = item.sourceBin.site._id;
               siteName = item.sourceBin.site.name;
             } else if (item.receivingBin?.site?._id) {
-              // Old goods receipt structure
               siteId = item.receivingBin.site._id;
               siteName = item.receivingBin.site.name;
             }
 
-            // Simply count ALL items - no filtering here
-            // The data is already filtered at a higher level
             siteCounts[siteName] = (siteCounts[siteName] || 0) + 1;
           });
 
@@ -1930,22 +1757,9 @@ export default function ComprehensiveReportsPage() {
           .slice(0, 10);
 
         // Process inventory with VAT data
-        // Get stock items from data - make sure we have the array
         const stockItemsArray =
           stockValues?.items || Array.isArray(stockValues) ? stockValues : [];
-        // Add debugging:
-        console.log("📦 Stock Items for Categories:", {
-          hasStockValues: !!stockValues,
-          stockItemsArrayType: typeof stockItemsArray,
-          stockItemsArrayLength: Array.isArray(stockItemsArray)
-            ? stockItemsArray.length
-            : "not array",
-          sampleItem: Array.isArray(stockItemsArray)
-            ? stockItemsArray[0]
-            : null,
-        });
 
-        // Ensure we have data
         const inventoryByCategory = (
           stockValues?.items ||
           stockItemsArray ||
@@ -1963,7 +1777,7 @@ export default function ComprehensiveReportsPage() {
           return acc;
         }, []);
 
-        // Calculate low stock breakdown accurately
+        // Calculate low stock breakdown
         const criticalStockItems = lowStock.filter(
           (item: any) => (item.currentStock || 0) === 0,
         ).length;
@@ -1976,7 +1790,7 @@ export default function ComprehensiveReportsPage() {
           (Array.isArray(stockItemsArray) ? stockItemsArray.length : 0) -
           lowStock.length;
 
-        // Process bin counts with accurate data - UPDATE THIS SECTION
+        // Process bin counts
         const binCountAccuracy =
           periodBinCounts.length > 0
             ? periodBinCounts.reduce((sum: number, count: any) => {
@@ -1999,12 +1813,10 @@ export default function ComprehensiveReportsPage() {
           )
           .reduce(
             (acc: any, item: any) => {
-              // Quantity variance counts
               if (item.variance > 0) acc.positive.quantity++;
               else if (item.variance < 0) acc.negative.quantity++;
               else acc.zero.quantity++;
 
-              // Cost variance totals
               if (item.varianceCost > 0) {
                 acc.positive.cost += item.varianceCost;
               } else if (item.varianceCost < 0) {
@@ -2257,7 +2069,7 @@ export default function ComprehensiveReportsPage() {
               })
               .filter((item: any) => item.date !== "Unknown")
               .slice(-30),
-            inventoryTurnover: 0.5, // This would need more complex calculation
+            inventoryTurnover: 0.5,
             totalReceivedGoodsValue: periodPurchasesExclVAT,
             totalSales: periodSalesExclVAT,
             consumption: periodConsumptionExclVAT,
@@ -2269,7 +2081,6 @@ export default function ComprehensiveReportsPage() {
             periodSales: periodSalesExclVAT,
             openingStock: openingStockValue,
             netVariances: netVariancesValue,
-            // VAT-specific financials
             vatOnPurchases,
             vatOnSales,
             netVATPayable,
@@ -2293,7 +2104,7 @@ export default function ComprehensiveReportsPage() {
               }
               return acc;
             }, []),
-            activity: [], // This would need user activity tracking
+            activity: [],
           },
           vat: {
             summary: {
@@ -2680,12 +2491,15 @@ export default function ComprehensiveReportsPage() {
   );
 
   // Replace the existing processFilteredAnalyticsData with this optimized version
+  // ============================================
+  // REPLACE THIS ENTIRE FUNCTION (lines ~2683-2830)
+  // ============================================
   const processFilteredAnalyticsData = useCallback(
     async (
       data: any,
       dateRange: { start: Date; end: Date },
       filterSiteId: string | null,
-      skipAnalytics: boolean = false, // New parameter to skip heavy analytics when just filtering
+      skipAnalytics: boolean = false,
     ) => {
       try {
         console.log(
@@ -2698,25 +2512,29 @@ export default function ComprehensiveReportsPage() {
         );
 
         // Apply client-side filtering based on selected site
+        const filteredGoodsReceipts = filterDataBySite(
+          data.goodsReceipts,
+          filterSiteId,
+          "goodsReceipt",
+        );
+
+        const filteredDispatches = filterDataBySite(
+          data.dispatches,
+          filterSiteId,
+          "dispatch",
+        );
+
         const filteredData = {
           purchaseOrders: filterDataBySite(
             data.purchaseOrders,
             filterSiteId,
             "purchaseOrder",
           ),
-          goodsReceipts: filterDataBySite(
-            data.goodsReceipts,
-            filterSiteId,
-            "goodsReceipt",
-          ),
-          dispatches: filterDataBySite(
-            data.dispatches,
-            filterSiteId,
-            "dispatch",
-          ),
+          goodsReceipts: filteredGoodsReceipts,
+          dispatches: filteredDispatches,
           transfers: filterDataBySite(data.transfers, filterSiteId, "transfer"),
           binCounts: filterDataBySite(data.binCounts, filterSiteId, "binCount"),
-          stockValues: data.stockValues, // Will be replaced if filterSiteId exists
+          stockValues: data.stockValues,
           lowStock: data.lowStock,
           suppliers: data.suppliers,
           users: filterDataBySite(data.users, filterSiteId, "user"),
@@ -2736,8 +2554,6 @@ export default function ComprehensiveReportsPage() {
         let filteredStockValues = data.stockValues;
         if (filterSiteId && data.stockItems) {
           console.log(`🔍 Getting filtered stock for site: ${filterSiteId}`);
-
-          // Use the new helper function to get site-specific stock
           filteredStockValues = await getFilteredStockValues(
             data.stockItems,
             filterSiteId,
@@ -2747,13 +2563,10 @@ export default function ComprehensiveReportsPage() {
           console.log("📊 Using unfiltered stock values (all sites)");
         }
 
-        // If skipAnalytics is true, we're just updating the filter
-        // and can use the existing analytics data with updated filteredData
+        // If skipAnalytics is true, use fast path with cached analytics
         if (skipAnalytics && analyticsData) {
           console.log("⚡ Using cached analytics with updated filters");
 
-          // Create a new analytics object with updated filtered data
-          // but keep the heavy calculations from the original analytics
           const updatedAnalytics = {
             ...analyticsData,
             summary: {
@@ -2766,7 +2579,7 @@ export default function ComprehensiveReportsPage() {
               totalUsers: filteredData.users.length,
               totalInventoryValue:
                 filteredStockValues.summary.totalInventoryValue,
-              totalVATCollected: analyticsData.summary.totalVATCollected, // Keep original
+              totalVATCollected: analyticsData.summary.totalVATCollected,
               totalVATPaid: analyticsData.summary.totalVATPaid,
               netVATLiability: analyticsData.summary.netVATLiability,
             },
@@ -2806,15 +2619,19 @@ export default function ComprehensiveReportsPage() {
           return;
         }
 
-        // Full analytics processing (slower, for initial load)
-        console.log("🔄 Running full analytics processing...");
+        // Full analytics processing with filtered data
+        console.log(
+          "🔄 Running full analytics processing with filtered data...",
+        );
         const analytics = await processAnalyticsData(
           {
             ...filteredData,
             stockValues: filteredStockValues,
-            stockItems: filteredStockValues.items, // Pass filtered stock items
+            stockItems: filteredStockValues.items,
           },
           dateRange,
+          filteredGoodsReceipts, // PASS FILTERED GOODS RECEIPTS
+          filteredDispatches, // PASS FILTERED DISPATCHES
         );
 
         setAnalyticsData(analytics);
