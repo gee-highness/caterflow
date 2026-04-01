@@ -72,6 +72,7 @@ interface CountedItem {
   varianceCost?: number;
   unitPrice?: number;
   _key?: string;
+  hasMissingPrice?: boolean; // Add this
 }
 
 interface StockItemForSelector {
@@ -329,11 +330,12 @@ export default function BinCountModal({
             _id: item.stockItem._id,
             name: item.stockItem.name || "Unknown Item",
             sku: item.stockItem.sku || "N/A",
-            unitPrice: item.stockItem.unitPrice || 0,
+            unitPrice: item.stockItem.unitPrice ?? 0,
           },
+          hasMissingPrice: item.stockItem.unitPrice == null,
         }));
       setCountedItems(validCountedItems);
-      if (validCountedItems.some((item) => item.stockItem.unitPrice === 0)) {
+      if (validCountedItems.some((item) => item.hasMissingPrice)) {
         setNotes(
           "Some stock items do not have a unit price. Variance cost may be inaccurate for those items.",
         );
@@ -425,16 +427,14 @@ export default function BinCountModal({
 
     setLoading(true);
     try {
-      const response = await fetch("/api/procurement/stock-items");
+      // Changed from /api/procurement/stock-items to /api/stock-items for accurate unitPrice
+      const response = await fetch("/api/stock-items");
       if (!response.ok) throw new Error("Failed to fetch stock items");
 
       const allStockItems: StockItemForSelector[] = await response.json();
 
       // LOG 1: Raw API Response
-      console.log(
-        "📥 Raw API Response from /api/procurement/stock-items:",
-        allStockItems,
-      );
+      console.log("📥 Raw API Response from /api/stock-items:", allStockItems);
       console.log("🔍 First item structure:", allStockItems[0]);
       console.log(`ℹ️ Total items received: ${allStockItems.length}`);
 
@@ -454,7 +454,8 @@ export default function BinCountModal({
 
       const itemsWithQuantities = allStockItems.map((item) => {
         const systemQuantity = bulkResults[item._id] || 0;
-        const unitPrice = item.unitPrice || 0;
+        const originalUnitPrice = item.unitPrice;
+        const unitPrice = originalUnitPrice ?? 0;
 
         // LOG 2: Each item's unit price
         console.log(`📦 Item: ${item.name} (SKU: ${item.sku})`);
@@ -474,6 +475,7 @@ export default function BinCountModal({
           variance: 0 - systemQuantity,
           varianceCost: (0 - systemQuantity) * unitPrice,
           unitPrice: unitPrice,
+          hasMissingPrice: originalUnitPrice == null,
         };
       });
 
@@ -523,7 +525,7 @@ export default function BinCountModal({
     const updatedItems = countedItems.map((item) => {
       const counted = item.countedQuantity || 0;
       const system = item.systemQuantityAtCountTime || 0;
-      const unitPrice = item.unitPrice || item.stockItem.unitPrice || 0;
+      const unitPrice = item.unitPrice ?? item.stockItem?.unitPrice ?? 0;
       const variance = counted - system;
       const varianceCost = variance * unitPrice;
 
@@ -670,7 +672,8 @@ export default function BinCountModal({
 
       const itemsWithQuantities = newItems.map((item) => {
         const systemQuantity = bulkResults[item._id] || 0;
-        const unitPrice = item.unitPrice || 0;
+        const originalUnitPrice = item.unitPrice;
+        const unitPrice = originalUnitPrice ?? 0;
 
         // LOG 5: Each manually selected item's unit price
         console.log(
@@ -693,6 +696,7 @@ export default function BinCountModal({
           variance: 0 - systemQuantity,
           varianceCost: (0 - systemQuantity) * unitPrice,
           unitPrice: unitPrice,
+          hasMissingPrice: originalUnitPrice == null,
         };
       });
 
@@ -759,7 +763,7 @@ export default function BinCountModal({
       const updatedItems = countedItems.map((item) => {
         const systemQuantity = bulkResults[item.stockItem._id] || 0;
         const counted = item.countedQuantity || 0;
-        const unitPrice = item.unitPrice || item.stockItem?.unitPrice || 0;
+        const unitPrice = item.unitPrice ?? item.stockItem?.unitPrice ?? 0;
         const variance = counted - systemQuantity;
         const varianceCost = variance * unitPrice;
 
@@ -878,7 +882,7 @@ export default function BinCountModal({
 
     const itemsWithVariance = validCountedItems.map((item, index) => {
       const variance = item.variance || 0;
-      const unitPrice = item.unitPrice || item.stockItem.unitPrice || 0;
+      const unitPrice = item.unitPrice ?? item.stockItem.unitPrice ?? 0;
       const varianceCost = item.varianceCost || variance * unitPrice;
 
       return {
@@ -1203,10 +1207,6 @@ export default function BinCountModal({
                                     (i) => i._key === item._key,
                                   );
 
-                              // ADD THIS: Check if item has no unit price
-                              const hasMissingPrice =
-                                !item.unitPrice || item.unitPrice === 0;
-
                               return (
                                 <Tr
                                   key={item._key}
@@ -1214,22 +1214,24 @@ export default function BinCountModal({
                                   bg={
                                     isHighlighted
                                       ? "yellow.100"
-                                      : hasMissingPrice
+                                      : item.hasMissingPrice
                                         ? "red.50"
                                         : "transparent"
                                   }
                                   _dark={{
                                     bg: isHighlighted
                                       ? "yellow.900"
-                                      : hasMissingPrice
+                                      : item.hasMissingPrice
                                         ? "red.900"
                                         : "transparent",
                                   }}
                                   borderLeftWidth={
-                                    hasMissingPrice ? "4px" : "0px"
+                                    item.hasMissingPrice ? "4px" : "0px"
                                   }
                                   borderLeftColor={
-                                    hasMissingPrice ? "red.500" : "transparent"
+                                    item.hasMissingPrice
+                                      ? "red.500"
+                                      : "transparent"
                                   }
                                 >
                                   <Td>
@@ -1238,7 +1240,7 @@ export default function BinCountModal({
                                         <Text fontWeight="bold">
                                           {item.stockItem.name}
                                         </Text>
-                                        {hasMissingPrice && (
+                                        {item.hasMissingPrice && (
                                           <Badge
                                             colorScheme="red"
                                             fontSize="xs"
@@ -1299,15 +1301,17 @@ export default function BinCountModal({
                                       <Text
                                         fontSize="xs"
                                         color={
-                                          hasMissingPrice
+                                          item.hasMissingPrice
                                             ? "red.500"
                                             : "neutral.light.text-secondary"
                                         }
                                         fontWeight={
-                                          hasMissingPrice ? "bold" : "normal"
+                                          item.hasMissingPrice
+                                            ? "bold"
+                                            : "normal"
                                         }
                                       >
-                                        {hasMissingPrice
+                                        {item.hasMissingPrice
                                           ? "E ?.?? (No price)"
                                           : item.varianceCost
                                             ? `E ${Math.abs(item.varianceCost).toFixed(2)}`
@@ -1379,24 +1383,50 @@ export default function BinCountModal({
                                 (i) => i._key === item._key,
                               );
 
+                          const hasMissingPrice =
+                            !item.unitPrice || item.unitPrice === 0;
+
                           return (
                             <Card
                               key={item._key}
-                              bg={isHighlighted ? "yellow.100" : cardBg}
+                              bg={
+                                isHighlighted
+                                  ? "yellow.100"
+                                  : hasMissingPrice
+                                    ? "red.50"
+                                    : cardBg
+                              }
                               _dark={{
-                                bg: isHighlighted ? "yellow.900" : cardBg,
+                                bg: isHighlighted
+                                  ? "yellow.900"
+                                  : hasMissingPrice
+                                    ? "red.900"
+                                    : cardBg,
                               }}
                               variant="outline"
-                              borderColor={borderColor}
+                              borderColor={
+                                hasMissingPrice ? "red.500" : borderColor
+                              }
+                              borderLeftWidth={hasMissingPrice ? "4px" : "0px"}
                               id={`item-${item._key}`}
                             >
                               <CardBody p={4}>
                                 <VStack align="stretch" spacing={2}>
                                   <HStack justifyContent="space-between">
                                     <VStack align="start" spacing={0}>
-                                      <Text fontWeight="bold">
-                                        {item.stockItem.name}
-                                      </Text>
+                                      <HStack spacing={2}>
+                                        <Text fontWeight="bold">
+                                          {item.stockItem.name}
+                                        </Text>
+                                        {hasMissingPrice && (
+                                          <Badge
+                                            colorScheme="red"
+                                            fontSize="xs"
+                                          >
+                                            No Price
+                                          </Badge>
+                                        )}
+                                      </HStack>
                                       <Text fontSize="sm" color="gray.500">
                                         {item.stockItem.sku}
                                       </Text>

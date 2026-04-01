@@ -1,13 +1,13 @@
 // src/app/api/bin-counts/[id]/route.ts
-import { NextResponse } from 'next/server';
-import { client, writeClient } from '@/lib/sanity';
-import { groq } from 'next-sanity';
-import { logSanityInteraction } from '@/lib/sanityLogger';
-import { updateStockForTransaction } from '@/lib/stockCalculations';
+import { NextResponse } from "next/server";
+import { client, writeClient } from "@/lib/sanity";
+import { groq } from "next-sanity";
+import { logSanityInteraction } from "@/lib/sanityLogger";
+import { updateStockForTransaction } from "@/lib/stockCalculations";
 
 export async function GET(
   request: Request,
-  context: { params: Promise<{ id: string }> }
+  context: { params: Promise<{ id: string }> },
 ) {
   try {
     const { id } = await context.params;
@@ -35,7 +35,8 @@ export async function GET(
               "stockItem": stockItem->{
                   _id,
                   name,
-                  sku
+                  sku,
+                  unitPrice
               },
               countedQuantity,
               systemQuantityAtCountTime,
@@ -47,24 +48,24 @@ export async function GET(
 
     if (!binCount) {
       return NextResponse.json(
-        { error: 'Bin count not found' },
-        { status: 404 }
+        { error: "Bin count not found" },
+        { status: 404 },
       );
     }
 
     return NextResponse.json(binCount);
   } catch (error) {
-    console.error('Failed to fetch bin count:', error);
+    console.error("Failed to fetch bin count:", error);
     return NextResponse.json(
-      { error: 'Failed to fetch bin count' },
-      { status: 500 }
+      { error: "Failed to fetch bin count" },
+      { status: 500 },
     );
   }
 }
 
 export async function PUT(
   request: Request,
-  context: { params: Promise<{ id: string }> }
+  context: { params: Promise<{ id: string }> },
 ) {
   try {
     const { id } = await context.params;
@@ -76,50 +77,47 @@ export async function PUT(
       groq`*[_type == "InventoryCount" && _id == $id][0] { 
     status
 }`,
-      { id: id }
+      { id: id },
     );
 
-    const wasCompleted = existingCount?.status === 'completed';
-    const willBeCompleted = updateData.status === 'completed' || (!updateData.status && wasCompleted);
+    const wasCompleted = existingCount?.status === "completed";
+    const willBeCompleted =
+      updateData.status === "completed" || (!updateData.status && wasCompleted);
 
     /*    if (wasCompleted && (updateData.countedItems || updateData.bin)) {
           console.log('↩️ Reverting previous stock changes for count edit');
           await revertPreviousStockChanges(id);
         }*/
 
-    const result = await writeClient
-      .patch(id)
-      .set(updateData)
-      .commit();
-
+    const result = await writeClient.patch(id).set(updateData).commit();
 
     // ✅ KEEP ONLY ONE: Check actual result status
-    if (result.status === 'completed') {
-      await updateStockForTransaction('inventoryCount', result._id);
+    if (result.status === "completed") {
+      await updateStockForTransaction("inventoryCount", result._id);
     }
 
     await logSanityInteraction(
-      'update',
+      "update",
       `Updated bin count: ${id}`,
-      'InventoryCount',
+      "InventoryCount",
       id,
-      'system',
-      true
+      "system",
+      true,
     );
 
     return NextResponse.json(result);
   } catch (error) {
-    console.error('Failed to update bin count:', error);
+    console.error("Failed to update bin count:", error);
     return NextResponse.json(
-      { error: 'Failed to update bin count' },
-      { status: 500 }
+      { error: "Failed to update bin count" },
+      { status: 500 },
     );
   }
 }
 
 export async function DELETE(
   request: Request,
-  context: { params: Promise<{ id: string }> }
+  context: { params: Promise<{ id: string }> },
 ) {
   try {
     const { id } = await context.params;
@@ -127,20 +125,20 @@ export async function DELETE(
     await writeClient.delete(id);
 
     await logSanityInteraction(
-      'delete',
+      "delete",
       `Deleted bin count: ${id}`,
-      'InventoryCount',
+      "InventoryCount",
       id,
-      'system',
-      true
+      "system",
+      true,
     );
 
     return NextResponse.json({ success: true });
   } catch (error) {
-    console.error('Failed to delete bin count:', error);
+    console.error("Failed to delete bin count:", error);
     return NextResponse.json(
-      { error: 'Failed to delete bin count' },
-      { status: 500 }
+      { error: "Failed to delete bin count" },
+      { status: 500 },
     );
   }
 }
