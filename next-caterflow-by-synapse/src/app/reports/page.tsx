@@ -1430,26 +1430,43 @@ export default function ComprehensiveReportsPage() {
         let dispatchesValueBefore = 0;
 
         for (const d of dispatchesBeforeDate) {
-          let dispatchValue = 0;
-          const items = d.dispatchedItems || [];
+          const dispatchCostField = Number(d.totalCost || 0);
+          const itemCostSum = (d.dispatchedItems || []).reduce(
+            (itemSum: number, item: any) => {
+              const itemCost =
+                Number(item.totalCost || 0) ||
+                Number(item.dispatchedQuantity || 0) *
+                  Number(item.unitPrice || 0);
+              return itemSum + itemCost;
+            },
+            0,
+          );
+
+          // Prefer stored dispatch totalCost as source-of-truth, fallback to item cost sum
+          const dispatchValue =
+            dispatchCostField > 0 ? dispatchCostField : itemCostSum;
+
+          if (
+            dispatchCostField > 0 &&
+            Math.abs(dispatchCostField - itemCostSum) > 0.01
+          ) {
+            console.warn(
+              `⚠️ Dispatch ${d.dispatchNumber} cost mismatch: stored=${dispatchCostField.toFixed(2)}, itemSum=${itemCostSum.toFixed(2)}`,
+            );
+          }
 
           console.log(
             `  ${dispatchNumber}. ${d.dispatchNumber} (${d.dispatchDate}):`,
           );
-
-          for (const item of items) {
-            const cost =
-              item.totalCost ||
-              (item.dispatchedQuantity || 0) * (item.unitPrice || 0);
+          (d.dispatchedItems || []).forEach((item: any) => {
             const itemName = item.stockItem?.name || "Unknown Item";
             const qty = item.dispatchedQuantity || 0;
             const price = item.unitPrice || 0;
-
+            const itemCost = Number(item.totalCost || 0) || qty * price;
             console.log(
-              `     - ${itemName}: ${qty} × ${price} = ${cost.toFixed(2)}`,
+              `     - ${itemName}: ${qty} × ${price} = ${itemCost.toFixed(2)}`,
             );
-            dispatchValue += cost;
-          }
+          });
 
           console.log(`     SUBTOTAL: ${dispatchValue.toFixed(2)}`);
           dispatchesValueBefore += dispatchValue;
@@ -1581,26 +1598,52 @@ export default function ComprehensiveReportsPage() {
           0,
         );
 
-        // 3. PERIOD CONSUMPTION = Dispatch costs in the period
-        const periodConsumptionExclVAT = periodDispatches.reduce(
+        // 3. PERIOD CONSUMPTION = Dispatch costs in the period (PREFER STORED totalCost)
+        const periodDispatchesTotalCost = periodDispatches.reduce(
+          (sum: number, d: any) => sum + (Number(d.totalCost) || 0),
+          0,
+        );
+
+        const periodDispatchesCostFromItems = periodDispatches.reduce(
           (sum: number, d: any) => {
-            const dispatchCost =
+            const itemCost =
               d.dispatchedItems?.reduce((itemSum: number, item: any) => {
-                // Use actual cost from dispatch item
-                const itemCostExclVAT = item.totalCost || 0;
+                const itemCostExclVAT =
+                  Number(item.totalCost) ||
+                  Number(item.dispatchedQuantity || 0) *
+                    Number(item.unitPrice || 0);
                 return itemSum + itemCostExclVAT;
               }, 0) || 0;
-            return sum + dispatchCost;
+            return sum + itemCost;
           },
           0,
         );
 
-        // 4. SALES = People fed × selling price
+        if (
+          Math.abs(periodDispatchesTotalCost - periodDispatchesCostFromItems) >
+          0.01
+        ) {
+          console.warn(
+            `⚠️ Period dispatch cost mismatch: stored=${periodDispatchesTotalCost.toFixed(
+              2,
+            )}, items=${periodDispatchesCostFromItems.toFixed(2)}`,
+          );
+        }
+
+        const periodConsumptionExclVAT = periodDispatchesTotalCost;
+
+        // 4. SALES = Prefer stored totalSales, fallback to people fed × selling price
         const periodSalesExclVAT = periodDispatches.reduce(
           (sum: number, d: any) => {
+            const storedSales = Number(d.totalSales || 0);
+            if (storedSales > 0) {
+              return sum + storedSales;
+            }
             const sellingPriceExclVAT =
-              d.dispatchType?.sellingPrice || d.sellingPrice || 0;
-            const peopleFed = d.peopleFed || 0;
+              Number(d.dispatchType?.sellingPrice) ||
+              Number(d.sellingPrice) ||
+              0;
+            const peopleFed = Number(d.peopleFed) || 0;
             return sum + sellingPriceExclVAT * peopleFed;
           },
           0,
@@ -1608,11 +1651,20 @@ export default function ComprehensiveReportsPage() {
 
         // 5. VAT calculations
         const vatOnPurchases = periodGoodsReceipts.reduce(
-          (sum: number, gr: any) => sum + (gr.vatAmount || 0),
+          (sum: number, gr: any) => sum + (Number(gr.vatAmount) || 0),
           0,
         );
 
-        const vatOnSales = periodSalesExclVAT * VAT_CONFIG.rate;
+        const periodDispatchesSalesVAT = periodDispatches.reduce(
+          (sum: number, d: any) => sum + (Number(d.salesVAT) || 0),
+          0,
+        );
+
+        const vatOnSales =
+          periodDispatchesSalesVAT > 0
+            ? periodDispatchesSalesVAT
+            : periodSalesExclVAT * VAT_CONFIG.rate;
+
         const netVATPayable = vatOnSales - vatOnPurchases;
 
         // 6. PROFIT CALCULATIONS
@@ -1936,33 +1988,41 @@ export default function ComprehensiveReportsPage() {
         );
 
         // Process dispatches with VAT data
-        const dispatchesTotalCost = periodDispatches.reduce(
-          (sum: number, d: any) => sum + (d.totalCost || 0),
-          0,
-        );
+        const dispatchesTotalCost = periodDispatchesTotalCost;
 
         const dispatchesVATAmount = periodDispatches.reduce(
-          (sum: number, d: any) => sum + (d.vatAmount || 0),
+          (sum: number, d: any) =>
+            sum +
+            (Number(d.vatAmount) ||
+              Number(d.totalCost || 0) * VAT_CONFIG.rate ||
+              0),
           0,
         );
 
         const dispatchesTotalWithVAT = periodDispatches.reduce(
-          (sum: number, d: any) => sum + (d.totalWithVAT || 0),
+          (sum: number, d: any) => {
+            const rawCost = Number(d.totalCost) || 0;
+            const vat = Number(d.vatAmount) || 0;
+            const constructed = rawCost + vat;
+            return sum + (Number(d.totalWithVAT) || constructed || 0);
+          },
           0,
         );
 
-        const dispatchesTotalSales = periodDispatches.reduce(
-          (sum: number, d: any) => sum + (d.totalSales || 0),
-          0,
-        );
+        const dispatchesTotalSales = periodSalesExclVAT;
 
-        const dispatchesSalesVAT = periodDispatches.reduce(
-          (sum: number, d: any) => sum + (d.salesVAT || 0),
-          0,
-        );
+        const dispatchesSalesVAT =
+          periodDispatchesSalesVAT > 0
+            ? periodDispatchesSalesVAT
+            : periodSalesExclVAT * VAT_CONFIG.rate;
 
         const dispatchesSalesWithVAT = periodDispatches.reduce(
-          (sum: number, d: any) => sum + (d.salesWithVAT || d.totalSales || 0),
+          (sum: number, d: any) => {
+            const sales = Number(d.totalSales) || 0;
+            const svc =
+              Number(d.salesWithVAT) || sales + Number(d.salesVAT || 0);
+            return sum + svc;
+          },
           0,
         );
 
@@ -2508,7 +2568,9 @@ export default function ComprehensiveReportsPage() {
 
           const stockValue = totalQuantity * (item.unitPrice || 0);
           const isVATApplicable = item.isVATApplicable !== false;
-          const vatAmount = isVATApplicable ? stockValue * 0.15 : 0;
+          const vatAmount = isVATApplicable
+            ? Math.round(stockValue * VAT_CONFIG.rate * 100) / 100
+            : 0;
 
           totalInventoryValue += stockValue;
           totalVAT += vatAmount;

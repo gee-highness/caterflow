@@ -430,6 +430,14 @@ export default function BinCountModal({
 
       const allStockItems: StockItemForSelector[] = await response.json();
 
+      // LOG 1: Raw API Response
+      console.log(
+        "📥 Raw API Response from /api/procurement/stock-items:",
+        allStockItems,
+      );
+      console.log("🔍 First item structure:", allStockItems[0]);
+      console.log(`ℹ️ Total items received: ${allStockItems.length}`);
+
       if (allStockItems.length === 0) {
         toast({
           title: "No Stock Items",
@@ -448,6 +456,11 @@ export default function BinCountModal({
         const systemQuantity = bulkResults[item._id] || 0;
         const unitPrice = item.unitPrice || 0;
 
+        // LOG 2: Each item's unit price
+        console.log(`📦 Item: ${item.name} (SKU: ${item.sku})`);
+        console.log(`   Raw unitPrice from API: ${item.unitPrice}`);
+        console.log(`   Fallback value used: ${unitPrice}`);
+
         return {
           _key: nanoid(),
           stockItem: {
@@ -462,6 +475,15 @@ export default function BinCountModal({
           varianceCost: (0 - systemQuantity) * unitPrice,
           unitPrice: unitPrice,
         };
+      });
+
+      // LOG 3: Final processed items
+      console.log("✅ Final itemsWithQuantities array:", itemsWithQuantities);
+      console.log("💰 Sample - First 3 items with prices:");
+      itemsWithQuantities.slice(0, 3).forEach((item, idx) => {
+        console.log(
+          `  [${idx}] ${item.stockItem.name} - unitPrice: ${item.unitPrice}`,
+        );
       });
 
       setCountedItems(itemsWithQuantities);
@@ -636,6 +658,10 @@ export default function BinCountModal({
     setLoading(true);
 
     try {
+      // LOG 4: Manual selection - raw items
+      console.log("📋 Manual selection - Items selected from modal:", newItems);
+      console.log("🔍 First selected item:", newItems[0]);
+
       const newItemIds = newItems.map((item) => item._id);
       const bulkResults = await fetchBulkCurrentStock(
         newItemIds,
@@ -645,6 +671,14 @@ export default function BinCountModal({
       const itemsWithQuantities = newItems.map((item) => {
         const systemQuantity = bulkResults[item._id] || 0;
         const unitPrice = item.unitPrice || 0;
+
+        // LOG 5: Each manually selected item's unit price
+        console.log(
+          `📦 Manual selection - Item: ${item.name} (SKU: ${item.sku})`,
+        );
+        console.log(`   Raw unitPrice from modal: ${item.unitPrice}`);
+        console.log(`   Type of unitPrice: ${typeof item.unitPrice}`);
+        console.log(`   Fallback value: ${unitPrice}`);
 
         return {
           _key: nanoid(),
@@ -660,6 +694,16 @@ export default function BinCountModal({
           varianceCost: (0 - systemQuantity) * unitPrice,
           unitPrice: unitPrice,
         };
+      });
+
+      // LOG 6: Final processed items from manual selection
+      console.log(
+        "✅ Items after manual selection processing:",
+        itemsWithQuantities,
+      );
+      console.log("💰 Sample prices from manual selection:");
+      itemsWithQuantities.forEach((item) => {
+        console.log(`  ${item.stockItem.name}: unitPrice=${item.unitPrice}`);
       });
 
       setCountedItems((prev) => [...prev, ...itemsWithQuantities]);
@@ -715,7 +759,7 @@ export default function BinCountModal({
       const updatedItems = countedItems.map((item) => {
         const systemQuantity = bulkResults[item.stockItem._id] || 0;
         const counted = item.countedQuantity || 0;
-        const unitPrice = item.unitPrice || item.stockItem.unitPrice || 0;
+        const unitPrice = item.unitPrice || item.stockItem?.unitPrice || 0;
         const variance = counted - systemQuantity;
         const varianceCost = variance * unitPrice;
 
@@ -1159,24 +1203,50 @@ export default function BinCountModal({
                                     (i) => i._key === item._key,
                                   );
 
+                              // ADD THIS: Check if item has no unit price
+                              const hasMissingPrice =
+                                !item.unitPrice || item.unitPrice === 0;
+
                               return (
                                 <Tr
                                   key={item._key}
                                   id={`item-${item._key}`}
                                   bg={
-                                    isHighlighted ? "yellow.100" : "transparent"
+                                    isHighlighted
+                                      ? "yellow.100"
+                                      : hasMissingPrice
+                                        ? "red.50"
+                                        : "transparent"
                                   }
                                   _dark={{
                                     bg: isHighlighted
                                       ? "yellow.900"
-                                      : "transparent",
+                                      : hasMissingPrice
+                                        ? "red.900"
+                                        : "transparent",
                                   }}
+                                  borderLeftWidth={
+                                    hasMissingPrice ? "4px" : "0px"
+                                  }
+                                  borderLeftColor={
+                                    hasMissingPrice ? "red.500" : "transparent"
+                                  }
                                 >
                                   <Td>
-                                    <VStack align="start" spacing={0}>
-                                      <Text fontWeight="bold">
-                                        {item.stockItem.name}
-                                      </Text>
+                                    <VStack align="start" spacing={1}>
+                                      <HStack spacing={2}>
+                                        <Text fontWeight="bold">
+                                          {item.stockItem.name}
+                                        </Text>
+                                        {hasMissingPrice && (
+                                          <Badge
+                                            colorScheme="red"
+                                            fontSize="xs"
+                                          >
+                                            No Price
+                                          </Badge>
+                                        )}
+                                      </HStack>
                                       <Text
                                         fontSize="xs"
                                         color="neutral.light.text-secondary"
@@ -1228,11 +1298,20 @@ export default function BinCountModal({
                                       </Badge>
                                       <Text
                                         fontSize="xs"
-                                        color="neutral.light.text-secondary"
+                                        color={
+                                          hasMissingPrice
+                                            ? "red.500"
+                                            : "neutral.light.text-secondary"
+                                        }
+                                        fontWeight={
+                                          hasMissingPrice ? "bold" : "normal"
+                                        }
                                       >
-                                        {item.varianceCost
-                                          ? `E ${Math.abs(item.varianceCost).toFixed(2)}`
-                                          : "E 0.00"}
+                                        {hasMissingPrice
+                                          ? "E ?.?? (No price)"
+                                          : item.varianceCost
+                                            ? `E ${Math.abs(item.varianceCost).toFixed(2)}`
+                                            : "E 0.00"}
                                       </Text>
                                     </VStack>
                                   </Td>
