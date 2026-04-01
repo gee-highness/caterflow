@@ -1350,14 +1350,10 @@ export default function ComprehensiveReportsPage() {
     [],
   );
 
-  // SIMPLIFIED opening stock calculation - using current stock as fallback
-  // CORRECTED: Use the same calculation as other pages
-  // SIMPLIFIED VERSION: Uses the same endpoint as current stock page
-  // SIMPLIFIED opening stock calculation - using current stock as fallback
-  // CORRECTED: Use the same calculation as other pages
-  // Replace the existing calculateOpeningStockForDate function with this CORRECTED version:
+  // ========== CORRECTED OPENING STOCK CALCULATION ==========
   // ============================================
-  // REPLACE THIS ENTIRE FUNCTION (lines ~1359-1524)
+  // COMPLETE CALCULATE OPENING STOCK FUNCTION WITH DETAILED LOGGING
+  // Replace the entire calculateOpeningStockForDate function in src/app/reports/page.tsx
   // ============================================
   const calculateOpeningStockForDate = useCallback(
     async (
@@ -1365,13 +1361,15 @@ export default function ComprehensiveReportsPage() {
       allGoodsReceipts: any[],
       allDispatches: any[],
     ): Promise<number> => {
-      try {
-        console.log(
-          "💰 Calculating opening stock for:",
-          targetDate.toISOString().split("T")[0],
-        );
+      console.log(
+        "💰 CALCULATING OPENING STOCK FOR:",
+        targetDate.toISOString().split("T")[0],
+      );
+      console.log("📦 Raw receipts count:", allGoodsReceipts.length);
+      console.log("🚚 Raw dispatches count:", allDispatches.length);
 
-        // CORRECT: Filter transactions BEFORE or ON the target date
+      try {
+        // ========== 1. FILTER TRANSACTIONS BEFORE OR ON TARGET DATE ==========
         const receiptsBeforeDate = allGoodsReceipts.filter((gr) => {
           try {
             const receiptDate = new Date(gr.receiptDate);
@@ -1396,50 +1394,108 @@ export default function ComprehensiveReportsPage() {
         console.log(`  - Receipts BEFORE: ${receiptsBeforeDate.length}`);
         console.log(`  - Dispatches BEFORE: ${dispatchesBeforeDate.length}`);
 
-        // Calculate values of transactions BEFORE target date
-        const receiptsValueBefore = receiptsBeforeDate.reduce(
-          (sum: number, gr: any) => {
-            return (
-              sum +
-              (gr.receivedItems?.reduce((itemSum: number, item: any) => {
-                const unitPrice =
-                  item.unitPrice || item.stockItem?.unitPrice || 0;
-                const quantity = item.receivedQuantity || 0;
-                return itemSum + quantity * unitPrice;
-              }, 0) || 0)
-            );
-          },
-          0,
-        );
+        // ========== 2. DETAILED RECEIPT BREAKDOWN ==========
+        console.log("\n🔍 DETAILED RECEIPT BREAKDOWN:");
+        let receiptNumber = 1;
+        let receiptsValueBefore = 0;
 
-        const dispatchesValueBefore = dispatchesBeforeDate.reduce(
-          (sum: number, d: any) => {
-            return (
-              sum +
-              (d.dispatchedItems?.reduce((itemSum: number, item: any) => {
-                const cost =
-                  item.totalCost ||
-                  (item.dispatchedQuantity || 0) * (item.unitPrice || 0);
-                return itemSum + cost;
-              }, 0) || 0)
-            );
-          },
-          0,
-        );
+        for (const gr of receiptsBeforeDate) {
+          let receiptValue = 0;
+          const items = gr.receivedItems || [];
 
-        console.log("💰 Transaction values BEFORE date:", {
-          receiptsValueBefore,
-          dispatchesValueBefore,
+          console.log(
+            `  ${receiptNumber}. ${gr.receiptNumber} (${gr.receiptDate}):`,
+          );
+
+          for (const item of items) {
+            const unitPrice = item.unitPrice || item.stockItem?.unitPrice || 0;
+            const quantity = item.receivedQuantity || 0;
+            const val = quantity * unitPrice;
+            const itemName = item.stockItem?.name || "Unknown Item";
+
+            console.log(
+              `     - ${itemName}: ${quantity} × ${unitPrice} = ${val.toFixed(2)}`,
+            );
+            receiptValue += val;
+          }
+
+          console.log(`     SUBTOTAL: ${receiptValue.toFixed(2)}`);
+          receiptsValueBefore += receiptValue;
+          receiptNumber++;
+        }
+
+        // ========== 3. DETAILED DISPATCH BREAKDOWN ==========
+        console.log("\n🔍 DETAILED DISPATCH BREAKDOWN:");
+        let dispatchNumber = 1;
+        let dispatchesValueBefore = 0;
+
+        for (const d of dispatchesBeforeDate) {
+          let dispatchValue = 0;
+          const items = d.dispatchedItems || [];
+
+          console.log(
+            `  ${dispatchNumber}. ${d.dispatchNumber} (${d.dispatchDate}):`,
+          );
+
+          for (const item of items) {
+            const cost =
+              item.totalCost ||
+              (item.dispatchedQuantity || 0) * (item.unitPrice || 0);
+            const itemName = item.stockItem?.name || "Unknown Item";
+            const qty = item.dispatchedQuantity || 0;
+            const price = item.unitPrice || 0;
+
+            console.log(
+              `     - ${itemName}: ${qty} × ${price} = ${cost.toFixed(2)}`,
+            );
+            dispatchValue += cost;
+          }
+
+          console.log(`     SUBTOTAL: ${dispatchValue.toFixed(2)}`);
+          dispatchesValueBefore += dispatchValue;
+          dispatchNumber++;
+        }
+
+        // ========== 4. SUMMARY OF VALUES ==========
+        console.log("\n💰 Transaction values BEFORE date:", {
+          receiptsValueBefore: receiptsValueBefore.toFixed(2),
+          dispatchesValueBefore: dispatchesValueBefore.toFixed(2),
+          netValue: (receiptsValueBefore - dispatchesValueBefore).toFixed(2),
         });
 
-        // CORRECT FORMULA: Opening Stock = Receipts before - Dispatches before
+        // ========== 5. CHECK FOR INVENTORY COUNTS ==========
+        // Note: This function doesn't have inventory counts passed in
+        // We'll note that in the logs
+        console.log(
+          "\n⚠️ NOTE: Inventory counts are NOT included in this calculation",
+        );
+        console.log(
+          "   Opening stock is calculated as: Receipts before - Dispatches before",
+        );
+        console.log(
+          "   This assumes no inventory counts have reset stock levels.",
+        );
+
+        // ========== 6. CORRECT FORMULA ==========
         const openingStock = receiptsValueBefore - dispatchesValueBefore;
 
-        console.log("✅ FINAL Opening stock calculation:", {
-          receiptsBeforeValue: receiptsValueBefore,
-          dispatchesBeforeValue: dispatchesValueBefore,
-          openingStock,
+        console.log("\n✅ FINAL Opening stock calculation:", {
+          receiptsBeforeValue: receiptsValueBefore.toFixed(2),
+          dispatchesBeforeValue: dispatchesValueBefore.toFixed(2),
+          openingStock: openingStock.toFixed(2),
         });
+
+        // ========== 7. ADD WARNING IF NEGATIVE ==========
+        if (openingStock < 0) {
+          console.warn("\n⚠️ WARNING: Opening stock is negative!");
+          console.warn("   This suggests either:");
+          console.warn("   1. Dispatches are being over-counted");
+          console.warn("   2. Receipts are missing or under-counted");
+          console.warn(
+            "   3. Inventory counts (which should reset stock) are not being considered",
+          );
+          console.warn("   4. Dispatches from other sites are being included");
+        }
 
         return Math.max(0, openingStock);
       } catch (error) {
@@ -1450,10 +1506,7 @@ export default function ComprehensiveReportsPage() {
     [],
   );
 
-  // UPDATED processAnalyticsData function with VAT calculations - CORRECTED VERSION
-  // ============================================
-  // REPLACE THIS ENTIRE FUNCTION (lines ~1527-2328)
-  // ============================================
+  // ========== CORRECTED PROCESS ANALYTICS DATA ==========
   const processAnalyticsData = useCallback(
     async (
       data: any,
@@ -1485,6 +1538,8 @@ export default function ComprehensiveReportsPage() {
         } = data;
 
         console.log("📊 Processing analytics data with VAT calculations...");
+        console.log("🔹 Filtered receipts provided:", !!filteredGoodsReceipts);
+        console.log("🔹 Filtered dispatches provided:", !!filteredDispatches);
 
         // Filter data by date range for period-based calculations
         const periodPOs = filterDataByDateRange(purchaseOrders, "orderDate");
@@ -1500,7 +1555,6 @@ export default function ComprehensiveReportsPage() {
         );
         const periodBinCounts = filterDataByDateRange(binCounts, "countDate");
 
-        // CORRECTED FINANCIAL CALCULATIONS - USING TRANSACTION HISTORY
         // 1. Calculate opening stock using filtered transactions
         setCalculatingOpeningStock(true);
 
@@ -1590,16 +1644,16 @@ export default function ComprehensiveReportsPage() {
           periodSalesExclVAT > 0 ? (netProfit / periodSalesExclVAT) * 100 : 0;
 
         console.log("💰 FINAL Financial calculations:", {
-          openingStockValue,
-          periodPurchasesExclVAT,
-          periodConsumptionExclVAT,
-          periodSalesExclVAT,
-          vatOnPurchases,
-          vatOnSales,
-          netVATPayable,
-          grossProfitBeforeVAT,
+          openingStockValue: openingStockValue.toFixed(2),
+          periodPurchasesExclVAT: periodPurchasesExclVAT.toFixed(2),
+          periodConsumptionExclVAT: periodConsumptionExclVAT.toFixed(2),
+          periodSalesExclVAT: periodSalesExclVAT.toFixed(2),
+          vatOnPurchases: vatOnPurchases.toFixed(2),
+          vatOnSales: vatOnSales.toFixed(2),
+          netVATPayable: netVATPayable.toFixed(2),
+          grossProfitBeforeVAT: grossProfitBeforeVAT.toFixed(2),
           profitPercentage: profitPercentage.toFixed(1) + "%",
-          closingStockValue,
+          closingStockValue: closingStockValue.toFixed(2),
         });
 
         // Helper functions
@@ -2490,10 +2544,7 @@ export default function ComprehensiveReportsPage() {
     [],
   );
 
-  // Replace the existing processFilteredAnalyticsData with this optimized version
-  // ============================================
-  // REPLACE THIS ENTIRE FUNCTION (lines ~2683-2830)
-  // ============================================
+  // ========== CORRECTED PROCESS FILTERED ANALYTICS DATA ==========
   const processFilteredAnalyticsData = useCallback(
     async (
       data: any,
@@ -2523,6 +2574,11 @@ export default function ComprehensiveReportsPage() {
           filterSiteId,
           "dispatch",
         );
+
+        console.log("📦 After site filtering:", {
+          goodsReceipts: filteredGoodsReceipts.length,
+          dispatches: filteredDispatches.length,
+        });
 
         const filteredData = {
           purchaseOrders: filterDataBySite(
@@ -2611,6 +2667,27 @@ export default function ComprehensiveReportsPage() {
                 filteredStockValues.summary.totalInventoryValue,
             },
           };
+
+          // After filtering, add:
+          console.log("🔍 SITE FILTERING DETAILS:");
+          console.log(`  Filter Site ID: ${filterSiteId}`);
+          console.log(
+            `  Raw goods receipts: ${data.goodsReceipts?.length || 0}`,
+          );
+          console.log(
+            `  Filtered goods receipts: ${filteredGoodsReceipts.length}`,
+          );
+          console.log(`  Raw dispatches: ${data.dispatches?.length || 0}`);
+          console.log(`  Filtered dispatches: ${filteredDispatches.length}`);
+
+          // Also log a sample of filtered dispatches
+          if (filteredDispatches.length > 0) {
+            console.log("  Sample filtered dispatch:", {
+              number: filteredDispatches[0].dispatchNumber,
+              date: filteredDispatches[0].dispatchDate,
+              items: filteredDispatches[0].dispatchedItems?.length,
+            });
+          }
 
           setAnalyticsData(updatedAnalytics);
           console.log(
