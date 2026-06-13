@@ -3,29 +3,32 @@ import { client, writeClient } from '@/lib/sanity';
 import { groq } from 'next-sanity';
 import { logSanityInteraction } from '@/lib/sanityLogger';
 import { updateStockForTransaction } from '@/lib/stockCalculations';
+import { getArchivedTransfers } from '@/lib/archiveQueries';
+import { getMaxSequenceNumber } from '@/lib/archiveService';
 
 // Helper function to generate the next unique transfer number
 const getNextTransferNumber = async (): Promise<string> => {
     try {
+        // 1. Get max from Sanity
         const query = groq`*[_type == "InternalTransfer"] | order(transferNumber desc)[0].transferNumber`;
         const lastTransferNumber = await client.fetch(query);
 
-        if (!lastTransferNumber) {
-            return 'TRF-00001'; // First transfer
+        let lastNumber = 0;
+        if (lastTransferNumber) {
+            const match = lastTransferNumber.match(/TRF-(\d+)/);
+            if (match) lastNumber = parseInt(match[1], 10);
         }
 
-        // Extract the numeric part from the transfer number (e.g., "TRF-00023" -> 23)
-        const match = lastTransferNumber.match(/TRF-(\d+)/);
-        if (!match) {
-            return 'TRF-00001'; // Fallback if format is unexpected
-        }
+        // 2. Check MongoDB archived max (answer 7b)
+        try {
+            const mongoMax = await getMaxSequenceNumber('InternalTransfer');
+            if (mongoMax > lastNumber) lastNumber = mongoMax;
+        } catch { /* MongoDB unavailable — use Sanity max */ }
 
-        const lastNumber = parseInt(match[1], 10);
         const nextNumber = lastNumber + 1;
         return `TRF-${String(nextNumber).padStart(5, '0')}`;
     } catch (error) {
         console.error('Error generating transfer number:', error);
-        // Fallback: generate a timestamp-based ID
         return `TRF-${Date.now().toString().slice(-5)}`;
     }
 };
@@ -60,7 +63,39 @@ export async function GET() {
         }`;
 
         const transfers = await client.fetch(query);
-        return NextResponse.json(transfers);
+
+        // ── Fetch archived transfers from MongoDB ──
+        let archivedTransfers: any[] = [];
+        try {
+            // Get user site info for filtering — transfers route doesn’t currently filter by site,
+            // but we apply it in MongoDB for consistency
+            let userSiteId: string | null = null;
+            let canAccessMultipleSites = true;
+            try {
+                const { getUserSiteInfo } = await import('@/lib/siteFiltering');
+                const info = await getUserSiteInfo();
+                userSiteId = info.userSiteId;
+                canAccessMultipleSites = info.canAccessMultipleSites;
+            } catch { /* session may not be present */ }
+
+            const raw = await getArchivedTransfers({ userSiteId, canAccessMultipleSites });
+            archivedTransfers = raw.map(t => ({
+                ...t,
+                _id: t._sanityId || t._id?.toString(),
+                _isArchived: true,
+                totalItems: (t.transferredItems || []).length,
+                items: t.transferredItems || [],
+            }));
+        } catch (mongoErr) {
+            console.warn('⚠️  Could not fetch archived transfers from MongoDB:', mongoErr);
+        }
+
+        // Merge and sort by transferDate descending
+        const merged = [...transfers, ...archivedTransfers].sort(
+            (a, b) => new Date(b.transferDate).getTime() - new Date(a.transferDate).getTime()
+        );
+
+        return NextResponse.json(merged);
     } catch (error) {
         console.error('Failed to fetch transfers:', error);
         return NextResponse.json(

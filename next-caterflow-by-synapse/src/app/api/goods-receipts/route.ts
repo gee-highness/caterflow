@@ -7,10 +7,12 @@ import { v4 as uuidv4 } from 'uuid';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { getUserSiteInfo, buildGoodsReceiptSiteFilter } from '@/lib/siteFiltering';
+import { getArchivedGoodsReceipts } from '@/lib/archiveQueries';
+import { getMaxSequenceNumber } from '@/lib/archiveService';
 
 const getNextReceiptNumber = async (): Promise<string> => {
     try {
-        // Get all receipt numbers and find the maximum
+        // 1. Get max from Sanity
         const query = groq`*[_type == "GoodsReceipt"].receiptNumber`;
         const allReceiptNumbers = await client.fetch(query);
 
@@ -28,23 +30,25 @@ const getNextReceiptNumber = async (): Promise<string> => {
             });
         }
 
-        // Generate the next number
+        // 2. Check MongoDB archived max (answer 7b)
+        try {
+            const mongoMax = await getMaxSequenceNumber('GoodsReceipt');
+            if (mongoMax > maxNumber) maxNumber = mongoMax;
+        } catch { /* MongoDB unavailable — use Sanity max */ }
+
         const nextNumber = maxNumber + 1;
         const newReceiptNumber = `GR-${String(nextNumber).padStart(5, '0')}`;
 
-        // Double-check this number doesn't already exist (concurrency safety)
         const checkQuery = groq`count(*[_type == "GoodsReceipt" && receiptNumber == $newNumber])`;
         const existingCount = await client.fetch(checkQuery, { newNumber: newReceiptNumber });
 
         if (existingCount > 0) {
-            // If it exists, try the next number
             return `GR-${String(nextNumber + 1).padStart(5, '0')}`;
         }
 
         return newReceiptNumber;
     } catch (error) {
         console.error('Error generating receipt number:', error);
-        // Fallback with timestamp to ensure uniqueness
         const timestamp = new Date().getTime();
         return `GR-${String(timestamp).slice(-5)}`;
     }
@@ -229,14 +233,34 @@ export async function GET() {
             const supplierNames = receipt.purchaseOrder?.orderedItems
                 ? extractSupplierNames(receipt.purchaseOrder.orderedItems)
                 : 'No suppliers';
-
-            return {
-                ...receipt,
-                supplierNames
-            };
+            return { ...receipt, supplierNames };
         });
 
-        return NextResponse.json(processedReceipts);
+        // ── Fetch archived goods receipts from MongoDB ──
+        let archivedReceipts: any[] = [];
+        try {
+            const raw = await getArchivedGoodsReceipts({
+                userSiteId: userSiteInfo.userSiteId,
+                canAccessMultipleSites: userSiteInfo.canAccessMultipleSites,
+            });
+            archivedReceipts = raw.map(r => ({
+                ...r,
+                _id: r._sanityId || r._id?.toString(),
+                _isArchived: true,
+                supplierNames: r.purchaseOrder?.orderedItems
+                    ? extractSupplierNames(r.purchaseOrder.orderedItems)
+                    : 'No suppliers',
+            }));
+        } catch (mongoErr) {
+            console.warn('⚠️  Could not fetch archived goods receipts from MongoDB:', mongoErr);
+        }
+
+        // Merge and sort by receiptDate descending
+        const merged = [...processedReceipts, ...archivedReceipts].sort(
+            (a, b) => new Date(b.receiptDate).getTime() - new Date(a.receiptDate).getTime()
+        );
+
+        return NextResponse.json(merged);
     } catch (error) {
         console.error('Failed to fetch goods receipts:', error);
         return NextResponse.json(

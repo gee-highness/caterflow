@@ -321,25 +321,61 @@ export default function BinCountModal({
       setCountDate(new Date(binCount.countDate).toISOString().split("T")[0]);
       setNotes(binCount.notes || "");
 
-      const validCountedItems = (binCount.countedItems || [])
-        .filter((item) => item && item.stockItem)
-        .map((item) => ({
-          ...item,
-          _key: item._key || nanoid(),
-          stockItem: {
-            _id: item.stockItem._id,
-            name: item.stockItem.name || "Unknown Item",
-            sku: item.stockItem.sku || "N/A",
-            unitPrice: item.stockItem.unitPrice ?? 0,
-          },
-          hasMissingPrice: item.stockItem.unitPrice == null,
-        }));
-      setCountedItems(validCountedItems);
-      if (validCountedItems.some((item) => item.hasMissingPrice)) {
-        setNotes(
-          "Some stock items do not have a unit price. Variance cost may be inaccurate for those items.",
+      // Load prices from receipts for items in this count
+      const loadPricesForExistingCount = async () => {
+        const itemIds = (binCount.countedItems || [])
+          .filter((item) => item && item.stockItem)
+          .map((item) =>
+            typeof item.stockItem === "string"
+              ? item.stockItem
+              : item.stockItem._id,
+          );
+
+        const pricesFromReceipts = await fetchUnitPricesFromReceipts(
+          itemIds,
+          binCount.bin?._id || "",
         );
-      }
+
+        const validCountedItems = (binCount.countedItems || [])
+          .filter((item) => item && item.stockItem)
+          .map((item) => {
+            const itemId =
+              typeof item.stockItem === "string"
+                ? item.stockItem
+                : item.stockItem._id;
+
+            const unitPrice =
+              pricesFromReceipts[itemId] ??
+              item.stockItem.unitPrice ??
+              item.unitPrice ??
+              0;
+
+            const hasMissingPrice =
+              !pricesFromReceipts[itemId] && !item.stockItem.unitPrice;
+
+            return {
+              ...item,
+              _key: item._key || nanoid(),
+              stockItem: {
+                _id: itemId,
+                name: item.stockItem.name || "Unknown Item",
+                sku: item.stockItem.sku || "N/A",
+                unitPrice: unitPrice,
+              },
+              unitPrice: unitPrice,
+              hasMissingPrice: hasMissingPrice,
+            };
+          });
+
+        setCountedItems(validCountedItems);
+        if (validCountedItems.some((item) => item.hasMissingPrice)) {
+          setNotes(
+            "Some stock items do not have a unit price. Variance cost may be inaccurate for those items.",
+          );
+        }
+      };
+
+      loadPricesForExistingCount();
     } else {
       setSelectedBin(null);
       setCountDate(new Date().toISOString().split("T")[0]);
@@ -452,15 +488,27 @@ export default function BinCountModal({
       const itemIds = allStockItems.map((item) => item._id);
       const bulkResults = await fetchBulkCurrentStock(itemIds, selectedBin._id);
 
+      // Fetch unit prices from goods receipts
+      const pricesFromReceipts = await fetchUnitPricesFromReceipts(
+        itemIds,
+        selectedBin._id,
+      );
+
       const itemsWithQuantities = allStockItems.map((item) => {
         const systemQuantity = bulkResults[item._id] || 0;
-        const originalUnitPrice = item.unitPrice;
-        const unitPrice = originalUnitPrice ?? 0;
+
+        // Try to get price from receipts first, then from item, then 0
+        const unitPrice = pricesFromReceipts[item._id] ?? item.unitPrice ?? 0;
+
+        // Check if price is actually missing
+        const hasMissingPrice =
+          !pricesFromReceipts[item._id] && !item.unitPrice;
 
         // LOG 2: Each item's unit price
         console.log(`📦 Item: ${item.name} (SKU: ${item.sku})`);
-        console.log(`   Raw unitPrice from API: ${item.unitPrice}`);
-        console.log(`   Fallback value used: ${unitPrice}`);
+        console.log(`   Price from receipts: ${pricesFromReceipts[item._id]}`);
+        console.log(`   Price from item: ${item.unitPrice}`);
+        console.log(`   Final unitPrice: ${unitPrice}`);
 
         return {
           _key: nanoid(),
@@ -475,7 +523,7 @@ export default function BinCountModal({
           variance: 0 - systemQuantity,
           varianceCost: (0 - systemQuantity) * unitPrice,
           unitPrice: unitPrice,
-          hasMissingPrice: originalUnitPrice == null,
+          hasMissingPrice: hasMissingPrice,
         };
       });
 
@@ -629,6 +677,46 @@ export default function BinCountModal({
     }
   };
 
+  // Fetch unit prices from goods receipts for items in this bin
+  const fetchUnitPricesFromReceipts = async (
+    itemIds: string[],
+    binId: string,
+  ): Promise<Record<string, number>> => {
+    const priceMap: Record<string, number> = {};
+
+    try {
+      const response = await fetch("/api/goods-receipts");
+      if (!response.ok) throw new Error("Failed to fetch receipts");
+
+      const receipts = await response.json();
+
+      // Find all receipts for this bin and get the latest price for each item
+      receipts.forEach((receipt: any) => {
+        if (receipt.receivedItems && Array.isArray(receipt.receivedItems)) {
+          receipt.receivedItems.forEach((receivedItem: any) => {
+            const itemId =
+              typeof receivedItem.stockItem === "string"
+                ? receivedItem.stockItem
+                : receivedItem.stockItem?._id;
+
+            if (itemIds.includes(itemId) && receivedItem.unitPrice) {
+              // Always use the latest price found (last one chronologically since sorted by date desc)
+              if (!priceMap[itemId]) {
+                priceMap[itemId] = receivedItem.unitPrice;
+              }
+            }
+          });
+        }
+      });
+
+      console.log("📊 Unit prices fetched from receipts:", priceMap);
+      return priceMap;
+    } catch (error) {
+      console.error("Failed to fetch prices from receipts:", error);
+      return {};
+    }
+  };
+
   const handleStockItemsSelect = async (items: StockItemForSelector[]) => {
     setIsStockItemModalOpen(false);
 
@@ -665,23 +753,37 @@ export default function BinCountModal({
       console.log("🔍 First selected item:", newItems[0]);
 
       const newItemIds = newItems.map((item) => item._id);
+
+      // Fetch current stock quantities
       const bulkResults = await fetchBulkCurrentStock(
+        newItemIds,
+        selectedBin._id,
+      );
+
+      // Fetch unit prices from goods receipts
+      const pricesFromReceipts = await fetchUnitPricesFromReceipts(
         newItemIds,
         selectedBin._id,
       );
 
       const itemsWithQuantities = newItems.map((item) => {
         const systemQuantity = bulkResults[item._id] || 0;
-        const originalUnitPrice = item.unitPrice;
-        const unitPrice = originalUnitPrice ?? 0;
+
+        // Try to get price from receipts first, then from item, then 0
+        const unitPrice = pricesFromReceipts[item._id] ?? item.unitPrice ?? 0;
+
+        // Check if price is actually missing
+        const hasMissingPrice =
+          !pricesFromReceipts[item._id] && !item.unitPrice;
 
         // LOG 5: Each manually selected item's unit price
         console.log(
           `📦 Manual selection - Item: ${item.name} (SKU: ${item.sku})`,
         );
-        console.log(`   Raw unitPrice from modal: ${item.unitPrice}`);
-        console.log(`   Type of unitPrice: ${typeof item.unitPrice}`);
-        console.log(`   Fallback value: ${unitPrice}`);
+        console.log(`   Price from receipts: ${pricesFromReceipts[item._id]}`);
+        console.log(`   Price from item: ${item.unitPrice}`);
+        console.log(`   Final unitPrice: ${unitPrice}`);
+        console.log(`   Has missing price: ${hasMissingPrice}`);
 
         return {
           _key: nanoid(),
@@ -696,7 +798,7 @@ export default function BinCountModal({
           variance: 0 - systemQuantity,
           varianceCost: (0 - systemQuantity) * unitPrice,
           unitPrice: unitPrice,
-          hasMissingPrice: originalUnitPrice == null,
+          hasMissingPrice: hasMissingPrice,
         };
       });
 

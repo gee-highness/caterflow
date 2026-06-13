@@ -14,6 +14,7 @@ import {
 
 // Add at the top of the file, after imports:
 import { Mutex } from 'async-mutex';
+import { fetchArchivedTransactions as getArchivedTransactionsForItem, fetchLatestStockBaseline as getLatestStockBaseline } from '@/app/actions/archiveActions';
 
 Decimal.set({ precision: 10, rounding: Decimal.ROUND_HALF_UP });
 
@@ -1223,6 +1224,42 @@ const calculateStockFromTransactions = async (
 
     let stock = new Decimal(0);
     let lastCountDate: Date | null = null;
+
+    // --- Add Archived Transactions ---
+    try {
+      const archived = await getArchivedTransactionsForItem(stockItemId, binId);
+      if (!data.allEvents) data.allEvents = [];
+      
+      archived.forEach(tx => {
+        const mappedTx: any = { _type: '', date: tx.date };
+        if (tx.type === 'receipt') {
+          mappedTx._type = 'GoodsReceipt';
+          mappedTx.receivedItems = [{ itemId: stockItemId, quantity: tx.quantity }];
+        } else if (tx.type === 'dispatch') {
+          mappedTx._type = 'DispatchLog';
+          mappedTx.dispatchedItems = [{ itemId: stockItemId, quantity: Math.abs(tx.quantity) }];
+        } else if (tx.type === 'transferOut') {
+          mappedTx._type = 'InternalTransfer';
+          mappedTx.transferredItems = [{ itemId: stockItemId, quantity: Math.abs(tx.quantity), fromBinId: binId, toBinId: '' }];
+        } else if (tx.type === 'transferIn') {
+          mappedTx._type = 'InternalTransfer';
+          mappedTx.transferredItems = [{ itemId: stockItemId, quantity: tx.quantity, fromBinId: '', toBinId: binId }];
+        } else if (tx.type === 'count') {
+          mappedTx._type = 'InventoryCount';
+          mappedTx.countedItems = [{ itemId: stockItemId, quantity: tx.quantity }];
+        }
+        data.allEvents.push(mappedTx);
+      });
+      
+      // Re-sort to include archived transactions
+      data.allEvents.sort((a: any, b: any) => {
+        const dateA = a.date ? new Date(a.date).getTime() : 0;
+        const dateB = b.date ? new Date(b.date).getTime() : 0;
+        return dateA - dateB;
+      });
+    } catch (e) {
+      console.warn('⚠️ Could not fetch archived transactions:', e);
+    }
 
     // Process events in chronological order
     data.allEvents?.forEach((event: any) => {
@@ -4145,9 +4182,26 @@ export const calculateStockExactLogic = async (
     // STEP 3: Process ALL transactions in chronological order
     const allTransactions: Array<{
       date: Date;
-      type: 'receipt' | 'dispatch' | 'transferIn' | 'transferOut';
+      type: 'receipt' | 'dispatch' | 'transferIn' | 'transferOut' | 'count';
       quantity: number;
     }> = [];
+
+    // --- Add Archived Transactions ---
+    try {
+      const archived = await getArchivedTransactionsForItem(stockItemId, binId);
+      archived.forEach(tx => {
+        if (lastCountDate && new Date(tx.date) <= lastCountDate) return;
+        if (tx.type === 'count') return; // Handled as starting point in count logic
+        
+        allTransactions.push({
+          date: new Date(tx.date),
+          type: tx.type as any,
+          quantity: tx.quantity
+        });
+      });
+    } catch (e) {
+      console.warn('⚠️ Could not fetch archived transactions:', e);
+    }
 
     // Add receipts
     data.receipts?.forEach((receipt: any) => {
@@ -4392,6 +4446,25 @@ export const calculateStockWithHistory = async (
       documentNumber: string;
       quantity: number;
     }> = [];
+
+    // --- Add Archived Transactions ---
+    try {
+      const archived = await getArchivedTransactionsForItem(stockItemId, binId);
+      archived.forEach(tx => {
+        // Only include transactions after the last Sanity count if one exists
+        if (lastCountDate && new Date(tx.date) <= lastCountDate) return;
+        
+        allTransactions.push({
+          date: new Date(tx.date),
+          type: tx.type,
+          documentId: `archived-${tx.documentNumber}`,
+          documentNumber: tx.documentNumber,
+          quantity: tx.quantity
+        });
+      });
+    } catch (e) {
+      console.warn('⚠️ Could not fetch archived transactions:', e);
+    }
 
     // Add the last count as starting point
     if (lastCount) {

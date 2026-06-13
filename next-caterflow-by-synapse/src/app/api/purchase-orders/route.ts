@@ -10,6 +10,8 @@ import { nanoid } from 'nanoid';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { getUserSiteInfo, buildSiteFilter } from '@/lib/siteFiltering';
+import { getArchivedPurchaseOrders } from '@/lib/archiveQueries';
+import { getMaxSequenceNumber } from '@/lib/archiveService';
 
 /**
  * Helper to set no-cache headers on a NextResponse
@@ -26,7 +28,7 @@ function setNoCache(res: NextResponse) {
 
 const getNextPONumber = async (): Promise<string> => {
     try {
-        // Get all PO numbers and find the maximum
+        // 1. Get max from Sanity
         const query = groq`*[_type == "PurchaseOrder" && defined(poNumber)].poNumber`;
         const allPONumbers = await client.fetch(query);
 
@@ -44,23 +46,25 @@ const getNextPONumber = async (): Promise<string> => {
             });
         }
 
-        // Generate the next number
+        // 2. Check MongoDB archived max (answer 7b)
+        try {
+            const mongoMax = await getMaxSequenceNumber('PurchaseOrder');
+            if (mongoMax > maxNumber) maxNumber = mongoMax;
+        } catch { /* MongoDB unavailable — use Sanity max */ }
+
         const nextNumber = maxNumber + 1;
         const newPONumber = `PO-${String(nextNumber).padStart(5, '0')}`;
 
-        // Double-check this number doesn't already exist (concurrency safety)
         const checkQuery = groq`count(*[_type == "PurchaseOrder" && poNumber == $newNumber])`;
         const existingCount = await client.fetch(checkQuery, { newNumber: newPONumber });
 
         if (existingCount > 0) {
-            // If it exists, try the next number
             return `PO-${String(nextNumber + 1).padStart(5, '0')}`;
         }
 
         return newPONumber;
     } catch (error) {
         console.error('Error generating PO number:', error);
-        // Fallback with timestamp to ensure uniqueness
         const timestamp = new Date().getTime();
         return `PO-${String(timestamp).slice(-5)}`;
     }
@@ -163,7 +167,6 @@ export async function GET(request: Request) {
 
         let purchaseOrders = await client.fetch(allQuery, queryParams);
 
-        // Manually process all purchase orders to add the unique supplier names
         const processedOrders = (purchaseOrders || []).map((order: any) => {
             const suppliers = order.orderedItems
                 .map((item: any) => item.supplier?.name)
@@ -173,13 +176,37 @@ export async function GET(request: Request) {
                 ? [...new Set(suppliers)].join(', ')
                 : 'No suppliers specified';
 
-            return {
-                ...order,
-                supplierNames: uniqueSupplierNames
-            };
+            return { ...order, supplierNames: uniqueSupplierNames };
         });
 
-        const res = NextResponse.json(processedOrders);
+        // ── Fetch archived POs from MongoDB ──
+        let archivedOrders: any[] = [];
+        try {
+            const raw = await getArchivedPurchaseOrders({
+                userSiteId: userSiteInfo.userSiteId,
+                canAccessMultipleSites: userSiteInfo.canAccessMultipleSites,
+                status: status || undefined,
+            });
+            archivedOrders = raw.map(o => ({
+                ...o,
+                _id: o._sanityId || o._id?.toString(),
+                _isArchived: true,
+                supplierNames: (o.orderedItems || [])
+                    .map((i: any) => i.supplier?.name)
+                    .filter(Boolean)
+                    .filter((v: any, i: number, arr: any[]) => arr.indexOf(v) === i)
+                    .join(', ') || 'No suppliers specified',
+            }));
+        } catch (mongoErr) {
+            console.warn('⚠️  Could not fetch archived POs from MongoDB:', mongoErr);
+        }
+
+        // Merge and sort by orderDate descending
+        const merged = [...processedOrders, ...archivedOrders].sort(
+            (a, b) => new Date(b.orderDate).getTime() - new Date(a.orderDate).getTime()
+        );
+
+        const res = NextResponse.json(merged);
         return setNoCache(res);
     } catch (error: any) {
         console.error('Error fetching purchase orders:', error);

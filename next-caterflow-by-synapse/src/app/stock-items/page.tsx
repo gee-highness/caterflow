@@ -42,6 +42,7 @@ interface StockItem {
         name: string;
     };
     unitOfMeasure: string;
+    unitPrice: number;
 }
 
 export default function InventoryPage() {
@@ -74,7 +75,8 @@ export default function InventoryPage() {
                 "category": category->{_id, title},
                 "suppliers": suppliers[]->{_id, name},
                 "primarySupplier": primarySupplier->{_id, name},
-                unitOfMeasure
+                unitOfMeasure,
+                unitPrice
             }
         `;
         try {

@@ -237,7 +237,13 @@ const SidebarContent = ({ onItemClick }: { onItemClick?: () => void }) => {
           href: "/dispatch-types",
           icon: FiTruck,
           roles: ["admin"],
-        }, // ← Add this line
+        },
+        {
+          label: "Archive",
+          href: "/admin/archive",
+          icon: FiDatabase,
+          roles: ["admin"],
+        },
         {
           label: "Locations",
           href: "/locations",

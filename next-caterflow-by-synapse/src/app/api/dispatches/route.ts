@@ -1,4 +1,4 @@
-// src/app/api/dispatches/route.ts (REPLACE ENTIRE FILE)
+// src/app/api/dispatches/route.ts
 import { NextResponse } from 'next/server';
 import { client, writeClient } from '@/lib/sanity';
 import { groq } from 'next-sanity';
@@ -8,6 +8,8 @@ import { authOptions } from '@/lib/auth';
 import { v4 as uuidv4 } from 'uuid';
 import { getUserSiteInfo, buildTransactionSiteFilter } from '@/lib/siteFiltering';
 import { updateStockForTransaction } from '@/lib/stockCalculations';
+import { getArchivedDispatchLogs } from '@/lib/archiveQueries';
+import { getMaxSequenceNumber } from '@/lib/archiveService';
 
 // normalize refs to string ids
 const resolveRef = (val: any): string | null => {
@@ -22,7 +24,7 @@ const resolveRef = (val: any): string | null => {
 
 const getNextDispatchNumber = async (): Promise<string> => {
     try {
-        // Get all dispatch numbers and find the maximum
+        // 1. Get max from Sanity
         const query = groq`*[_type == "DispatchLog" && defined(dispatchNumber)].dispatchNumber`;
         const allDispatchNumbers = await client.fetch(query);
 
@@ -40,23 +42,27 @@ const getNextDispatchNumber = async (): Promise<string> => {
             });
         }
 
+        // 2. Also check MongoDB archived max (answer 7b)
+        try {
+            const mongoMax = await getMaxSequenceNumber('DispatchLog');
+            if (mongoMax > maxNumber) maxNumber = mongoMax;
+        } catch { /* MongoDB unavailable — use Sanity max */ }
+
         // Generate the next number
         const nextNumber = maxNumber + 1;
         const newDispatchNumber = `DL-${String(nextNumber).padStart(5, '0')}`;
 
-        // Double-check this number doesn't already exist (concurrency safety)
+        // Double-check this number doesn't already exist in Sanity (concurrency safety)
         const checkQuery = groq`count(*[_type == "DispatchLog" && dispatchNumber == $newNumber])`;
         const existingCount = await client.fetch(checkQuery, { newNumber: newDispatchNumber });
 
         if (existingCount > 0) {
-            // If it exists, try the next number
             return `DL-${String(nextNumber + 1).padStart(5, '0')}`;
         }
 
         return newDispatchNumber;
     } catch (error) {
         console.error('Error generating dispatch number:', error);
-        // Fallback with timestamp to ensure uniqueness
         const timestamp = new Date().getTime();
         return `DL-${String(timestamp).slice(-5)}`;
     }
@@ -89,18 +95,11 @@ const getSellingPriceForSite = async (dispatchTypeId: string, siteId: string): P
     }
 };
 
-// In the GET function, update the query to handle both old and new structures:
+// GET: fetches from Sanity AND MongoDB archive, merges and returns unified list
 export async function GET() {
     try {
         const userSiteInfo = await getUserSiteInfo();
         const siteFilter = buildTransactionSiteFilter(userSiteInfo);
-        // Add this temporary code to /api/dispatches/route.ts in the GET function:
-        console.log('🔍 User Site Info:', {
-            userSiteInfo,
-            siteFilter,
-            role: getUserSiteInfo.toString,
-            //allowedSites: userSiteInfo?.allowedSites
-        });
 
         const query = groq`*[_type == "DispatchLog" ${siteFilter}] | order(dispatchDate desc) {
             _id,
@@ -214,12 +213,8 @@ export async function GET() {
 
         // Transform old dispatches to new structure for UI consistency
         const transformedDispatches = validDispatches.map((dispatch: any) => {
-            // For old dispatches with sourceBin but no sourceSite, move bin to item level
             if (dispatch.sourceSite?._id && dispatch.sourceSite?._id.startsWith('drafts.')) {
-                // This is an old dispatch with only sourceBin at the document level
                 const oldSourceBin = dispatch.sourceSite;
-
-                // Create a new structure with sourceSite from bin's site
                 return {
                     ...dispatch,
                     sourceSite: oldSourceBin.site || { _id: '', name: 'Unknown Site' },
@@ -229,11 +224,31 @@ export async function GET() {
                     }))
                 };
             }
-
             return dispatch;
         });
 
-        return NextResponse.json(transformedDispatches);
+        // ── Fetch archived dispatches from MongoDB ──
+        let archivedDispatches: any[] = [];
+        try {
+            const raw = await getArchivedDispatchLogs({
+                userSiteId: userSiteInfo.userSiteId,
+                canAccessMultipleSites: userSiteInfo.canAccessMultipleSites,
+            });
+            archivedDispatches = raw.map(d => ({
+                ...d,
+                _id: d._sanityId || d._id?.toString(),
+                _isArchived: true,
+            }));
+        } catch (mongoErr) {
+            console.warn('⚠️  Could not fetch archived dispatches from MongoDB:', mongoErr);
+        }
+
+        // Merge: Sanity (recent) + MongoDB (archived), sorted by date descending
+        const merged = [...transformedDispatches, ...archivedDispatches].sort(
+            (a, b) => new Date(b.dispatchDate).getTime() - new Date(a.dispatchDate).getTime()
+        );
+
+        return NextResponse.json(merged);
     } catch (error) {
         console.error('Failed to fetch dispatches:', error);
         return NextResponse.json({ error: 'Failed to fetch dispatches' }, { status: 500 });
