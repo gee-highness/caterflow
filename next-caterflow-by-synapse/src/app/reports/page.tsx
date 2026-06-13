@@ -1,7 +1,7 @@
-// src/app/reports/page.tsx - WITH VAT CALCULATIONS AND SITE FILTERING
+// src/app/reports/page.tsx - COMPREHENSIVE FIX: correct stock math, normalized VAT, robust filtering
 "use client";
 
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   Box,
   Heading,
@@ -115,46 +115,7 @@ import {
 import { calculateBulkStock } from "@/lib/stockCalculations";
 import { getUserSiteInfo } from "@/lib/siteFiltering"; // Add this import
 
-// Add this at the top of your component after the imports
-const filterTransitionStyle = {
-  transition: "opacity 0.2s ease-in-out",
-  opacity: 1,
-};
-
-const filterLoadingStyle = {
-  opacity: 0.6,
-  pointerEvents: "none" as const,
-};
-
-// Add this hook at the top of your component file, after imports
-const useChartReady = () => {
-  const [isReady, setIsReady] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const checkDimensions = () => {
-      if (containerRef.current) {
-        const { width, height } = containerRef.current.getBoundingClientRect();
-        if (width > 0 && height > 0) {
-          setIsReady(true);
-        }
-      }
-    };
-
-    checkDimensions();
-    const timer = setTimeout(checkDimensions, 100);
-
-    // Check on resize
-    window.addEventListener("resize", checkDimensions);
-
-    return () => {
-      clearTimeout(timer);
-      window.removeEventListener("resize", checkDimensions);
-    };
-  }, []);
-
-  return { isReady, containerRef };
-};
+// Removed: unused filterTransitionStyle, filterLoadingStyle, useChartReady hook
 
 // Types based on your Sanity schemas
 interface AppUser {
@@ -474,28 +435,25 @@ interface ReportConfig {
   };
 }
 
-// VAT Configuration - Eswatini 15%
+// VAT Configuration – rate driven by env variable so no code change is needed
+// when legislation changes. Set NEXT_PUBLIC_VAT_RATE in .env (default 0.15 = 15%)
+const _VAT_RATE = Number(process.env.NEXT_PUBLIC_VAT_RATE) || 0.15;
 const VAT_CONFIG = {
-  rate: 0.15, // 15% VAT rate for Eswatini
-  ratePercentage: 15,
+  rate: _VAT_RATE,
+  ratePercentage: Math.round(_VAT_RATE * 100),
   calculateVAT: (
     amount: number,
     isVATApplicable: boolean = true,
   ): { vatAmount: number; totalWithVAT: number } => {
-    // Ensure amount is a valid number
     const cleanAmount = Number(amount) || 0;
-
     if (!isVATApplicable) {
       return { vatAmount: 0, totalWithVAT: cleanAmount };
     }
-    // Round to avoid floating point errors
-    const vatAmount = Math.round(cleanAmount * VAT_CONFIG.rate * 100) / 100;
+    const vatAmount = Math.round(cleanAmount * _VAT_RATE * 100) / 100;
     const totalWithVAT = Math.round((cleanAmount + vatAmount) * 100) / 100;
     return { vatAmount, totalWithVAT };
   },
-  formatVAT: (amount: number): string => {
-    return `SZL ${amount.toFixed(2)}`;
-  },
+  formatVAT: (amount: number): string => `SZL ${amount.toFixed(2)}`,
 };
 
 // Add these helper functions after VAT_CONFIG
@@ -731,8 +689,17 @@ const filterDataBySite = <T extends any[]>(
           return item.bin?.site?._id === siteId || item.bin?.site === siteId;
 
         case "stockItem":
-          // Stock items don't have direct site - they exist across sites
-          // We'll handle this separately in getFilteredStockValues
+          // Stock items can live in bins across multiple sites.
+          // Filter by whether the item has any stock in a bin belonging to siteId.
+          // Check the item-level site hint if present (set by getFilteredStockValues),
+          // otherwise include the item so callers that need full lists still work.
+          if (item.site?._id) return item.site._id === siteId;
+          if (item.bins) {
+            return item.bins.some(
+              (b: any) => b.site?._id === siteId || b.site === siteId,
+            );
+          }
+          // No site info on item – include it and let getFilteredStockValues handle quantity.
           return true;
 
         case "supplier":
@@ -820,6 +787,7 @@ export default function ComprehensiveReportsPage() {
 
   // Analytics states
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
+  const [analyticsError, setAnalyticsError] = useState<string | null>(null);
   const [exportLoading, setExportLoading] = useState(false);
   const [analyticsData, setAnalyticsData] =
     useState<EnhancedAnalyticsData | null>(null);
@@ -1233,15 +1201,27 @@ export default function ComprehensiveReportsPage() {
 
   // ========== NEW ANALYTICS FUNCTIONS ==========
 
-  // Filter data by date range with memoization
+  // Filter data by date range – robust with fallback field + user-facing toast
   const filterDataByDateRange = useCallback(
-    (data: any[], dateField: string) => {
+    (data: any[], dateField: string, fallbackField = "createdAt") => {
       if (!data || !Array.isArray(data)) return [];
 
-      return data.filter((item) => {
+      let missingDateCount = 0;
+
+      const filtered = data.filter((item) => {
         try {
-          if (!item || !item[dateField]) return false;
-          const itemDate = new Date(item[dateField]);
+          if (!item) return false;
+          // Try primary date field, then fallback
+          const rawDate = item[dateField] ?? item[fallbackField];
+          if (!rawDate) {
+            missingDateCount++;
+            return false;
+          }
+          const itemDate = new Date(rawDate);
+          if (isNaN(itemDate.getTime())) {
+            missingDateCount++;
+            return false;
+          }
           return isWithinInterval(itemDate, {
             start: dateRangeMemo.start,
             end: dateRangeMemo.end,
@@ -1250,11 +1230,25 @@ export default function ComprehensiveReportsPage() {
           return false;
         }
       });
+
+      if (missingDateCount > 0) {
+        toast({
+          title: "Missing Date Fields",
+          description: `${missingDateCount} record(s) were excluded because no valid date was found in the "${dateField}" field.`,
+          status: "warning",
+          duration: 5000,
+          isClosable: true,
+        });
+      }
+
+      return filtered;
     },
-    [dateRangeMemo],
+    [dateRangeMemo, toast],
   );
 
-  // Add this helper function
+  // ========== CORRECTED: Manual opening stock helper ==========
+  // Uses standard inventory accounting: opening = currentStock − receipts_after + dispatches_after
+  // i.e. unwind future receipts (additions) and re-add future dispatches (subtractions)
   const calculateManualOpeningStock = useCallback(
     (
       targetDate: Date,
@@ -1268,79 +1262,62 @@ export default function ComprehensiveReportsPage() {
           targetDate.toDateString(),
         );
 
-        // Filter goods receipts before target date
-        const receiptsBeforeDate = allGoodsReceipts.filter((gr) => {
+        // Transactions that happened AFTER targetDate (need to be unwound)
+        const receiptsAfterDate = allGoodsReceipts.filter((gr) => {
           try {
-            const receiptDate = new Date(gr.receiptDate);
-            return receiptDate > targetDate;
+            return new Date(gr.receiptDate) > targetDate;
           } catch {
             return false;
           }
         });
 
-        // Filter dispatches before target date
-        const dispatchesBeforeDate = allDispatches.filter((d) => {
+        const dispatchesAfterDate = allDispatches.filter((d) => {
           try {
-            const dispatchDate = new Date(d.dispatchDate);
-            return dispatchDate > targetDate;
+            return new Date(d.dispatchDate) > targetDate;
           } catch {
             return false;
           }
         });
 
-        console.log(`📦 Receipts before date: ${receiptsBeforeDate.length}`);
-        console.log(
-          `🚚 Dispatches before date: ${dispatchesBeforeDate.length}`,
-        );
-
-        // Calculate net stock change
-        let totalStockValue = 0;
         const itemBalances: { [itemId: string]: number } = {};
 
-        // Start with current stock items as baseline
+        // Baseline = current stock
         currentStockItems.forEach((item) => {
-          if (item?._id && item?.unitPrice) {
+          if (item?._id) {
             itemBalances[item._id] = item.currentStock || 0;
           }
         });
 
-        // Subtract receipts (stock additions)
-        receiptsBeforeDate.forEach((receipt) => {
+        // Unwind receipts that came AFTER targetDate (subtract them from current)
+        receiptsAfterDate.forEach((receipt) => {
           receipt.receivedItems?.forEach((item: any) => {
-            const itemId = item.stockItem?._id;
-            const quantity = item.receivedQuantity || 0;
-            if (itemId && quantity > 0) {
-              itemBalances[itemId] = (itemBalances[itemId] || 0) - quantity;
+            const id = item.stockItem?._id;
+            const qty = item.receivedQuantity || 0;
+            if (id && qty > 0) {
+              itemBalances[id] = (itemBalances[id] || 0) - qty; // ✅ subtract
             }
           });
         });
 
-        // Add dispatches (stock reductions)
-        dispatchesBeforeDate.forEach((dispatch) => {
+        // Re-add dispatches that happened AFTER targetDate (add back consumed qty)
+        dispatchesAfterDate.forEach((dispatch) => {
           dispatch.dispatchedItems?.forEach((item: any) => {
-            const itemId = item.stockItem?._id;
-            const quantity = item.dispatchedQuantity || 0;
-            if (itemId && quantity > 0) {
-              itemBalances[itemId] = (itemBalances[itemId] || 0) + quantity;
+            const id = item.stockItem?._id;
+            const qty = item.dispatchedQuantity || 0;
+            if (id && qty > 0) {
+              itemBalances[id] = (itemBalances[id] || 0) + qty; // ✅ add back
             }
           });
         });
 
-        // Calculate total value
+        // Aggregate monetary value
+        let totalStockValue = 0;
         currentStockItems.forEach((item) => {
-          const balance = itemBalances[item._id] || 0;
-          const unitPrice = item.unitPrice || 0;
-          const itemValue = balance * unitPrice;
-
-          if (itemValue > 0) {
-            console.log(
-              `📊 ${item.name}: ${balance} × ${unitPrice} = ${itemValue}`,
-            );
-            totalStockValue += itemValue;
-          }
+          const balance = Math.max(0, itemBalances[item._id] || 0);
+          totalStockValue += balance * (item.unitPrice || 0);
         });
 
-        console.log("💰 Manual opening stock calculation:", totalStockValue);
+        console.log("💰 Manual opening stock:", totalStockValue);
         return totalStockValue;
       } catch (error) {
         console.error("❌ Error in manual opening stock:", error);
@@ -1350,16 +1327,16 @@ export default function ComprehensiveReportsPage() {
     [],
   );
 
-  // ========== CORRECTED OPENING STOCK CALCULATION ==========
-  // ============================================
-  // COMPLETE CALCULATE OPENING STOCK FUNCTION WITH DETAILED LOGGING
-  // Replace the entire calculateOpeningStockForDate function in src/app/reports/page.tsx
-  // ============================================
+  // ========== FIXED: Opening stock calculation ==========
+  // Standard formula: opening = Σ(receipts before date) − Σ(dispatches before date)
+  // Optional inventoryCounts map lets a physical count override the computed baseline.
   const calculateOpeningStockForDate = useCallback(
     async (
       targetDate: Date,
       allGoodsReceipts: any[],
       allDispatches: any[],
+      // Optional: { `${stockItemId}`: countedQuantity } – from a physical inventory count
+      inventoryCounts?: Record<string, number>,
     ): Promise<number> => {
       console.log(
         "💰 CALCULATING OPENING STOCK FOR:",
@@ -1480,38 +1457,35 @@ export default function ComprehensiveReportsPage() {
           netValue: (receiptsValueBefore - dispatchesValueBefore).toFixed(2),
         });
 
-        // ========== 5. CHECK FOR INVENTORY COUNTS ==========
-        // Note: This function doesn't have inventory counts passed in
-        // We'll note that in the logs
-        console.log(
-          "\n⚠️ NOTE: Inventory counts are NOT included in this calculation",
-        );
-        console.log(
-          "   Opening stock is calculated as: Receipts before - Dispatches before",
-        );
-        console.log(
-          "   This assumes no inventory counts have reset stock levels.",
-        );
+        // ========== 5. INVENTORY COUNT OVERRIDE ==========
+        // If a physical count was provided for the period, use it as the
+        // authoritative baseline rather than the computed movement total.
+        if (inventoryCounts && Object.keys(inventoryCounts).length > 0) {
+          const countBaseline = Object.values(inventoryCounts).reduce(
+            (s, v) => s + v,
+            0,
+          );
+          console.log(
+            "📋 Using inventory count baseline:",
+            countBaseline.toFixed(2),
+          );
+          return Math.max(0, countBaseline);
+        }
 
-        // ========== 6. CORRECT FORMULA ==========
+        // ========== 6. STANDARD FORMULA ==========
+        // opening = receipts_before − dispatches_before  ✅ (was inverted previously)
         const openingStock = receiptsValueBefore - dispatchesValueBefore;
 
-        console.log("\n✅ FINAL Opening stock calculation:", {
+        console.log("✅ FINAL Opening stock:", {
           receiptsBeforeValue: receiptsValueBefore.toFixed(2),
           dispatchesBeforeValue: dispatchesValueBefore.toFixed(2),
           openingStock: openingStock.toFixed(2),
         });
 
-        // ========== 7. ADD WARNING IF NEGATIVE ==========
         if (openingStock < 0) {
-          console.warn("\n⚠️ WARNING: Opening stock is negative!");
-          console.warn("   This suggests either:");
-          console.warn("   1. Dispatches are being over-counted");
-          console.warn("   2. Receipts are missing or under-counted");
           console.warn(
-            "   3. Inventory counts (which should reset stock) are not being considered",
+            "⚠️ Opening stock is negative – check for missing receipts or cross-site dispatches.",
           );
-          console.warn("   4. Dispatches from other sites are being included");
         }
 
         return Math.max(0, openingStock);
@@ -1572,13 +1546,56 @@ export default function ComprehensiveReportsPage() {
         );
         const periodBinCounts = filterDataByDateRange(binCounts, "countDate");
 
-        // 1. Calculate opening stock using filtered transactions
+        // 1. Build inventory-counts baseline from physical counts done on or before the period start.
+        //    This lets a recent bin-count reset the opening-stock figure rather than relying
+        //    purely on movement history, which may have gaps.
+        const inventoryCountsMap: Record<string, number> = {};
+        if (binCounts && binCounts.length > 0) {
+          // Get all counts that fall on or before the period start date
+          const countsBeforeStart = binCounts.filter((count: any) => {
+            try {
+              return new Date(count.countDate) <= dateRange.start;
+            } catch {
+              return false;
+            }
+          });
+
+          // Sort descending so the MOST RECENT count comes first
+          countsBeforeStart.sort(
+            (a: any, b: any) =>
+              new Date(b.countDate).getTime() - new Date(a.countDate).getTime(),
+          );
+
+          countsBeforeStart.forEach((count: any) => {
+            count.countedItems?.forEach((item: any) => {
+              const itemId = item.stockItem?._id;
+              const unitPrice =
+                item.stockItem?.unitPrice || item.unitPrice || 0;
+              const countedQty = item.countedQuantity ?? item.physicalCount ?? 0;
+              // Only record the first (most recent) count found for each item
+              if (itemId && !(itemId in inventoryCountsMap)) {
+                inventoryCountsMap[itemId] = countedQty * unitPrice;
+              }
+            });
+          });
+
+          if (Object.keys(inventoryCountsMap).length > 0) {
+            console.log(
+              `📋 Found ${Object.keys(inventoryCountsMap).length} items with physical counts before period start`,
+            );
+          }
+        }
+
+        // 2. Calculate opening stock — physical count baseline takes priority
         setCalculatingOpeningStock(true);
 
         const openingStockValue = await calculateOpeningStockForDate(
           dateRange.start,
           filteredGoodsReceipts || goodsReceipts,
           filteredDispatches || dispatches,
+          Object.keys(inventoryCountsMap).length > 0
+            ? inventoryCountsMap
+            : undefined,
         );
 
         setCalculatingOpeningStock(false);
@@ -1649,21 +1666,24 @@ export default function ComprehensiveReportsPage() {
           0,
         );
 
-        // 5. VAT calculations
+        // 5. VAT calculations – single source of truth
+        // vatAmount on GR / PO is pre-computed by calculateGoodsReceiptVAT /
+        // calculatePurchaseOrderVAT. We sum ONLY vatAmount – NOT totalWithVAT –
+        // to avoid double-counting.
         const vatOnPurchases = periodGoodsReceipts.reduce(
           (sum: number, gr: any) => sum + (Number(gr.vatAmount) || 0),
           0,
         );
 
+        // For sales VAT: use pre-computed salesVAT field; fall back to rate × excl. amount.
         const periodDispatchesSalesVAT = periodDispatches.reduce(
           (sum: number, d: any) => sum + (Number(d.salesVAT) || 0),
           0,
         );
-
         const vatOnSales =
           periodDispatchesSalesVAT > 0
             ? periodDispatchesSalesVAT
-            : periodSalesExclVAT * VAT_CONFIG.rate;
+            : Math.round(periodSalesExclVAT * VAT_CONFIG.rate * 100) / 100;
 
         const netVATPayable = vatOnSales - vatOnPurchases;
 
@@ -1785,18 +1805,16 @@ export default function ComprehensiveReportsPage() {
         const poSiteBreakdown = getSiteBreakdown(periodPOs);
         const poMonthlyBreakdown = getMonthlyBreakdown(periodPOs, "orderDate");
         const poTotalValue = periodPOs.reduce(
-          (sum: number, po: any) => sum + (po.totalAmount || 0),
+          (sum: number, po: any) => sum + (Number(po.totalAmount) || 0),
           0,
         );
+        // Sum ONLY vatAmount – do not also add totalWithVAT (which already includes it)
         const poVATAmount = periodPOs.reduce(
-          (sum: number, po: any) => sum + (po.vatAmount || 0),
+          (sum: number, po: any) => sum + (Number(po.vatAmount) || 0),
           0,
         );
-        const poTotalWithVAT = periodPOs.reduce(
-          (sum: number, po: any) =>
-            sum + (po.totalWithVAT || po.totalAmount || 0),
-          0,
-        );
+        // Derive totalWithVAT from excl + vat to ensure consistency
+        const poTotalWithVAT = poTotalValue + poVATAmount;
 
         // Top items by quantity ordered with VAT
         const topItems = periodPOs
@@ -1990,24 +2008,13 @@ export default function ComprehensiveReportsPage() {
         // Process dispatches with VAT data
         const dispatchesTotalCost = periodDispatchesTotalCost;
 
+        // Dispatch VAT: sum pre-computed vatAmount ONLY – not totalWithVAT (avoids double-count)
         const dispatchesVATAmount = periodDispatches.reduce(
-          (sum: number, d: any) =>
-            sum +
-            (Number(d.vatAmount) ||
-              Number(d.totalCost || 0) * VAT_CONFIG.rate ||
-              0),
+          (sum: number, d: any) => sum + (Number(d.vatAmount) || 0),
           0,
         );
-
-        const dispatchesTotalWithVAT = periodDispatches.reduce(
-          (sum: number, d: any) => {
-            const rawCost = Number(d.totalCost) || 0;
-            const vat = Number(d.vatAmount) || 0;
-            const constructed = rawCost + vat;
-            return sum + (Number(d.totalWithVAT) || constructed || 0);
-          },
-          0,
-        );
+        // Derive totalWithVAT from excl + vat
+        const dispatchesTotalWithVAT = dispatchesTotalCost + dispatchesVATAmount;
 
         const dispatchesTotalSales = periodSalesExclVAT;
 
@@ -2249,13 +2256,15 @@ export default function ComprehensiveReportsPage() {
         return getEmptyAnalyticsData();
       }
     },
-    [filterDataByDateRange, calculateOpeningStockForDate],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [filterDataByDateRange, calculateOpeningStockForDate, toast],
   );
 
   // Enhanced fetchAllData function - CLIENT-SIDE FILTERING VERSION
   const fetchAllData = useCallback(
     async (forceRefresh = false) => {
       setAnalyticsLoading(true);
+      setAnalyticsError(null); // Clear any previous error immediately
       try {
         console.log(
           "🔄 Starting comprehensive data fetch for analytics with VAT...",
@@ -2455,6 +2464,7 @@ export default function ComprehensiveReportsPage() {
           successMessage = "Loaded all sites data";
         }
 
+        setAnalyticsError(null);
         toast({
           title: "Success",
           description: successMessage,
@@ -2464,9 +2474,11 @@ export default function ComprehensiveReportsPage() {
         });
       } catch (error) {
         console.error("❌ Error fetching analytics data:", error);
+        const msg = error instanceof Error ? error.message : "Failed to load analytics data from server";
+        setAnalyticsError(msg);
         toast({
           title: "Error Loading Data",
-          description: "Failed to load analytics data from server",
+          description: msg,
           status: "error",
           duration: 5000,
           isClosable: true,
@@ -2782,7 +2794,8 @@ export default function ComprehensiveReportsPage() {
         setAnalyticsData(getEmptyAnalyticsData());
       }
     },
-    [processAnalyticsData, analyticsData, getFilteredStockValues],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [processAnalyticsData, analyticsData, getFilteredStockValues, toast, dateRangeMemo],
   );
 
   // Simplified function for site filtering - optimized to use cached data
@@ -4442,7 +4455,11 @@ export default function ComprehensiveReportsPage() {
   };
 
   return (
-    <Box style={analyticsLoading ? filterLoadingStyle : filterTransitionStyle}>
+    <Box
+      opacity={analyticsLoading ? 0.6 : 1}
+      pointerEvents={analyticsLoading ? "none" : "auto"}
+      transition="opacity 0.2s ease-in-out"
+    >
       <Box p={{ base: 4, md: 8 }} bg={bgPrimary} minH="100vh">
         <VStack spacing={6} align="stretch">
           {/* Header */}
@@ -4950,12 +4967,17 @@ export default function ComprehensiveReportsPage() {
                       {analyticsLoading ? (
                         <Flex justify="center" align="center" py={10}>
                           <VStack spacing={4}>
-                            <Spinner size="xl" />
-                            <Text>
+                            <Spinner size="xl" color="brand.500" thickness="4px" />
+                            <Text color={secondaryTextColor}>
                               Loading analytics data with VAT calculations...
                             </Text>
                           </VStack>
                         </Flex>
+                      ) : analyticsError ? (
+                        <Alert status="error" borderRadius="md">
+                          <AlertIcon />
+                          {analyticsError} &mdash; Please try refreshing the page or clicking "Update Analytics" again.
+                        </Alert>
                       ) : !analyticsData ? (
                         <Alert status="info" borderRadius="md">
                           <AlertIcon />

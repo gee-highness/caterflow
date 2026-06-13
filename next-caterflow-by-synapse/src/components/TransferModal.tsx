@@ -201,14 +201,24 @@ export default function TransferModal({ isOpen, onClose, transfer, onSave }: Tra
         const fetchData = async () => {
             setLoading(true);
             try {
-                // Fetch bins
-                console.log('🗄️ Fetching bins...');
-                const binsRes = await fetch('/api/bins');
-                if (binsRes.ok) {
-                    const binsData = await binsRes.json();
-                    setAllBins(binsData);
-                    console.log('✅ Bins fetched:', binsData.length);
+                // Fetch bins – request all-sites visibility for transfers.
+                // The server enforces role-based access; falls back to own-site on 403.
+                console.log('🗄️ Fetching bins (all sites for transfer)...');
+                let binsData: any[] = [];
+                const allBinsRes = await fetch('/api/bins?allowAll=true');
+                if (allBinsRes.ok) {
+                    binsData = await allBinsRes.json();
+                    console.log(`✅ All-sites bins fetched: ${binsData.length}`);
+                } else if (allBinsRes.status === 403) {
+                    // Role not permitted to see all bins; fall back to own-site only
+                    console.warn('⚠️ allowAll denied, falling back to own-site bins');
+                    const fallbackRes = await fetch('/api/bins');
+                    if (fallbackRes.ok) {
+                        binsData = await fallbackRes.json();
+                        console.log(`✅ Own-site bins fetched: ${binsData.length}`);
+                    }
                 }
+                setAllBins(binsData);
 
                 // Initialize form data
                 const today = new Date().toISOString().split('T')[0];
@@ -874,6 +884,7 @@ export default function TransferModal({ isOpen, onClose, transfer, onSave }: Tra
                             <Button
                                 size="sm"
                                 leftIcon={<FiRefreshCw />}
+                                aria-label="Refresh stock levels from source bin"
                                 onClick={handleRefreshStock}
                                 isLoading={refreshingStock}
                                 variant="outline"
@@ -911,10 +922,22 @@ export default function TransferModal({ isOpen, onClose, transfer, onSave }: Tra
                                                     }}
                                                     isDisabled={!isEditable}
                                                 >
-                                                    {allBins.map((bin) => (
-                                                        <option key={bin._id} value={bin._id}>
-                                                            {bin.name} ({bin.site?.name})
-                                                        </option>
+                                                    {/* Group bins by site for clarity */}
+                                                    {Object.entries(
+                                                        allBins.reduce((groups: Record<string, any[]>, bin: any) => {
+                                                            const siteName = bin.site?.name || 'Unknown Site';
+                                                            if (!groups[siteName]) groups[siteName] = [];
+                                                            groups[siteName].push(bin);
+                                                            return groups;
+                                                        }, {})
+                                                    ).map(([siteName, bins]) => (
+                                                        <optgroup key={siteName} label={siteName}>
+                                                            {(bins as any[]).map((bin) => (
+                                                                <option key={bin._id} value={bin._id}>
+                                                                    {bin.name}
+                                                                </option>
+                                                            ))}
+                                                        </optgroup>
                                                     ))}
                                                 </Select>
                                             </FormControl>
@@ -931,10 +954,22 @@ export default function TransferModal({ isOpen, onClose, transfer, onSave }: Tra
                                                     }}
                                                     isDisabled={!isEditable}
                                                 >
-                                                    {allBins.map((bin) => (
-                                                        <option key={bin._id} value={bin._id}>
-                                                            {bin.name} ({bin.site?.name})
-                                                        </option>
+                                                    {/* Group bins by site for clarity */}
+                                                    {Object.entries(
+                                                        allBins.reduce((groups: Record<string, any[]>, bin: any) => {
+                                                            const siteName = bin.site?.name || 'Unknown Site';
+                                                            if (!groups[siteName]) groups[siteName] = [];
+                                                            groups[siteName].push(bin);
+                                                            return groups;
+                                                        }, {})
+                                                    ).map(([siteName, bins]) => (
+                                                        <optgroup key={siteName} label={siteName}>
+                                                            {(bins as any[]).map((bin) => (
+                                                                <option key={bin._id} value={bin._id}>
+                                                                    {bin.name}
+                                                                </option>
+                                                            ))}
+                                                        </optgroup>
                                                     ))}
                                                 </Select>
                                             </FormControl>

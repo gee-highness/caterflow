@@ -12,20 +12,35 @@ interface BinData {
     site: string;
 }
 
+// Roles that are permitted to view bins from all sites in the transfer context.
+const CROSS_SITE_ROLES = ['admin', 'auditor', 'procurer', 'site-manager'];
+
 // GET all bins
 export async function GET(req: NextRequest) {
     try {
         const { searchParams } = new URL(req.url);
         const siteId = searchParams.get('siteId');
+        // allowAll=true → bypass site filter (transfer cross-site visibility)
+        const allowAll = searchParams.get('allowAll') === 'true';
 
         // Get user site info for filtering
         const userSiteInfo = await getUserSiteInfo(req);
-        const baseSiteFilter = buildSiteFilter(userSiteInfo);
+
+        // Server-side gate: only permitted roles may bypass the site filter.
+        if (allowAll && !CROSS_SITE_ROLES.includes(userSiteInfo.userRole)) {
+            return NextResponse.json(
+                { error: 'Access denied: insufficient role to view all-site bins' },
+                { status: 403 }
+            );
+        }
+
+        // Skip site filter entirely when allowAll is granted
+        const baseSiteFilter = allowAll ? '' : buildSiteFilter(userSiteInfo);
 
         let query;
         let params = {};
 
-        if (siteId) {
+        if (siteId && !allowAll) {
             // If specific site ID is requested, check if user has access to it
             if (!userSiteInfo.canAccessMultipleSites && siteId !== userSiteInfo.userSiteId) {
                 return NextResponse.json(
@@ -33,7 +48,7 @@ export async function GET(req: NextRequest) {
                     { status: 403 }
                 );
             }
-            query = groq`*[_type == "Bin" && site._ref == $siteId ${baseSiteFilter}] | order(name asc) {
+            query = groq`*[_type == "Bin" && site._ref == $siteId ${baseSiteFilter}] | order(site->name asc, name asc) {
                 _id,
                 name,
                 binType,
@@ -42,7 +57,7 @@ export async function GET(req: NextRequest) {
             }`;
             params = { siteId };
         } else {
-            query = groq`*[_type == "Bin" ${baseSiteFilter}] | order(name asc) {
+            query = groq`*[_type == "Bin" ${baseSiteFilter}] | order(site->name asc, name asc) {
                 _id,
                 name,
                 binType,

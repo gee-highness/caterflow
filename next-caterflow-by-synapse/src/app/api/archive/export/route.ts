@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { getArchiveDb, COLLECTIONS } from '@/lib/mongoClient';
+import { encryptData } from '@/lib/encryption';
 
 export const maxDuration = 300; // Allow up to 5 minutes for large exports
 
@@ -35,11 +36,13 @@ export async function GET(request: Request) {
 
         const jsonString = JSON.stringify(finalExport, null, 2);
 
-        // Return as a downloadable JSON file
-        return new NextResponse(jsonString, {
+        // Encrypt the JSON string
+        const encrypted = encryptData(jsonString);
+        const payload = JSON.stringify(encrypted);
+        return new NextResponse(payload, {
             headers: {
-                'Content-Type': 'application/json',
-                'Content-Disposition': `attachment; filename="caterflow_archive_backup_${new Date().toISOString().split('T')[0]}.json"`,
+                'Content-Type': 'application/json', // encrypted payload as JSON
+                'Content-Disposition': `attachment; filename="caterflow_archive_backup_${new Date().toISOString().split('T')[0]}.json.enc"`,
             },
         });
     } catch (error: any) {

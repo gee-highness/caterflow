@@ -24,6 +24,47 @@ import {
   CardBody,
   Divider,
   Icon,
+  IconButton,
+  Tooltip,
+  Modal,
+  ModalOverlay,
+  ModalContent,
+  ModalHeader,
+  ModalCloseButton,
+  ModalBody,
+  ModalFooter,
+  useDisclosure,
+  TableContainer,
+  Skeleton,
+} from '@chakra-ui/react';
+import { useSession } from 'next-auth/react';
+import { useRouter } from 'next/navigation';
+import { FiDownload, FiPlay, FiRefreshCw, FiTrash2 } from 'react-icons/fi';
+
+import { useState, useEffect, useCallback } from 'react';
+import {
+  Box,
+  Button,
+  Heading,
+  Text,
+  Flex,
+  useToast,
+  Spinner,
+  useColorModeValue,
+  useTheme,
+  Table,
+  Thead,
+  Tbody,
+  Tr,
+  Th,
+  Td,
+  Badge,
+  HStack,
+  Card,
+  CardHeader,
+  CardBody,
+  Divider,
+  Icon,
   IconButton
 } from '@chakra-ui/react';
 import { useSession } from 'next-auth/react';
@@ -51,9 +92,14 @@ export default function ArchiveManagementPage() {
   const [logs, setLogs] = useState<ArchiveLog[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRunning, setIsRunning] = useState(false);
+  const [page, setPage] = useState(1);
+  const rowsPerPage = 10;
+  const { isOpen, onOpen, onClose } = useDisclosure();
+  const [deleteOld, setDeleteOld] = useState(false);
 
-  // Theme values
+  // Theme values – updated with subtle gradient for header
   const bgColor = useColorModeValue(theme.colors.neutral?.light?.['bg-primary'] || 'gray.50', theme.colors.neutral?.dark?.['bg-primary'] || 'gray.900');
+  const headerBg = useColorModeValue('linear-gradient(135deg, #e0e7ff, #cfe2ff)', 'linear-gradient(135deg, #2a4365, #405c8a)');
   const cardBgColor = useColorModeValue(theme.colors.neutral?.light?.['bg-card'] || 'white', theme.colors.neutral?.dark?.['bg-card'] || 'gray.800');
   const textColor = useColorModeValue(theme.colors.neutral?.light?.['text-primary'] || 'gray.800', theme.colors.neutral?.dark?.['text-primary'] || 'white');
   const tableHeaderBg = useColorModeValue('gray.100', 'gray.700');
@@ -98,42 +144,50 @@ export default function ArchiveManagementPage() {
     }
   }, [isAuthenticated, isAdmin, router, toast, fetchLogs, sessionStatus]);
 
-  const handleRunArchive = async () => {
+  const handleRunArchive = async (options?: { deleteOld?: boolean }) => {
     if (!confirm('Are you sure you want to trigger a manual archive run? This may take several minutes.')) return;
-    
     setIsRunning(true);
     try {
-      const res = await fetch('/api/archive/run', {
+      const query = options?.deleteOld ? '?deleteOld=true' : '';
+      const res = await fetch(`/api/archive/run${query}`, {
         method: 'POST',
-        // Manual triggers from admin UI can bypass CRON_SECRET if we pass standard auth cookies. 
-        // We'll rely on the API verifying admin session. Wait, the API relies on x-cron-secret or admin session.
         headers: {
-            'Content-Type': 'application/json'
-        }
+          'Content-Type': 'application/json',
+        },
       });
-      
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to run archive');
-      
+
       toast({
-        title: "Archive Completed",
-        description: `Successfully archived ${data.stats?.documentsArchived || 0} documents.`,
-        status: "success",
+        title: 'Archive Completed',
+        description: `Successfully archived ${data.stats?.documentsArchived || 0} documents${options?.deleteOld ? ' and deleted old data' : ''}.`,
+        status: 'success',
         duration: 5000,
         isClosable: true,
       });
       fetchLogs();
     } catch (error: any) {
       toast({
-        title: "Archive Failed",
+        title: 'Archive Failed',
         description: error.message,
-        status: "error",
+        status: 'error',
         duration: 7000,
         isClosable: true,
       });
     } finally {
       setIsRunning(false);
     }
+  };
+
+  const openDeleteModal = () => {
+    setDeleteOld(true);
+    onOpen();
+  };
+
+  const confirmDeleteOld = async () => {
+    await handleRunArchive({ deleteOld: true });
+    onClose();
+    setDeleteOld(false);
   };
 
   const handleDownloadBackup = () => {
@@ -180,14 +234,23 @@ export default function ArchiveManagementPage() {
           >
             Download Backup
           </Button>
-          <Button 
-            leftIcon={<FiPlay />} 
-            colorScheme="brand" 
-            onClick={handleRunArchive}
+          <Button
+            leftIcon={<FiPlay />}
+            colorScheme="brand"
+            onClick={() => handleRunArchive()}
             isLoading={isRunning}
             loadingText="Running..."
           >
             Run Archive Now
+          </Button>
+          <Button
+            leftIcon={<FiTrash2 />}
+            colorScheme="red"
+            onClick={openDeleteModal}
+            isLoading={isRunning && deleteOld}
+            loadingText="Deleting..."
+          >
+            Delete Old Data
           </Button>
         </HStack>
       </Flex>
@@ -195,17 +258,19 @@ export default function ArchiveManagementPage() {
       <Card bg={cardBgColor} borderRadius="lg" boxShadow="sm" mb={8}>
         <CardHeader pb={0}>
           <Flex justify="space-between" align="center">
-            <Heading as="h2" size="md" color={textColor}>
-              Archive Run History
-            </Heading>
-            <IconButton
-              aria-label="Refresh logs"
-              icon={<FiRefreshCw />}
-              size="sm"
-              variant="ghost"
-              onClick={fetchLogs}
-              isLoading={isLoading}
-            />
+            <Heading as="h2" size="md" color={textColor}>Archive Run History</Heading>
+            <HStack>
+              <Tooltip label="Refresh archive logs" placement="top">
+                <IconButton
+                  aria-label="Refresh logs"
+                  icon={<FiRefreshCw />}
+                  size="sm"
+                  variant="ghost"
+                  onClick={fetchLogs}
+                  isLoading={isLoading}
+                />
+              </Tooltip>
+            </HStack>
           </Flex>
         </CardHeader>
         <CardBody>
@@ -230,23 +295,62 @@ export default function ArchiveManagementPage() {
                   </Tr>
                 </Thead>
                 <Tbody>
-                  {logs.map((log) => (
-                    <Tr key={log._id} borderBottom="1px solid" borderColor={tableBorderColor}>
-                      <Td color={textColorSecondary} whiteSpace="nowrap">
-                        {new Date(log.runDate).toLocaleString()}
-                      </Td>
-                      <Td>{getStatusBadge(log.status)}</Td>
-                      <Td color={textColorSecondary} isNumeric>{log.documentsArchived}</Td>
-                      <Td color={textColorSecondary} isNumeric>{log.documentsDeleted}</Td>
-                      <Td color={textColorSecondary} isNumeric>{log.assetsDeleted}</Td>
-                    </Tr>
-                  ))}
-                </Tbody>
+                    {logs.slice((page - 1) * rowsPerPage, page * rowsPerPage).map((log) => (
+                      <Tr key={log._id} borderBottom="1px solid" borderColor={tableBorderColor}>
+                        <Td color={textColorSecondary} whiteSpace="nowrap">
+                          {new Date(log.runDate).toLocaleString()}
+                        </Td>
+                        <Td>{getStatusBadge(log.status)}</Td>
+                        <Td color={textColorSecondary} isNumeric>{log.documentsArchived}</Td>
+                        <Td color={textColorSecondary} isNumeric>{log.documentsDeleted}</Td>
+                        <Td color={textColorSecondary} isNumeric>{log.assetsDeleted}</Td>
+                      </Tr>
+                    ))}
+                    {/* Pagination Controls */}
+                    {logs.length > rowsPerPage && (
+                      <Tr>
+                        <Td colSpan={5} textAlign="right">
+                          <Button
+                            size="sm"
+                            onClick={() => setPage((p) => Math.max(p - 1, 1))}
+                            disabled={page === 1}
+                            mr={2}
+                          >
+                            Prev
+                          </Button>
+                          <Button
+                            size="sm"
+                            onClick={() => setPage((p) => (p * rowsPerPage < logs.length ? p + 1 : p))}
+                            disabled={page * rowsPerPage >= logs.length}
+                          >
+                            Next
+                          </Button>
+                        </Td>
+                      </Tr>
+                    )}
+                  )}                </Tbody>
               </Table>
-            </Box>
-          )}
-        </CardBody>
-      </Card>
-    </Box>
+          {/* Delete Confirmation Modal */}
+          <Modal isOpen={isOpen} onClose={onClose} isCentered>
+            <ModalOverlay />
+            <ModalContent>
+              <ModalHeader>Delete Archived Data</ModalHeader>
+              <ModalCloseButton />
+              <ModalBody>
+                <Text>Are you sure you want to permanently delete all archived records older than {ARCHIVE_DAYS} days from Sanity? This action cannot be undone.</Text>
+              </ModalBody>
+              <ModalFooter>
+                <Button variant="ghost" mr={3} onClick={onClose}>
+                  Cancel
+                </Button>
+                <Button colorScheme="red" onClick={confirmDeleteOld} isLoading={isRunning && deleteOld}>
+                  Delete
+                </Button>
+              </ModalFooter>
+            </ModalContent>
+          </Modal>
+        </Box>
+      );
+    }
   );
 }

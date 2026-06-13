@@ -344,6 +344,7 @@ export default function TransfersPage() {
 
                     <Button
                         leftIcon={<FiFilter />}
+                        aria-label={viewMode === 'pending' ? 'Clear action-required filter' : 'Show transfers needing action'}
                         colorScheme="brand"
                         variant={viewMode === 'pending' ? 'solid' : 'outline'}
                         onClick={() => setViewMode(viewMode === 'pending' ? 'all' : 'pending')}
@@ -352,13 +353,19 @@ export default function TransfersPage() {
                     </Button>
                     <Button
                         leftIcon={<FiEye />}
+                        aria-label={viewMode === 'completed' ? 'Clear completed filter' : 'Show completed transfers'}
                         colorScheme="brand"
                         variant={viewMode === 'completed' ? 'solid' : 'outline'}
                         onClick={() => setViewMode(viewMode === 'completed' ? 'all' : 'completed')}
                     >
                         View Completed
                     </Button>
-                    <Button leftIcon={<FiPlus />} colorScheme="brand" onClick={handleCreateTransfer}>
+                    <Button
+                        leftIcon={<FiPlus />}
+                        aria-label="Create new transfer"
+                        colorScheme="brand"
+                        onClick={handleCreateTransfer}
+                    >
                         New Transfer
                     </Button>
                 </HStack>
@@ -366,14 +373,14 @@ export default function TransfersPage() {
 
             {isLoading ? (
                 <Flex justifyContent="center" alignItems="center" minH="100px">
-                    <Spinner size="xl" />
+                    <Spinner size="xl" color={accentColor} />
                 </Flex>
             ) : error ? (
                 <Flex justifyContent="center" alignItems="center" minH="100px" direction="column">
                     <Text fontSize="lg" color="red.500">
                         {error}
                     </Text>
-                    <Button onClick={handleFetchTransfers} mt={4}>
+                    <Button onClick={handleFetchTransfers} mt={4} aria-label="Retry loading transfers">
                         Try Again
                     </Button>
                 </Flex>
