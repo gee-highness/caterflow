@@ -8,6 +8,7 @@ import {
   updateStockForTransaction,
   calculateStock,
 } from "@/lib/stockCalculations";
+import { getArchivedBinCounts } from "@/lib/archiveQueries";
 
 const getCurrentStockForItem = async (
   stockItemId: string,
@@ -78,7 +79,6 @@ export async function GET() {
     const binCounts = await client.fetch(query);
     console.log("✅ Found bin counts:", binCounts?.length || 0);
 
-    // Update the countsWithTotals calculation:
     const countsWithTotals = binCounts.map((count: any) => {
       const totalItems = count.countedItems?.length || 0;
 
@@ -114,8 +114,30 @@ export async function GET() {
       };
     });
 
+    // ── Fetch archived bin counts from MongoDB ──
+    let archivedCounts: any[] = [];
+    try {
+        const raw = await getArchivedBinCounts({
+            userSiteId: userSiteInfo.userSiteId,
+            canAccessMultipleSites: userSiteInfo.canAccessMultipleSites,
+        });
+        archivedCounts = raw.map(c => ({
+            ...c,
+            _id: c._sanityId || c._id?.toString(),
+            _isArchived: true,
+            totalItems: c.countedItems?.length || 0,
+        }));
+    } catch (mongoErr) {
+        console.warn('⚠️  Could not fetch archived bin counts from MongoDB:', mongoErr);
+    }
+
+    // Merge: Sanity (recent) + MongoDB (archived), sorted by date descending
+    const merged = [...countsWithTotals, ...archivedCounts].sort(
+        (a, b) => new Date(b.countDate).getTime() - new Date(a.countDate).getTime()
+    );
+
     console.log("📦 Returning counts with totals");
-    return NextResponse.json(countsWithTotals);
+    return NextResponse.json(merged);
   } catch (error) {
     console.error("❌ Failed to fetch bin counts:", error);
     return NextResponse.json(

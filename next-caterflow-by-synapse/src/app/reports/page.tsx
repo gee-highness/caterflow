@@ -1,7 +1,7 @@
 // src/app/reports/page.tsx - COMPREHENSIVE FIX: correct stock math, normalized VAT, robust filtering
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   Box,
   Heading,

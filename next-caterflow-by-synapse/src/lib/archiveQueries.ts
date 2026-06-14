@@ -121,6 +121,37 @@ export async function getArchivedGoodsReceiptById(id: string) {
     });
 }
 
+// ─── Bin Counts (Inventory Counts) ───────────────────────────────────────────────
+
+export async function getArchivedBinCounts(options: {
+    userSiteId: string | null;
+    canAccessMultipleSites: boolean;
+    limit?: number;
+    skip?: number;
+}) {
+    const db = await getArchiveDb();
+    const siteFilter = buildMongoSiteFilter(
+        options.userSiteId,
+        options.canAccessMultipleSites,
+        'bin.site._id'
+    );
+
+    return db
+        .collection(COLLECTIONS.INVENTORY_COUNTS)
+        .find(siteFilter)
+        .sort({ countDate: -1 })
+        .skip(options.skip || 0)
+        .limit(options.limit || 500)
+        .toArray();
+}
+
+export async function getArchivedBinCountById(id: string) {
+    const db = await getArchiveDb();
+    return db.collection(COLLECTIONS.INVENTORY_COUNTS).findOne({
+        _sanityId: id
+    });
+}
+
 // ─── Internal Transfers ────────────────────────────────────────────────────────
 
 export async function getArchivedTransfers(options: {

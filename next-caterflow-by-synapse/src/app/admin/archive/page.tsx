@@ -1,16 +1,13 @@
-'use client';
+"use client";
 
-import { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Box,
-  Button,
   Heading,
   Text,
-  Flex,
-  useToast,
-  Spinner,
-  useColorModeValue,
-  useTheme,
+  Button,
+  VStack,
+  HStack,
   Table,
   Thead,
   Tbody,
@@ -18,58 +15,39 @@ import {
   Th,
   Td,
   Badge,
-  HStack,
-  Card,
-  CardHeader,
-  CardBody,
-  Divider,
-  Icon,
-  IconButton,
-  Tooltip,
+  Spinner,
+  useToast,
+  useColorModeValue,
+  Flex,
+  Alert,
+  AlertIcon,
+  AlertTitle,
+  AlertDescription,
   Modal,
   ModalOverlay,
   ModalContent,
   ModalHeader,
-  ModalCloseButton,
-  ModalBody,
   ModalFooter,
+  ModalBody,
+  ModalCloseButton,
   useDisclosure,
-  TableContainer,
-  Skeleton,
+  Checkbox,
+  Card,
+  CardBody,
+  Stat,
+  StatLabel,
+  StatNumber,
+  StatHelpText,
+  SimpleGrid,
+  useTheme,
+  Icon,
+  IconButton,
+  CardHeader,
+  Tooltip
 } from '@chakra-ui/react';
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
 import { FiDownload, FiPlay, FiRefreshCw, FiTrash2 } from 'react-icons/fi';
-
-import { useState, useEffect, useCallback } from 'react';
-import {
-  Box,
-  Button,
-  Heading,
-  Text,
-  Flex,
-  useToast,
-  Spinner,
-  useColorModeValue,
-  useTheme,
-  Table,
-  Thead,
-  Tbody,
-  Tr,
-  Th,
-  Td,
-  Badge,
-  HStack,
-  Card,
-  CardHeader,
-  CardBody,
-  Divider,
-  Icon,
-  IconButton
-} from '@chakra-ui/react';
-import { useSession } from 'next-auth/react';
-import { useRouter } from 'next/navigation';
-import { FiDownload, FiPlay, FiRefreshCw } from 'react-icons/fi';
 
 interface ArchiveLog {
   _id: string;
@@ -97,7 +75,8 @@ export default function ArchiveManagementPage() {
   const { isOpen, onOpen, onClose } = useDisclosure();
   const [deleteOld, setDeleteOld] = useState(false);
 
-  // Theme values – updated with subtle gradient for header
+  const ARCHIVE_DAYS = Number(process.env.NEXT_PUBLIC_ARCHIVE_DAYS || '90');
+
   const bgColor = useColorModeValue(theme.colors.neutral?.light?.['bg-primary'] || 'gray.50', theme.colors.neutral?.dark?.['bg-primary'] || 'gray.900');
   const headerBg = useColorModeValue('linear-gradient(135deg, #e0e7ff, #cfe2ff)', 'linear-gradient(135deg, #2a4365, #405c8a)');
   const cardBgColor = useColorModeValue(theme.colors.neutral?.light?.['bg-card'] || 'white', theme.colors.neutral?.dark?.['bg-card'] || 'gray.800');
@@ -273,7 +252,7 @@ export default function ArchiveManagementPage() {
             </HStack>
           </Flex>
         </CardHeader>
-        <CardBody>
+                <CardBody>
           {isLoading && logs.length === 0 ? (
             <Flex justify="center" p={8}>
               <Spinner />
@@ -295,62 +274,67 @@ export default function ArchiveManagementPage() {
                   </Tr>
                 </Thead>
                 <Tbody>
-                    {logs.slice((page - 1) * rowsPerPage, page * rowsPerPage).map((log) => (
-                      <Tr key={log._id} borderBottom="1px solid" borderColor={tableBorderColor}>
-                        <Td color={textColorSecondary} whiteSpace="nowrap">
-                          {new Date(log.runDate).toLocaleString()}
-                        </Td>
-                        <Td>{getStatusBadge(log.status)}</Td>
-                        <Td color={textColorSecondary} isNumeric>{log.documentsArchived}</Td>
-                        <Td color={textColorSecondary} isNumeric>{log.documentsDeleted}</Td>
-                        <Td color={textColorSecondary} isNumeric>{log.assetsDeleted}</Td>
-                      </Tr>
-                    ))}
-                    {/* Pagination Controls */}
-                    {logs.length > rowsPerPage && (
-                      <Tr>
-                        <Td colSpan={5} textAlign="right">
-                          <Button
-                            size="sm"
-                            onClick={() => setPage((p) => Math.max(p - 1, 1))}
-                            disabled={page === 1}
-                            mr={2}
-                          >
-                            Prev
-                          </Button>
-                          <Button
-                            size="sm"
-                            onClick={() => setPage((p) => (p * rowsPerPage < logs.length ? p + 1 : p))}
-                            disabled={page * rowsPerPage >= logs.length}
-                          >
-                            Next
-                          </Button>
-                        </Td>
-                      </Tr>
-                    )}
-                  )}                </Tbody>
+                  {logs.slice((page - 1) * rowsPerPage, page * rowsPerPage).map((log) => (
+                    <Tr key={log._id} borderBottom="1px solid" borderColor={tableBorderColor}>
+                      <Td color={textColorSecondary} whiteSpace="nowrap">
+                        {new Date(log.runDate).toLocaleString()}
+                      </Td>
+                      <Td>{getStatusBadge(log.status)}</Td>
+                      <Td color={textColorSecondary} isNumeric>{log.documentsArchived}</Td>
+                      <Td color={textColorSecondary} isNumeric>{log.documentsDeleted}</Td>
+                      <Td color={textColorSecondary} isNumeric>{log.assetsDeleted}</Td>
+                    </Tr>
+                  ))}
+                  {/* Pagination Controls */}
+                  {logs.length > rowsPerPage && (
+                    <Tr>
+                      <Td colSpan={5} textAlign="right">
+                        <Button
+                          size="sm"
+                          onClick={() => setPage((p) => Math.max(p - 1, 1))}
+                          disabled={page === 1}
+                          mr={2}
+                        >
+                          Prev
+                        </Button>
+                        <Button
+                          size="sm"
+                          onClick={() => setPage((p) => (p * rowsPerPage < logs.length ? p + 1 : p))}
+                          disabled={page * rowsPerPage >= logs.length}
+                        >
+                          Next
+                        </Button>
+                      </Td>
+                    </Tr>
+                  )}
+                </Tbody>
               </Table>
-          {/* Delete Confirmation Modal */}
-          <Modal isOpen={isOpen} onClose={onClose} isCentered>
-            <ModalOverlay />
-            <ModalContent>
-              <ModalHeader>Delete Archived Data</ModalHeader>
-              <ModalCloseButton />
-              <ModalBody>
-                <Text>Are you sure you want to permanently delete all archived records older than {ARCHIVE_DAYS} days from Sanity? This action cannot be undone.</Text>
-              </ModalBody>
-              <ModalFooter>
-                <Button variant="ghost" mr={3} onClick={onClose}>
-                  Cancel
-                </Button>
-                <Button colorScheme="red" onClick={confirmDeleteOld} isLoading={isRunning && deleteOld}>
-                  Delete
-                </Button>
-              </ModalFooter>
-            </ModalContent>
-          </Modal>
-        </Box>
-      );
-    }
+            </Box>
+          )}
+        </CardBody>
+      </Card>
+
+      {/* Delete Confirmation Modal */}
+      <Modal isOpen={isOpen} onClose={onClose} isCentered>
+        <ModalOverlay />
+        <ModalContent>
+          <ModalHeader>Delete Archived Data</ModalHeader>
+          <ModalCloseButton />
+          <ModalBody>
+            <Text>
+              Are you sure you want to permanently delete all archived records older than {ARCHIVE_DAYS} days from Sanity? This action cannot be undone.
+            </Text>
+          </ModalBody>
+          <ModalFooter>
+            <Button variant="ghost" mr={3} onClick={onClose}>
+              Cancel
+            </Button>
+            <Button colorScheme="red" onClick={confirmDeleteOld} isLoading={isRunning && deleteOld}>
+              Delete
+            </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
+    </Box>
   );
 }

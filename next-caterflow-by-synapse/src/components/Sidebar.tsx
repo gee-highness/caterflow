@@ -239,12 +239,6 @@ const SidebarContent = ({ onItemClick }: { onItemClick?: () => void }) => {
           roles: ["admin"],
         },
         {
-          label: "Archive",
-          href: "/admin/archive",
-          icon: FiDatabase,
-          roles: ["admin"],
-        },
-        {
           label: "Locations",
           href: "/locations",
           icon: FiMapPin,
@@ -261,6 +255,12 @@ const SidebarContent = ({ onItemClick }: { onItemClick?: () => void }) => {
           href: "/reports",
           icon: FiClipboard,
           roles: ["admin", "siteManager", "auditor"],
+        },
+        {
+          label: "Archive",
+          href: "/admin/archive",
+          icon: FiDatabase,
+          roles: ["admin"],
         },
 
         //{ label: 'Notifications', href: '/notifications', icon: FiBell, roles: ['admin'] },
