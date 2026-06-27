@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from "react";
 import {
   Box,
   Heading,
@@ -43,26 +43,27 @@ import {
   Icon,
   IconButton,
   CardHeader,
-  Tooltip
-} from '@chakra-ui/react';
-import { useSession } from 'next-auth/react';
-import { useRouter } from 'next/navigation';
-import { FiDownload, FiPlay, FiRefreshCw, FiTrash2 } from 'react-icons/fi';
+  Tooltip,
+} from "@chakra-ui/react";
+import { useSession } from "next-auth/react";
+import { useRouter } from "next/navigation";
+import { FiDownload, FiPlay, FiRefreshCw, FiTrash2 } from "react-icons/fi";
 
 interface ArchiveLog {
   _id: string;
   runDate: string;
-  status: 'success' | 'partial' | 'failed';
+  status: "success" | "partial" | "failed";
   documentsArchived: number;
   documentsDeleted: number;
   assetsDeleted: number;
-  errors: string[];
+  errors?: string[];
+  durationMs?: number;
 }
 
 export default function ArchiveManagementPage() {
   const { data: session, status: sessionStatus } = useSession();
-  const isAuthenticated = sessionStatus === 'authenticated';
-  const isAdmin = session?.user?.role === 'admin';
+  const isAuthenticated = sessionStatus === "authenticated";
+  const isAdmin = session?.user?.role === "admin";
   const router = useRouter();
   const toast = useToast();
   const theme = useTheme();
@@ -75,23 +76,38 @@ export default function ArchiveManagementPage() {
   const { isOpen, onOpen, onClose } = useDisclosure();
   const [deleteOld, setDeleteOld] = useState(false);
 
-  const ARCHIVE_DAYS = Number(process.env.NEXT_PUBLIC_ARCHIVE_DAYS || '90');
+  const ARCHIVE_DAYS = Number(process.env.NEXT_PUBLIC_ARCHIVE_DAYS || "90");
 
-  const bgColor = useColorModeValue(theme.colors.neutral?.light?.['bg-primary'] || 'gray.50', theme.colors.neutral?.dark?.['bg-primary'] || 'gray.900');
-  const headerBg = useColorModeValue('linear-gradient(135deg, #e0e7ff, #cfe2ff)', 'linear-gradient(135deg, #2a4365, #405c8a)');
-  const cardBgColor = useColorModeValue(theme.colors.neutral?.light?.['bg-card'] || 'white', theme.colors.neutral?.dark?.['bg-card'] || 'gray.800');
-  const textColor = useColorModeValue(theme.colors.neutral?.light?.['text-primary'] || 'gray.800', theme.colors.neutral?.dark?.['text-primary'] || 'white');
-  const tableHeaderBg = useColorModeValue('gray.100', 'gray.700');
-  const tableBorderColor = useColorModeValue('gray.200', 'gray.600');
-  const textColorSecondary = useColorModeValue(theme.colors.neutral?.light?.['text-secondary'] || 'gray.600', theme.colors.neutral?.dark?.['text-secondary'] || 'gray.400');
+  const bgColor = useColorModeValue(
+    theme.colors.neutral?.light?.["bg-primary"] || "gray.50",
+    theme.colors.neutral?.dark?.["bg-primary"] || "gray.900",
+  );
+  const headerBg = useColorModeValue(
+    "linear-gradient(135deg, #e0e7ff, #cfe2ff)",
+    "linear-gradient(135deg, #2a4365, #405c8a)",
+  );
+  const cardBgColor = useColorModeValue(
+    theme.colors.neutral?.light?.["bg-card"] || "white",
+    theme.colors.neutral?.dark?.["bg-card"] || "gray.800",
+  );
+  const textColor = useColorModeValue(
+    theme.colors.neutral?.light?.["text-primary"] || "gray.800",
+    theme.colors.neutral?.dark?.["text-primary"] || "white",
+  );
+  const tableHeaderBg = useColorModeValue("gray.100", "gray.700");
+  const tableBorderColor = useColorModeValue("gray.200", "gray.600");
+  const textColorSecondary = useColorModeValue(
+    theme.colors.neutral?.light?.["text-secondary"] || "gray.600",
+    theme.colors.neutral?.dark?.["text-secondary"] || "gray.400",
+  );
 
   const fetchLogs = useCallback(async () => {
     setIsLoading(true);
     try {
-      const res = await fetch('/api/archive/status');
-      if (!res.ok) throw new Error('Failed to fetch logs');
+      const res = await fetch("/api/archive/status");
+      if (!res.ok) throw new Error("Failed to fetch logs");
       const data = await res.json();
-      setLogs(data.recentRuns || []);
+      setLogs(data.recentRuns || data.runs || []);
     } catch (error) {
       console.error("Failed to fetch archive logs:", error);
       toast({
@@ -107,7 +123,7 @@ export default function ArchiveManagementPage() {
   }, [toast]);
 
   useEffect(() => {
-    if (sessionStatus === 'loading') return;
+    if (sessionStatus === "loading") return;
 
     if (isAuthenticated && isAdmin) {
       fetchLogs();
@@ -119,37 +135,51 @@ export default function ArchiveManagementPage() {
         duration: 5000,
         isClosable: true,
       });
-      router.push('/');
+      router.push("/");
     }
   }, [isAuthenticated, isAdmin, router, toast, fetchLogs, sessionStatus]);
 
   const handleRunArchive = async (options?: { deleteOld?: boolean }) => {
-    if (!confirm('Are you sure you want to trigger a manual archive run? This may take several minutes.')) return;
+    const confirmationMessage = options?.deleteOld
+      ? `Are you sure you want to delete archive run history and baseline snapshots older than ${ARCHIVE_DAYS} days? This action cannot be undone.`
+      : "Are you sure you want to trigger a manual archive run? This may take several minutes.";
+    if (!confirm(confirmationMessage)) return;
+
     setIsRunning(true);
     try {
-      const query = options?.deleteOld ? '?deleteOld=true' : '';
+      const query = options?.deleteOld ? "?deleteOld=true" : "";
       const res = await fetch(`/api/archive/run${query}`, {
-        method: 'POST',
+        method: "POST",
         headers: {
-          'Content-Type': 'application/json',
+          "Content-Type": "application/json",
         },
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to run archive');
+      if (!res.ok) throw new Error(data.error || "Failed to complete action");
 
-      toast({
-        title: 'Archive Completed',
-        description: `Successfully archived ${data.stats?.documentsArchived || 0} documents${options?.deleteOld ? ' and deleted old data' : ''}.`,
-        status: 'success',
-        duration: 5000,
-        isClosable: true,
-      });
+      if (options?.deleteOld) {
+        toast({
+          title: "Archive Cleanup Completed",
+          description: `Deleted ${data.deletedArchiveRuns || 0} old archive run logs and ${data.deletedBaselineSnapshots || 0} baseline snapshots older than ${ARCHIVE_DAYS} days.`,
+          status: "success",
+          duration: 5000,
+          isClosable: true,
+        });
+      } else {
+        toast({
+          title: "Archive Completed",
+          description: `Successfully archived ${data.totalArchived || 0} documents.`,
+          status: "success",
+          duration: 5000,
+          isClosable: true,
+        });
+      }
       fetchLogs();
     } catch (error: any) {
       toast({
-        title: 'Archive Failed',
+        title: options?.deleteOld ? "Archive Cleanup Failed" : "Archive Failed",
         description: error.message,
-        status: 'error',
+        status: "error",
         duration: 7000,
         isClosable: true,
       });
@@ -171,19 +201,23 @@ export default function ArchiveManagementPage() {
 
   const handleDownloadBackup = () => {
     // Just navigate to the endpoint to trigger the browser download
-    window.location.href = '/api/archive/export';
+    window.location.href = "/api/archive/export";
   };
 
   const getStatusBadge = (status: string) => {
     switch (status) {
-      case 'success': return <Badge colorScheme="green">Success</Badge>;
-      case 'partial': return <Badge colorScheme="orange">Partial</Badge>;
-      case 'failed': return <Badge colorScheme="red">Failed</Badge>;
-      default: return <Badge>{status}</Badge>;
+      case "success":
+        return <Badge colorScheme="green">Success</Badge>;
+      case "partial":
+        return <Badge colorScheme="orange">Partial</Badge>;
+      case "failed":
+        return <Badge colorScheme="red">Failed</Badge>;
+      default:
+        return <Badge>{status}</Badge>;
     }
   };
 
-  if (sessionStatus === 'loading') {
+  if (sessionStatus === "loading") {
     return (
       <Flex justifyContent="center" alignItems="center" height="50vh">
         <Spinner size="xl" />
@@ -195,19 +229,26 @@ export default function ArchiveManagementPage() {
 
   return (
     <Box p={{ base: 4, md: 8 }} bg={bgColor} minH="100vh">
-      <Flex justifyContent="space-between" alignItems="center" mb={6} flexWrap="wrap" gap={4}>
+      <Flex
+        justifyContent="space-between"
+        alignItems="center"
+        mb={6}
+        flexWrap="wrap"
+        gap={4}
+      >
         <Box>
           <Heading as="h1" size="xl" color={textColor} mb={2}>
             Archive Management
           </Heading>
           <Text color={textColorSecondary}>
-            Manage your historical transaction data, run manual archives, and download backups.
+            Manage your historical transaction data, run manual archives, and
+            download backups.
           </Text>
         </Box>
         <HStack spacing={4}>
-          <Button 
-            leftIcon={<FiDownload />} 
-            colorScheme="gray" 
+          <Button
+            leftIcon={<FiDownload />}
+            colorScheme="gray"
             variant="outline"
             onClick={handleDownloadBackup}
           >
@@ -229,7 +270,7 @@ export default function ArchiveManagementPage() {
             isLoading={isRunning && deleteOld}
             loadingText="Deleting..."
           >
-            Delete Old Data
+            Delete Old Archive Logs
           </Button>
         </HStack>
       </Flex>
@@ -237,7 +278,9 @@ export default function ArchiveManagementPage() {
       <Card bg={cardBgColor} borderRadius="lg" boxShadow="sm" mb={8}>
         <CardHeader pb={0}>
           <Flex justify="space-between" align="center">
-            <Heading as="h2" size="md" color={textColor}>Archive Run History</Heading>
+            <Heading as="h2" size="md" color={textColor}>
+              Archive Run History
+            </Heading>
             <HStack>
               <Tooltip label="Refresh archive logs" placement="top">
                 <IconButton
@@ -252,7 +295,7 @@ export default function ArchiveManagementPage() {
             </HStack>
           </Flex>
         </CardHeader>
-                <CardBody>
+        <CardBody>
           {isLoading && logs.length === 0 ? (
             <Flex justify="center" p={8}>
               <Spinner />
@@ -268,23 +311,41 @@ export default function ArchiveManagementPage() {
                   <Tr>
                     <Th color={textColor}>Date</Th>
                     <Th color={textColor}>Status</Th>
-                    <Th color={textColor} isNumeric>Docs Archived</Th>
-                    <Th color={textColor} isNumeric>Docs Deleted</Th>
-                    <Th color={textColor} isNumeric>Assets Deleted</Th>
+                    <Th color={textColor} isNumeric>
+                      Docs Archived
+                    </Th>
+                    <Th color={textColor} isNumeric>
+                      Docs Deleted
+                    </Th>
+                    <Th color={textColor} isNumeric>
+                      Assets Deleted
+                    </Th>
                   </Tr>
                 </Thead>
                 <Tbody>
-                  {logs.slice((page - 1) * rowsPerPage, page * rowsPerPage).map((log) => (
-                    <Tr key={log._id} borderBottom="1px solid" borderColor={tableBorderColor}>
-                      <Td color={textColorSecondary} whiteSpace="nowrap">
-                        {new Date(log.runDate).toLocaleString()}
-                      </Td>
-                      <Td>{getStatusBadge(log.status)}</Td>
-                      <Td color={textColorSecondary} isNumeric>{log.documentsArchived}</Td>
-                      <Td color={textColorSecondary} isNumeric>{log.documentsDeleted}</Td>
-                      <Td color={textColorSecondary} isNumeric>{log.assetsDeleted}</Td>
-                    </Tr>
-                  ))}
+                  {logs
+                    .slice((page - 1) * rowsPerPage, page * rowsPerPage)
+                    .map((log) => (
+                      <Tr
+                        key={log._id}
+                        borderBottom="1px solid"
+                        borderColor={tableBorderColor}
+                      >
+                        <Td color={textColorSecondary} whiteSpace="nowrap">
+                          {new Date(log.runDate).toLocaleString()}
+                        </Td>
+                        <Td>{getStatusBadge(log.status)}</Td>
+                        <Td color={textColorSecondary} isNumeric>
+                          {log.documentsArchived}
+                        </Td>
+                        <Td color={textColorSecondary} isNumeric>
+                          {log.documentsDeleted}
+                        </Td>
+                        <Td color={textColorSecondary} isNumeric>
+                          {log.assetsDeleted}
+                        </Td>
+                      </Tr>
+                    ))}
                   {/* Pagination Controls */}
                   {logs.length > rowsPerPage && (
                     <Tr>
@@ -299,7 +360,11 @@ export default function ArchiveManagementPage() {
                         </Button>
                         <Button
                           size="sm"
-                          onClick={() => setPage((p) => (p * rowsPerPage < logs.length ? p + 1 : p))}
+                          onClick={() =>
+                            setPage((p) =>
+                              p * rowsPerPage < logs.length ? p + 1 : p,
+                            )
+                          }
                           disabled={page * rowsPerPage >= logs.length}
                         >
                           Next
@@ -318,18 +383,25 @@ export default function ArchiveManagementPage() {
       <Modal isOpen={isOpen} onClose={onClose} isCentered>
         <ModalOverlay />
         <ModalContent>
-          <ModalHeader>Delete Archived Data</ModalHeader>
+          <ModalHeader>Delete Old Archive Logs</ModalHeader>
           <ModalCloseButton />
           <ModalBody>
             <Text>
-              Are you sure you want to permanently delete all archived records older than {ARCHIVE_DAYS} days from Sanity? This action cannot be undone.
+              Are you sure you want to permanently delete archive run history
+              and baseline snapshots older than {ARCHIVE_DAYS} days? This
+              removes archive metadata only; archived transaction data remains
+              preserved.
             </Text>
           </ModalBody>
           <ModalFooter>
             <Button variant="ghost" mr={3} onClick={onClose}>
               Cancel
             </Button>
-            <Button colorScheme="red" onClick={confirmDeleteOld} isLoading={isRunning && deleteOld}>
+            <Button
+              colorScheme="red"
+              onClick={confirmDeleteOld}
+              isLoading={isRunning && deleteOld}
+            >
               Delete
             </Button>
           </ModalFooter>

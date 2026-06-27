@@ -4,6 +4,7 @@ import { client, writeClient } from "@/lib/sanity";
 import { groq } from "next-sanity";
 import { logSanityInteraction } from "@/lib/sanityLogger";
 import { updateStockForTransaction } from "@/lib/stockCalculations";
+import { getArchivedBinCountById } from "@/lib/archiveQueries";
 
 export async function GET(
   request: Request,
@@ -44,13 +45,21 @@ export async function GET(
           }
       }`;
 
-    const binCount = await client.fetch(query, { id });
+    let binCount = await client.fetch(query, { id });
 
     if (!binCount) {
-      return NextResponse.json(
-        { error: "Bin count not found" },
-        { status: 404 },
-      );
+      const archived = await getArchivedBinCountById(id);
+      if (!archived) {
+        return NextResponse.json(
+          { error: "Bin count not found" },
+          { status: 404 },
+        );
+      }
+      binCount = {
+        ...archived,
+        _id: archived._sanityId || archived._id?.toString(),
+        _isArchived: true,
+      };
     }
 
     return NextResponse.json(binCount);

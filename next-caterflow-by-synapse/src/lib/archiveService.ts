@@ -1,4 +1,3 @@
-
 import { client as sanityClient, writeClient } from "@/lib/sanity";
 import { groq } from "next-sanity";
 import { getArchiveDb, COLLECTIONS } from "@/lib/mongoClient";
@@ -614,6 +613,29 @@ async function ensureIndexes(db: Db): Promise<void> {
     // Indexes already exist — non-fatal
     console.log("ℹ️  Index creation skipped (likely already exist)");
   }
+}
+
+export async function cleanupOldArchiveMetadata(): Promise<{
+  deletedRuns: number;
+  deletedBaselines: number;
+  cutoff: string;
+}> {
+  const db = await getArchiveDb();
+  const cutoff = getCutoffDate();
+
+  const deletedRunsResult = await db
+    .collection(COLLECTIONS.ARCHIVE_RUNS)
+    .deleteMany({ startedAt: { $lt: cutoff } });
+
+  const deletedBaselinesResult = await db
+    .collection(COLLECTIONS.STOCK_BASELINES)
+    .deleteMany({ capturedAt: { $lt: cutoff } });
+
+  return {
+    deletedRuns: deletedRunsResult.deletedCount || 0,
+    deletedBaselines: deletedBaselinesResult.deletedCount || 0,
+    cutoff,
+  };
 }
 
 // ─── Main Archive Runner ───────────────────────────────────────────────────────
