@@ -181,7 +181,13 @@ export default function ArchiveManagementPage() {
         },
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to complete action");
+      if (!res.ok) {
+        const customMessage =
+          data.archiveInProgress || res.status === 409
+            ? "Archive already in progress. Please wait for the current run to finish."
+            : data.error || "Failed to complete action";
+        throw new Error(customMessage);
+      }
 
       if (options?.deleteOld) {
         toast({

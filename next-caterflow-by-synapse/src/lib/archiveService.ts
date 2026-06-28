@@ -968,190 +968,197 @@ export async function runArchive(): Promise<ArchiveRunResult> {
     throw new Error("Archive run already in progress");
   }
 
-  // Step 1: Capture stock baseline BEFORE any deletions
-  await captureStockBaseline(db);
+  let lockAcquired = true;
 
-  const cutoff = getCutoffDate();
+  try {
+    // Step 1: Capture stock baseline BEFORE any deletions
+    await captureStockBaseline(db);
 
-  // Step 2: Archive each document type in a resumable loop
-  const maxSeconds = parseInt(process.env.ARCHIVE_MAX_SECONDS || "270", 10);
-  const allowedMs = maxSeconds * 1000;
-  const startMs = Date.now();
+    const cutoff = getCutoffDate();
 
-  // Determine previously completed successful steps (resume support)
-  const lastRun = await db
-    .collection(COLLECTIONS.ARCHIVE_RUNS)
-    .findOne({}, { sort: { startedAt: -1 } });
-  const completedSteps = new Set<string>();
-  if (lastRun && Array.isArray(lastRun.steps)) {
-    for (const s of lastRun.steps) {
-      if (s?.status === "success") completedSteps.add(s.name);
-    }
-  }
+    // Step 2: Archive each document type in a resumable loop
+    const maxSeconds = parseInt(process.env.ARCHIVE_MAX_SECONDS || "270", 10);
+    const allowedMs = maxSeconds * 1000;
+    const startMs = Date.now();
 
-  const stepFns: {
-    key: string;
-    name: string;
-    fn: (
-      db: Db,
-      cutoff: string,
-      errors: string[],
-    ) => Promise<ArchiveStepResult>;
-  }[] = [
-    { key: "dispatchLogs", name: "DispatchLogs", fn: archiveDispatchLogs },
-    {
-      key: "purchaseOrders",
-      name: "PurchaseOrders",
-      fn: archivePurchaseOrders,
-    },
-    { key: "goodsReceipts", name: "GoodsReceipts", fn: archiveGoodsReceipts },
-    {
-      key: "internalTransfers",
-      name: "InternalTransfers",
-      fn: archiveInternalTransfers,
-    },
-    {
-      key: "stockAdjustments",
-      name: "StockAdjustments",
-      fn: archiveStockAdjustments,
-    },
-    {
-      key: "inventoryCounts",
-      name: "InventoryCounts",
-      fn: archiveInventoryCounts,
-    },
-    {
-      key: "fileAttachments",
-      name: "FileAttachments",
-      fn: archiveFileAttachments,
-    },
-    {
-      key: "stockSnapshots",
-      name: "StockSnapshots",
-      fn: archiveStockSnapshots,
-    },
-  ];
-
-  const steps: ArchiveStepResult[] = [];
-  const archived: Record<string, number> = {};
-  let totalInserted = 0;
-  let totalSkipped = 0;
-
-  for (const s of stepFns) {
-    // Skip steps already completed in the last successful run
-    if (completedSteps.has(s.name)) {
-      const skippedStep = createArchiveStepResult({
-        name: s.name,
-        count: 0,
-        deletedCount: 0,
-        message: "Already archived in previous successful run",
-      });
-      skippedStep.status = "success";
-      steps.push(skippedStep);
-      archived[s.key] = 0;
-      continue;
+    // Determine previously completed successful steps (resume support)
+    const lastRun = await db
+      .collection(COLLECTIONS.ARCHIVE_RUNS)
+      .findOne({}, { sort: { startedAt: -1 } });
+    const completedSteps = new Set<string>();
+    if (lastRun && Array.isArray(lastRun.steps)) {
+      for (const s of lastRun.steps) {
+        if (s?.status === "success") completedSteps.add(s.name);
+      }
     }
 
-    // Check elapsed time before starting this step
-    const elapsed = Date.now() - startMs;
-    if (elapsed >= allowedMs - 2000) {
-      // Time nearly exhausted — persist partial run and return
-      const partialResult: ArchiveRunResult = {
-        runId,
-        startedAt,
-        completedAt: new Date().toISOString(),
-        durationMs: Date.now() - startMs,
-        archived,
-        errors,
-        skipped: 0,
-        steps,
-        assetsDeleted: steps.reduce(
-          (sum, st) => sum + (st.assetsDeleted || 0),
-          0,
-        ),
-        incomplete: true,
-      };
-      await db.collection(COLLECTIONS.ARCHIVE_RUNS).insertOne(partialResult);
-      console.log(
-        "⚠️ Archive run paused due to time limit; will resume on next trigger",
-      );
-      return partialResult;
-    }
+    const stepFns: {
+      key: string;
+      name: string;
+      fn: (
+        db: Db,
+        cutoff: string,
+        errors: string[],
+      ) => Promise<ArchiveStepResult>;
+    }[] = [
+      { key: "dispatchLogs", name: "DispatchLogs", fn: archiveDispatchLogs },
+      {
+        key: "purchaseOrders",
+        name: "PurchaseOrders",
+        fn: archivePurchaseOrders,
+      },
+      { key: "goodsReceipts", name: "GoodsReceipts", fn: archiveGoodsReceipts },
+      {
+        key: "internalTransfers",
+        name: "InternalTransfers",
+        fn: archiveInternalTransfers,
+      },
+      {
+        key: "stockAdjustments",
+        name: "StockAdjustments",
+        fn: archiveStockAdjustments,
+      },
+      {
+        key: "inventoryCounts",
+        name: "InventoryCounts",
+        fn: archiveInventoryCounts,
+      },
+      {
+        key: "fileAttachments",
+        name: "FileAttachments",
+        fn: archiveFileAttachments,
+      },
+      {
+        key: "stockSnapshots",
+        name: "StockSnapshots",
+        fn: archiveStockSnapshots,
+      },
+    ];
 
-    try {
-      const stepRes = await s.fn(db, cutoff, errors).catch((e) => {
-        errors.push(`${s.name} batch failed: ${e?.message}`);
-        return createArchiveStepResult({
+    const steps: ArchiveStepResult[] = [];
+    const archived: Record<string, number> = {};
+    let totalInserted = 0;
+    let totalSkipped = 0;
+
+    for (const s of stepFns) {
+      // Skip steps already completed in the last successful run
+      if (completedSteps.has(s.name)) {
+        const skippedStep = createArchiveStepResult({
           name: s.name,
           count: 0,
           deletedCount: 0,
-          errors: [e?.message || "unknown"],
-          message: "Step failed",
+          message: "Already archived in previous successful run",
         });
-      });
-      steps.push(stepRes);
-      // Aggregate inserted/skipped totals when present
-      totalInserted += stepRes.inserted || 0;
-      totalSkipped += stepRes.skipped || 0;
-      archived[s.key] = stepRes.count || 0;
-    } catch (e: any) {
-      const stepErr = createArchiveStepResult({
-        name: s.name,
-        count: 0,
-        deletedCount: 0,
-        errors: [e?.message || String(e)],
-      });
-      steps.push(stepErr);
-      archived[s.key] = 0;
-      errors.push(`${s.name} batch failed: ${e?.message}`);
+        skippedStep.status = "success";
+        steps.push(skippedStep);
+        archived[s.key] = 0;
+        continue;
+      }
+
+      // Check elapsed time before starting this step
+      const elapsed = Date.now() - startMs;
+      if (elapsed >= allowedMs - 2000) {
+        // Time nearly exhausted — persist partial run and return
+        const partialResult: ArchiveRunResult = {
+          runId,
+          startedAt,
+          completedAt: new Date().toISOString(),
+          durationMs: Date.now() - startMs,
+          archived,
+          errors,
+          skipped: 0,
+          steps,
+          assetsDeleted: steps.reduce(
+            (sum, st) => sum + (st.assetsDeleted || 0),
+            0,
+          ),
+          incomplete: true,
+        };
+        await db.collection(COLLECTIONS.ARCHIVE_RUNS).insertOne(partialResult);
+        console.log(
+          "⚠️ Archive run paused due to time limit; will resume on next trigger",
+        );
+        return partialResult;
+      }
+
+      try {
+        const stepRes = await s.fn(db, cutoff, errors).catch((e) => {
+          errors.push(`${s.name} batch failed: ${e?.message}`);
+          return createArchiveStepResult({
+            name: s.name,
+            count: 0,
+            deletedCount: 0,
+            errors: [e?.message || "unknown"],
+            message: "Step failed",
+          });
+        });
+        steps.push(stepRes);
+        // Aggregate inserted/skipped totals when present
+        totalInserted += stepRes.inserted || 0;
+        totalSkipped += stepRes.skipped || 0;
+        archived[s.key] = stepRes.count || 0;
+      } catch (e: any) {
+        const stepErr = createArchiveStepResult({
+          name: s.name,
+          count: 0,
+          deletedCount: 0,
+          errors: [e?.message || String(e)],
+        });
+        steps.push(stepErr);
+        archived[s.key] = 0;
+        errors.push(`${s.name} batch failed: ${e?.message}`);
+      }
+    }
+
+    const completedAt = new Date().toISOString();
+    const durationMs = Date.now() - startMs;
+
+    const result: ArchiveRunResult = {
+      runId,
+      startedAt,
+      completedAt,
+      durationMs,
+      archived,
+      errors,
+      skipped: totalSkipped,
+      totalInserted,
+      totalSkipped,
+      steps,
+      assetsDeleted: steps.reduce(
+        (sum, step) => sum + (step.assetsDeleted || 0),
+        0,
+      ),
+      incomplete: false,
+    };
+
+    // Step 3: Log the run
+    await db.collection(COLLECTIONS.ARCHIVE_RUNS).insertOne(result);
+
+    const totalArchived = Object.values(result.archived).reduce(
+      (a, b) => a + b,
+      0,
+    );
+    console.log(
+      `\n🎉 Archive run complete: ${totalArchived} documents archived in ${durationMs}ms`,
+    );
+    if (errors.length)
+      console.error(`⚠️  ${errors.length} errors occurred:`, errors);
+
+    return result;
+  } finally {
+    if (lockAcquired) {
+      try {
+        await lockCol.updateOne(
+          { _id: lockId, owner: runId } as any,
+          {
+            $set: { locked: false, releasedAt: new Date().toISOString() },
+          } as any,
+        );
+      } catch (e) {
+        console.error("Failed to release archive lock:", e);
+      }
     }
   }
-
-  const completedAt = new Date().toISOString();
-  const durationMs = Date.now() - startMs;
-
-  const result: ArchiveRunResult = {
-    runId,
-    startedAt,
-    completedAt,
-    durationMs,
-    archived,
-    errors,
-    skipped: totalSkipped,
-    totalInserted,
-    totalSkipped,
-    steps,
-    assetsDeleted: steps.reduce(
-      (sum, step) => sum + (step.assetsDeleted || 0),
-      0,
-    ),
-    incomplete: false,
-  };
-
-  // Step 3: Log the run
-  await db.collection(COLLECTIONS.ARCHIVE_RUNS).insertOne(result);
-
-  // Release lock
-  try {
-    await lockCol.updateOne(
-      { _id: lockId, owner: runId } as any,
-      { $set: { locked: false, releasedAt: new Date().toISOString() } } as any,
-    );
-  } catch (e) {
-    console.error("Failed to release archive lock:", e);
-  }
-
-  const totalArchived = Object.values(result.archived).reduce(
-    (a, b) => a + b,
-    0,
-  );
-  console.log(
-    `\n🎉 Archive run complete: ${totalArchived} documents archived in ${durationMs}ms`,
-  );
-  if (errors.length)
-    console.error(`⚠️  ${errors.length} errors occurred:`, errors);
-
-  return result;
 }
 
 /**

@@ -71,6 +71,12 @@ export async function POST(request: Request) {
     });
   } catch (error: any) {
     console.error("❌ Archive run failed:", error);
+    if (error?.message === "Archive run already in progress") {
+      return NextResponse.json(
+        { success: false, error: error.message, archiveInProgress: true },
+        { status: 409 },
+      );
+    }
     return NextResponse.json(
       { success: false, error: error?.message || "Archive run failed" },
       { status: 500 },
