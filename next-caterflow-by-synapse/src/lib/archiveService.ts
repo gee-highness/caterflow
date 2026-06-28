@@ -960,17 +960,17 @@ export async function runArchive(options?: {
 
   const skipLock = options?.skipLock === true;
   const lockId = "archive-lock";
+  const lockTimeoutMs = parseInt(
+    process.env.ARCHIVE_LOCK_TIMEOUT_MS || "600000",
+    10,
+  ); // 10m
+  const lockCutoff = new Date(Date.now() - lockTimeoutMs).toISOString();
   let lockCol: any = null;
   let lockAcquired = false;
 
   if (!skipLock) {
     // Try to acquire a simple Mongo lock to prevent concurrent archive runs
     lockCol = db.collection(COLLECTIONS.ARCHIVE_RUNS);
-    const lockTimeoutMs = parseInt(
-      process.env.ARCHIVE_LOCK_TIMEOUT_MS || "600000",
-      10,
-    ); // 10m
-    const lockCutoff = new Date(Date.now() - lockTimeoutMs).toISOString();
     const lockResult = await lockCol.findOneAndUpdate(
       {
         _id: lockId,
@@ -1000,7 +1000,7 @@ export async function runArchive(options?: {
     console.log("⚠️ Manual archive run: skipping archive lock acquisition.");
     const lockDoc = await db.collection(COLLECTIONS.ARCHIVE_RUNS).findOne({
       _id: lockId,
-    });
+    } as any);
     if (
       lockDoc?.locked === true &&
       lockDoc?.owner &&
