@@ -24,7 +24,23 @@ async function clearArchiveLock({ force = false } = {}): Promise<boolean> {
     .collection(COLLECTIONS.ARCHIVE_RUNS)
     .findOne({ _id: lockId } as any);
 
-  if (!lockDoc || !lockDoc.locked) {
+  if (!lockDoc) {
+    if (!force) return false;
+    await db.collection(COLLECTIONS.ARCHIVE_RUNS).updateOne(
+      { _id: lockId } as any,
+      {
+        $set: {
+          locked: false,
+          owner: null,
+          releasedAt: new Date().toISOString(),
+        },
+      },
+      { upsert: true },
+    );
+    return true;
+  }
+
+  if (!lockDoc.locked && !force) {
     return false;
   }
 
@@ -146,6 +162,16 @@ export async function POST(request: Request) {
   } catch (error: any) {
     console.error("❌ Archive run failed:", error);
     if (error?.message === "Archive run already in progress") {
+      if (!isCronCall) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: "Archive lock could not be recovered. Please wait a moment and retry.",
+          },
+          { status: 500 },
+        );
+      }
+
       return NextResponse.json(
         { success: false, error: error.message, archiveInProgress: true },
         { status: 409 },
