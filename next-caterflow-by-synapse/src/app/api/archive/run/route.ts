@@ -11,7 +11,7 @@ import { runArchive, cleanupOldArchiveMetadata } from "@/lib/archiveService";
 
 export const maxDuration = 300; // 5 minutes — Vercel Pro allows up to 300s
 
-async function clearStaleArchiveLock(): Promise<boolean> {
+async function clearArchiveLock({ force = false } = {}): Promise<boolean> {
   const db = await getArchiveDb();
   const lockId = "archive-lock";
   const lockTimeoutMs = parseInt(
@@ -24,12 +24,17 @@ async function clearStaleArchiveLock(): Promise<boolean> {
     .collection(COLLECTIONS.ARCHIVE_RUNS)
     .findOne({ _id: lockId } as any);
 
-  if (!lockDoc || !lockDoc.locked || !lockDoc.acquiredAt) {
+  if (!lockDoc || !lockDoc.locked) {
     return false;
   }
 
-  const acquiredAt = new Date(lockDoc.acquiredAt);
-  if (Number.isNaN(acquiredAt.getTime()) || acquiredAt >= lockCutoff) {
+  const acquiredAt = lockDoc.acquiredAt ? new Date(lockDoc.acquiredAt) : null;
+  const isStale =
+    !acquiredAt ||
+    Number.isNaN(acquiredAt.getTime()) ||
+    acquiredAt < lockCutoff;
+
+  if (!force && !isStale) {
     return false;
   }
 
@@ -48,29 +53,29 @@ async function clearStaleArchiveLock(): Promise<boolean> {
   return true;
 }
 
-async function runArchiveWithAutoLockRecovery() {
+async function runArchiveWithAutoLockRecovery(isManual: boolean) {
   let lockCleared = false;
 
   try {
-    lockCleared = await clearStaleArchiveLock();
+    lockCleared = await clearArchiveLock({ force: isManual });
   } catch (err: any) {
-    console.error("Failed to check/clear stale archive lock before run:", err);
+    console.error("Failed to check/clear archive lock before run:", err);
   }
 
   try {
     const result = await runArchive();
     return { result, lockCleared };
   } catch (error: any) {
-    if (error?.message === "Archive run already in progress") {
+    if (isManual && error?.message === "Archive run already in progress") {
       try {
-        const recovered = await clearStaleArchiveLock();
+        const recovered = await clearArchiveLock({ force: true });
         lockCleared = lockCleared || recovered;
         if (recovered) {
           const retryResult = await runArchive();
           return { result: retryResult, lockCleared };
         }
       } catch (err: any) {
-        console.error("Failed to clear stale archive lock on retry:", err);
+        console.error("Failed to clear archive lock on retry:", err);
       }
     }
     throw error;
@@ -114,7 +119,8 @@ export async function POST(request: Request) {
       });
     }
 
-    const { result, lockCleared } = await runArchiveWithAutoLockRecovery();
+    const { result, lockCleared } =
+      await runArchiveWithAutoLockRecovery(!isCronCall);
 
     const totalArchived = Object.values(result.archived).reduce(
       (a, b) => a + b,
