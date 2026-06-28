@@ -6,97 +6,9 @@ import { NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { getArchiveDb, COLLECTIONS } from "@/lib/mongoClient";
 import { runArchive, cleanupOldArchiveMetadata } from "@/lib/archiveService";
 
 export const maxDuration = 300; // 5 minutes — Vercel Pro allows up to 300s
-
-async function clearArchiveLock({ force = false } = {}): Promise<boolean> {
-  const db = await getArchiveDb();
-  const lockId = "archive-lock";
-  const lockTimeoutMs = parseInt(
-    process.env.ARCHIVE_LOCK_TIMEOUT_MS || "600000",
-    10,
-  );
-  const lockCutoff = new Date(Date.now() - lockTimeoutMs);
-
-  const lockDoc = await db
-    .collection(COLLECTIONS.ARCHIVE_RUNS)
-    .findOne({ _id: lockId } as any);
-
-  if (!lockDoc) {
-    if (!force) return false;
-    await db.collection(COLLECTIONS.ARCHIVE_RUNS).updateOne(
-      { _id: lockId } as any,
-      {
-        $set: {
-          locked: false,
-          owner: null,
-          releasedAt: new Date().toISOString(),
-        },
-      },
-      { upsert: true },
-    );
-    return true;
-  }
-
-  if (!lockDoc.locked && !force) {
-    return false;
-  }
-
-  const acquiredAt = lockDoc.acquiredAt ? new Date(lockDoc.acquiredAt) : null;
-  const isStale =
-    !acquiredAt ||
-    Number.isNaN(acquiredAt.getTime()) ||
-    acquiredAt < lockCutoff;
-
-  if (!force && !isStale) {
-    return false;
-  }
-
-  await db.collection(COLLECTIONS.ARCHIVE_RUNS).updateOne(
-    { _id: lockId } as any,
-    {
-      $set: {
-        locked: false,
-        owner: null,
-        releasedAt: new Date().toISOString(),
-      },
-    },
-    { upsert: true },
-  );
-
-  return true;
-}
-
-async function runArchiveWithAutoLockRecovery(isManual: boolean) {
-  let lockCleared = false;
-
-  try {
-    lockCleared = await clearArchiveLock({ force: isManual });
-  } catch (err: any) {
-    console.error("Failed to check/clear archive lock before run:", err);
-  }
-
-  try {
-    const result = await runArchive();
-    return { result, lockCleared };
-  } catch (error: any) {
-    if (isManual && error?.message === "Archive run already in progress") {
-      try {
-        const recovered = await clearArchiveLock({ force: true });
-        lockCleared = lockCleared || recovered;
-        if (recovered) {
-          const retryResult = await runArchive();
-          return { result: retryResult, lockCleared };
-        }
-      } catch (err: any) {
-        console.error("Failed to clear archive lock on retry:", err);
-      }
-    }
-    throw error;
-  }
-}
 
 export async function POST(request: Request) {
   // ── Authentication: Accept either Vercel Cron secret OR admin session ──
@@ -135,8 +47,7 @@ export async function POST(request: Request) {
       });
     }
 
-    const { result, lockCleared } =
-      await runArchiveWithAutoLockRecovery(!isCronCall);
+    const result = await runArchive({ skipLock: !isCronCall });
 
     const totalArchived = Object.values(result.archived).reduce(
       (a, b) => a + b,
@@ -148,7 +59,6 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       success: true,
-      lockCleared,
       runId: result.runId,
       totalArchived,
       documentsDeleted,
@@ -166,7 +76,8 @@ export async function POST(request: Request) {
         return NextResponse.json(
           {
             success: false,
-            error: "Archive lock could not be recovered. Please wait a moment and retry.",
+            error:
+              "Manual archive run attempted to bypass the lock but the archive cannot start right now. Please retry in a moment.",
           },
           { status: 500 },
         );

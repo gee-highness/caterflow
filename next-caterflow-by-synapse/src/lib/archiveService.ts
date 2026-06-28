@@ -923,7 +923,9 @@ export async function cleanupOldArchiveMetadata(): Promise<{
 
 // ─── Main Archive Runner ───────────────────────────────────────────────────────
 
-export async function runArchive(): Promise<ArchiveRunResult> {
+export async function runArchive(options?: {
+  skipLock?: boolean;
+}): Promise<ArchiveRunResult> {
   const startedAt = new Date().toISOString();
   const runId = `archive-${Date.now()}`;
   const errors: string[] = [];
@@ -936,39 +938,47 @@ export async function runArchive(): Promise<ArchiveRunResult> {
   const db = await getArchiveDb();
   await ensureIndexes(db);
 
-  // Try to acquire a simple Mongo lock to prevent concurrent archive runs
-  const lockCol = db.collection(COLLECTIONS.ARCHIVE_RUNS);
+  const skipLock = options?.skipLock === true;
   const lockId = "archive-lock";
-  const lockTimeoutMs = parseInt(
-    process.env.ARCHIVE_LOCK_TIMEOUT_MS || "600000",
-    10,
-  ); // 10m
-  const lockCutoff = new Date(Date.now() - lockTimeoutMs).toISOString();
-  const lockResult = await lockCol.findOneAndUpdate(
-    {
-      _id: lockId,
-      $or: [
-        { locked: { $exists: false } },
-        { locked: false },
-        { acquiredAt: { $lt: lockCutoff } },
-      ],
-    } as any,
-    {
-      $set: {
+  let lockCol: any = null;
+  let lockAcquired = false;
+
+  if (!skipLock) {
+    // Try to acquire a simple Mongo lock to prevent concurrent archive runs
+    lockCol = db.collection(COLLECTIONS.ARCHIVE_RUNS);
+    const lockTimeoutMs = parseInt(
+      process.env.ARCHIVE_LOCK_TIMEOUT_MS || "600000",
+      10,
+    ); // 10m
+    const lockCutoff = new Date(Date.now() - lockTimeoutMs).toISOString();
+    const lockResult = await lockCol.findOneAndUpdate(
+      {
         _id: lockId,
-        locked: true,
-        owner: runId,
-        acquiredAt: new Date().toISOString(),
-      },
-    } as any,
-    { upsert: true, returnDocument: "after" } as any,
-  );
+        $or: [
+          { locked: { $exists: false } },
+          { locked: false },
+          { acquiredAt: { $lt: lockCutoff } },
+        ],
+      } as any,
+      {
+        $set: {
+          _id: lockId,
+          locked: true,
+          owner: runId,
+          acquiredAt: new Date().toISOString(),
+        },
+      } as any,
+      { upsert: true, returnDocument: "after" } as any,
+    );
 
-  if (!lockResult.value || lockResult.value.owner !== runId) {
-    throw new Error("Archive run already in progress");
+    if (!lockResult.value || lockResult.value.owner !== runId) {
+      throw new Error("Archive run already in progress");
+    }
+
+    lockAcquired = true;
+  } else {
+    console.log("⚠️ Manual archive run: skipping archive lock acquisition.");
   }
-
-  let lockAcquired = true;
 
   try {
     // Step 1: Capture stock baseline BEFORE any deletions
