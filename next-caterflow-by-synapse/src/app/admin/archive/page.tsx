@@ -333,42 +333,6 @@ export default function ArchiveManagementPage() {
             Download Backup
           </Button>
           <Button
-            leftIcon={<FiTrash2 />}
-            colorScheme="yellow"
-            variant="outline"
-            onClick={async () => {
-              const secret = window.prompt(
-                "Enter admin/cron secret to clear archive lock:",
-              );
-              if (!secret) return;
-              try {
-                const res = await fetch("/api/archive/lock/clear", {
-                  method: "POST",
-                  headers: { "x-admin-secret": `Bearer ${secret}` },
-                });
-                const body = await res.json();
-                if (!res.ok) throw new Error(body.error || "Failed");
-                toast({
-                  title: "Lock cleared",
-                  status: "success",
-                  duration: 3000,
-                  isClosable: true,
-                });
-                fetchLogs();
-              } catch (err: any) {
-                toast({
-                  title: "Clear lock failed",
-                  description: err?.message || String(err),
-                  status: "error",
-                  duration: 4000,
-                  isClosable: true,
-                });
-              }
-            }}
-          >
-            Clear Lock
-          </Button>
-          <Button
             leftIcon={<FiPlay />}
             colorScheme="brand"
             onClick={() => handleRunArchive()}

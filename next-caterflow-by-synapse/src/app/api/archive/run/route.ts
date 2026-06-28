@@ -48,6 +48,35 @@ async function clearStaleArchiveLock(): Promise<boolean> {
   return true;
 }
 
+async function runArchiveWithAutoLockRecovery() {
+  let lockCleared = false;
+
+  try {
+    lockCleared = await clearStaleArchiveLock();
+  } catch (err: any) {
+    console.error("Failed to check/clear stale archive lock before run:", err);
+  }
+
+  try {
+    const result = await runArchive();
+    return { result, lockCleared };
+  } catch (error: any) {
+    if (error?.message === "Archive run already in progress") {
+      try {
+        const recovered = await clearStaleArchiveLock();
+        lockCleared = lockCleared || recovered;
+        if (recovered) {
+          const retryResult = await runArchive();
+          return { result: retryResult, lockCleared };
+        }
+      } catch (err: any) {
+        console.error("Failed to clear stale archive lock on retry:", err);
+      }
+    }
+    throw error;
+  }
+}
+
 export async function POST(request: Request) {
   // ── Authentication: Accept either Vercel Cron secret OR admin session ──
 
@@ -85,8 +114,7 @@ export async function POST(request: Request) {
       });
     }
 
-    const lockCleared = await clearStaleArchiveLock();
-    const result = await runArchive();
+    const { result, lockCleared } = await runArchiveWithAutoLockRecovery();
 
     const totalArchived = Object.values(result.archived).reduce(
       (a, b) => a + b,
