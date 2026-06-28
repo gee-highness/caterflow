@@ -166,10 +166,10 @@ export default function ArchiveManagementPage() {
   }, [isAuthenticated, isAdmin, router, toast, fetchLogs, sessionStatus]);
 
   const handleRunArchive = async (options?: { deleteOld?: boolean }) => {
-    const confirmationMessage = options?.deleteOld
-      ? `Are you sure you want to delete archive run history and baseline snapshots older than ${ARCHIVE_DAYS} days? This action cannot be undone.`
-      : "Are you sure you want to trigger a manual archive run? This may take several minutes.";
-    if (!confirm(confirmationMessage)) return;
+    if (options?.deleteOld) {
+      const confirmationMessage = `Are you sure you want to delete archive run history and baseline snapshots older than ${ARCHIVE_DAYS} days? This action cannot be undone.`;
+      if (!confirm(confirmationMessage)) return;
+    }
 
     setIsRunning(true);
     try {
@@ -198,9 +198,13 @@ export default function ArchiveManagementPage() {
           isClosable: true,
         });
       } else {
+        const lockClearedMessage = data.lockCleared
+          ? "A stale archive lock was found and cleared automatically. "
+          : "";
+
         toast({
           title: "Archive Completed",
-          description: `Successfully archived ${data.totalArchived || 0} documents.`,
+          description: `${lockClearedMessage}Successfully archived ${data.totalArchived || 0} documents.`,
           status: "success",
           duration: 5000,
           isClosable: true,

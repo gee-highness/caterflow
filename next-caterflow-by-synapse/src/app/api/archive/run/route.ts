@@ -6,9 +6,47 @@ import { NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
+import { getArchiveDb, COLLECTIONS } from "@/lib/mongoClient";
 import { runArchive, cleanupOldArchiveMetadata } from "@/lib/archiveService";
 
 export const maxDuration = 300; // 5 minutes — Vercel Pro allows up to 300s
+
+async function clearStaleArchiveLock(): Promise<boolean> {
+  const db = await getArchiveDb();
+  const lockId = "archive-lock";
+  const lockTimeoutMs = parseInt(
+    process.env.ARCHIVE_LOCK_TIMEOUT_MS || "600000",
+    10,
+  );
+  const lockCutoff = new Date(Date.now() - lockTimeoutMs);
+
+  const lockDoc = await db
+    .collection(COLLECTIONS.ARCHIVE_RUNS)
+    .findOne({ _id: lockId });
+
+  if (!lockDoc || !lockDoc.locked || !lockDoc.acquiredAt) {
+    return false;
+  }
+
+  const acquiredAt = new Date(lockDoc.acquiredAt);
+  if (Number.isNaN(acquiredAt.getTime()) || acquiredAt >= lockCutoff) {
+    return false;
+  }
+
+  await db.collection(COLLECTIONS.ARCHIVE_RUNS).updateOne(
+    { _id: lockId },
+    {
+      $set: {
+        locked: false,
+        owner: null,
+        releasedAt: new Date().toISOString(),
+      },
+    },
+    { upsert: true },
+  );
+
+  return true;
+}
 
 export async function POST(request: Request) {
   // ── Authentication: Accept either Vercel Cron secret OR admin session ──
@@ -47,6 +85,7 @@ export async function POST(request: Request) {
       });
     }
 
+    const lockCleared = await clearStaleArchiveLock();
     const result = await runArchive();
 
     const totalArchived = Object.values(result.archived).reduce(
@@ -59,6 +98,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       success: true,
+      lockCleared,
       runId: result.runId,
       totalArchived,
       documentsDeleted,
