@@ -9,6 +9,8 @@ export interface ArchiveStepResult {
   name: string;
   count: number;
   deletedCount: number;
+  inserted?: number;
+  skipped?: number;
   status: "success" | "partial" | "failed";
   errors: string[];
   warnings: string[];
@@ -24,8 +26,11 @@ export interface ArchiveRunResult {
   archived: Record<string, number>;
   errors: string[];
   skipped: number;
+  totalInserted?: number;
+  totalSkipped?: number;
   steps: ArchiveStepResult[];
   assetsDeleted: number;
+  incomplete?: boolean;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -38,6 +43,8 @@ function createArchiveStepResult(options: {
   warnings?: string[];
   assetsDeleted?: number;
   message?: string;
+  inserted?: number;
+  skipped?: number;
 }): ArchiveStepResult {
   return {
     name: options.name,
@@ -47,6 +54,8 @@ function createArchiveStepResult(options: {
     errors: options.errors || [],
     warnings: options.warnings || [],
     assetsDeleted: options.assetsDeleted || 0,
+    inserted: options.inserted || 0,
+    skipped: options.skipped || 0,
     message: options.message,
   };
 }
@@ -69,6 +78,7 @@ function sanitizeForMongo(doc: any): any {
   const cleaned = { ...doc };
   delete cleaned._rev; // Sanity revision (irrelevant in Mongo)
   delete cleaned._updatedAt; // Sanity internal update timestamp
+  delete cleaned._id; // Preserve original ID separately as _sanityId
   return cleaned;
 }
 
@@ -252,7 +262,7 @@ async function archiveDispatchLogs(
     _archivedAt: new Date().toISOString(),
   }));
 
-  const { inserted: _inserted_dispatch, skipped: _skipped_dispatch } =
+  const { inserted: inserted_dispatch, skipped: skipped_dispatch } =
     await insertIfNotExists(db, COLLECTIONS.DISPATCH_LOGS, toInsert, errors);
 
   const ids = docs.map((d: any) => d._id);
@@ -275,6 +285,8 @@ async function archiveDispatchLogs(
     count: docs.length,
     deletedCount,
     errors: stepErrors,
+    inserted: inserted_dispatch,
+    skipped: skipped_dispatch,
   });
 }
 
@@ -349,6 +361,8 @@ async function archivePurchaseOrders(
     count: docs.length,
     deletedCount,
     errors: stepErrors,
+    inserted: _inserted_po,
+    skipped: _skipped_po,
   });
 }
 
@@ -431,6 +445,8 @@ async function archiveGoodsReceipts(
     count: docs.length,
     deletedCount,
     errors: stepErrors,
+    inserted: _inserted_gr,
+    skipped: _skipped_gr,
   });
 }
 
@@ -508,6 +524,8 @@ async function archiveInternalTransfers(
     count: docs.length,
     deletedCount,
     errors: stepErrors,
+    inserted: _inserted_it,
+    skipped: _skipped_it,
   });
 }
 
@@ -582,6 +600,8 @@ async function archiveStockAdjustments(
     count: docs.length,
     deletedCount,
     errors: stepErrors,
+    inserted: _inserted_sa,
+    skipped: _skipped_sa,
   });
 }
 
@@ -648,6 +668,8 @@ async function archiveInventoryCounts(
     count: docs.length,
     deletedCount,
     errors: stepErrors,
+    inserted: _inserted_ic,
+    skipped: _skipped_ic,
   });
 }
 
@@ -722,6 +744,8 @@ async function archiveFileAttachments(
     deletedCount,
     errors: stepErrors,
     assetsDeleted,
+    inserted: _inserted_fa,
+    skipped: _skipped_fa,
   });
 }
 
@@ -781,6 +805,8 @@ async function archiveStockSnapshots(
     count: docs.length,
     deletedCount,
     errors: stepErrors,
+    inserted: _inserted_ss,
+    skipped: _skipped_ss,
   });
 }
 
@@ -910,172 +936,210 @@ export async function runArchive(): Promise<ArchiveRunResult> {
   const db = await getArchiveDb();
   await ensureIndexes(db);
 
+  // Try to acquire a simple Mongo lock to prevent concurrent archive runs
+  const lockCol = db.collection(COLLECTIONS.ARCHIVE_RUNS);
+  const lockId = "archive-lock";
+  const lockTimeoutMs = parseInt(
+    process.env.ARCHIVE_LOCK_TIMEOUT_MS || "600000",
+    10,
+  ); // 10m
+  const lockCutoff = new Date(Date.now() - lockTimeoutMs).toISOString();
+  const lockResult = await lockCol.findOneAndUpdate(
+    {
+      _id: lockId,
+      $or: [
+        { locked: { $exists: false } },
+        { locked: false },
+        { acquiredAt: { $lt: lockCutoff } },
+      ],
+    } as any,
+    {
+      $set: {
+        _id: lockId,
+        locked: true,
+        owner: runId,
+        acquiredAt: new Date().toISOString(),
+      },
+    } as any,
+    { upsert: true, returnDocument: "after" } as any,
+  );
+
+  if (!lockResult.value || lockResult.value.owner !== runId) {
+    throw new Error("Archive run already in progress");
+  }
+
   // Step 1: Capture stock baseline BEFORE any deletions
   await captureStockBaseline(db);
 
   const cutoff = getCutoffDate();
 
-  // Step 2: Archive each document type (collect step objects)
-  const dispatchLogsStep = await archiveDispatchLogs(db, cutoff, errors).catch(
-    (e) => {
-      errors.push(`DispatchLog batch failed: ${e?.message}`);
-      return {
-        name: "DispatchLogs",
+  // Step 2: Archive each document type in a resumable loop
+  const maxSeconds = parseInt(process.env.ARCHIVE_MAX_SECONDS || "270", 10);
+  const allowedMs = maxSeconds * 1000;
+  const startMs = Date.now();
+
+  // Determine previously completed successful steps (resume support)
+  const lastRun = await db
+    .collection(COLLECTIONS.ARCHIVE_RUNS)
+    .findOne({}, { sort: { startedAt: -1 } });
+  const completedSteps = new Set<string>();
+  if (lastRun && Array.isArray(lastRun.steps)) {
+    for (const s of lastRun.steps) {
+      if (s?.status === "success") completedSteps.add(s.name);
+    }
+  }
+
+  const stepFns: {
+    key: string;
+    name: string;
+    fn: (
+      db: Db,
+      cutoff: string,
+      errors: string[],
+    ) => Promise<ArchiveStepResult>;
+  }[] = [
+    { key: "dispatchLogs", name: "DispatchLogs", fn: archiveDispatchLogs },
+    {
+      key: "purchaseOrders",
+      name: "PurchaseOrders",
+      fn: archivePurchaseOrders,
+    },
+    { key: "goodsReceipts", name: "GoodsReceipts", fn: archiveGoodsReceipts },
+    {
+      key: "internalTransfers",
+      name: "InternalTransfers",
+      fn: archiveInternalTransfers,
+    },
+    {
+      key: "stockAdjustments",
+      name: "StockAdjustments",
+      fn: archiveStockAdjustments,
+    },
+    {
+      key: "inventoryCounts",
+      name: "InventoryCounts",
+      fn: archiveInventoryCounts,
+    },
+    {
+      key: "fileAttachments",
+      name: "FileAttachments",
+      fn: archiveFileAttachments,
+    },
+    {
+      key: "stockSnapshots",
+      name: "StockSnapshots",
+      fn: archiveStockSnapshots,
+    },
+  ];
+
+  const steps: ArchiveStepResult[] = [];
+  const archived: Record<string, number> = {};
+  let totalInserted = 0;
+  let totalSkipped = 0;
+
+  for (const s of stepFns) {
+    // Skip steps already completed in the last successful run
+    if (completedSteps.has(s.name)) {
+      const skippedStep = createArchiveStepResult({
+        name: s.name,
         count: 0,
         deletedCount: 0,
-        status: "failed",
-        errors: [e?.message || "unknown"],
-        warnings: [],
-      } as ArchiveStepResult;
-    },
-  );
-  const purchaseOrdersStep = await archivePurchaseOrders(
-    db,
-    cutoff,
-    errors,
-  ).catch((e) => {
-    errors.push(`PurchaseOrder batch failed: ${e?.message}`);
-    return {
-      name: "PurchaseOrders",
-      count: 0,
-      deletedCount: 0,
-      status: "failed",
-      errors: [e?.message || "unknown"],
-      warnings: [],
-    } as ArchiveStepResult;
-  });
-  const goodsReceiptsStep = await archiveGoodsReceipts(
-    db,
-    cutoff,
-    errors,
-  ).catch((e) => {
-    errors.push(`GoodsReceipt batch failed: ${e?.message}`);
-    return {
-      name: "GoodsReceipts",
-      count: 0,
-      deletedCount: 0,
-      status: "failed",
-      errors: [e?.message || "unknown"],
-      warnings: [],
-    } as ArchiveStepResult;
-  });
-  const internalTransfersStep = await archiveInternalTransfers(
-    db,
-    cutoff,
-    errors,
-  ).catch((e) => {
-    errors.push(`InternalTransfer batch failed: ${e?.message}`);
-    return {
-      name: "InternalTransfers",
-      count: 0,
-      deletedCount: 0,
-      status: "failed",
-      errors: [e?.message || "unknown"],
-      warnings: [],
-    } as ArchiveStepResult;
-  });
-  const stockAdjustmentsStep = await archiveStockAdjustments(
-    db,
-    cutoff,
-    errors,
-  ).catch((e) => {
-    errors.push(`StockAdjustment batch failed: ${e?.message}`);
-    return {
-      name: "StockAdjustments",
-      count: 0,
-      deletedCount: 0,
-      status: "failed",
-      errors: [e?.message || "unknown"],
-      warnings: [],
-    } as ArchiveStepResult;
-  });
-  const inventoryCountsStep = await archiveInventoryCounts(
-    db,
-    cutoff,
-    errors,
-  ).catch((e) => {
-    errors.push(`InventoryCount batch failed: ${e?.message}`);
-    return {
-      name: "InventoryCounts",
-      count: 0,
-      deletedCount: 0,
-      status: "failed",
-      errors: [e?.message || "unknown"],
-      warnings: [],
-    } as ArchiveStepResult;
-  });
-  const fileAttachmentsStep = await archiveFileAttachments(
-    db,
-    cutoff,
-    errors,
-  ).catch((e) => {
-    errors.push(`FileAttachment batch failed: ${e?.message}`);
-    return {
-      name: "FileAttachments",
-      count: 0,
-      deletedCount: 0,
-      status: "failed",
-      errors: [e?.message || "unknown"],
-      warnings: [],
-    } as ArchiveStepResult;
-  });
-  const stockSnapshotsStep = await archiveStockSnapshots(
-    db,
-    cutoff,
-    errors,
-  ).catch((e) => {
-    errors.push(`StockSnapshot batch failed: ${e?.message}`);
-    return {
-      name: "StockSnapshots",
-      count: 0,
-      deletedCount: 0,
-      status: "failed",
-      errors: [e?.message || "unknown"],
-      warnings: [],
-    } as ArchiveStepResult;
-  });
+        message: "Already archived in previous successful run",
+      });
+      skippedStep.status = "success";
+      steps.push(skippedStep);
+      archived[s.key] = 0;
+      continue;
+    }
+
+    // Check elapsed time before starting this step
+    const elapsed = Date.now() - startMs;
+    if (elapsed >= allowedMs - 2000) {
+      // Time nearly exhausted — persist partial run and return
+      const partialResult: ArchiveRunResult = {
+        runId,
+        startedAt,
+        completedAt: new Date().toISOString(),
+        durationMs: Date.now() - startMs,
+        archived,
+        errors,
+        skipped: 0,
+        steps,
+        assetsDeleted: steps.reduce(
+          (sum, st) => sum + (st.assetsDeleted || 0),
+          0,
+        ),
+        incomplete: true,
+      };
+      await db.collection(COLLECTIONS.ARCHIVE_RUNS).insertOne(partialResult);
+      console.log(
+        "⚠️ Archive run paused due to time limit; will resume on next trigger",
+      );
+      return partialResult;
+    }
+
+    try {
+      const stepRes = await s.fn(db, cutoff, errors).catch((e) => {
+        errors.push(`${s.name} batch failed: ${e?.message}`);
+        return createArchiveStepResult({
+          name: s.name,
+          count: 0,
+          deletedCount: 0,
+          errors: [e?.message || "unknown"],
+          message: "Step failed",
+        });
+      });
+      steps.push(stepRes);
+      // Aggregate inserted/skipped totals when present
+      totalInserted += stepRes.inserted || 0;
+      totalSkipped += stepRes.skipped || 0;
+      archived[s.key] = stepRes.count || 0;
+    } catch (e: any) {
+      const stepErr = createArchiveStepResult({
+        name: s.name,
+        count: 0,
+        deletedCount: 0,
+        errors: [e?.message || String(e)],
+      });
+      steps.push(stepErr);
+      archived[s.key] = 0;
+      errors.push(`${s.name} batch failed: ${e?.message}`);
+    }
+  }
 
   const completedAt = new Date().toISOString();
-  const durationMs =
-    new Date(completedAt).getTime() - new Date(startedAt).getTime();
-
-  const steps: ArchiveStepResult[] = [
-    dispatchLogsStep,
-    purchaseOrdersStep,
-    goodsReceiptsStep,
-    internalTransfersStep,
-    stockAdjustmentsStep,
-    inventoryCountsStep,
-    fileAttachmentsStep,
-    stockSnapshotsStep,
-  ];
+  const durationMs = Date.now() - startMs;
 
   const result: ArchiveRunResult = {
     runId,
     startedAt,
     completedAt,
     durationMs,
-    archived: {
-      dispatchLogs: dispatchLogsStep.count,
-      purchaseOrders: purchaseOrdersStep.count,
-      goodsReceipts: goodsReceiptsStep.count,
-      internalTransfers: internalTransfersStep.count,
-      stockAdjustments: stockAdjustmentsStep.count,
-      inventoryCounts: inventoryCountsStep.count,
-      fileAttachments: fileAttachmentsStep.count,
-      stockSnapshots: stockSnapshotsStep.count,
-    },
+    archived,
     errors,
-    skipped: 0,
+    skipped: totalSkipped,
+    totalInserted,
+    totalSkipped,
     steps,
     assetsDeleted: steps.reduce(
       (sum, step) => sum + (step.assetsDeleted || 0),
       0,
     ),
+    incomplete: false,
   };
 
   // Step 3: Log the run
   await db.collection(COLLECTIONS.ARCHIVE_RUNS).insertOne(result);
+
+  // Release lock
+  try {
+    await lockCol.updateOne(
+      { _id: lockId, owner: runId } as any,
+      { $set: { locked: false, releasedAt: new Date().toISOString() } } as any,
+    );
+  } catch (e) {
+    console.error("Failed to release archive lock:", e);
+  }
 
   const totalArchived = Object.values(result.archived).reduce(
     (a, b) => a + b,
@@ -1088,4 +1152,49 @@ export async function runArchive(): Promise<ArchiveRunResult> {
     console.error(`⚠️  ${errors.length} errors occurred:`, errors);
 
   return result;
+}
+
+/**
+ * Resume any incomplete archive runs by triggering `runArchive()` until all incomplete
+ * runs are finished or `maxAttempts` is reached. This is intended to be called from a
+ * scheduled cron job or admin trigger.
+ */
+export async function resumeIncompleteArchives(
+  maxAttempts: number = 5,
+): Promise<{ attempts: number; finished: boolean }> {
+  const db = await getArchiveDb();
+  let attempts = 0;
+
+  for (; attempts < maxAttempts; attempts++) {
+    const incompleteRun = await db
+      .collection(COLLECTIONS.ARCHIVE_RUNS)
+      .findOne({ incomplete: true }, { sort: { startedAt: -1 } });
+
+    if (!incompleteRun) return { attempts, finished: true };
+
+    console.log(
+      `🔁 Resuming incomplete archive run (found: ${incompleteRun.runId})`,
+    );
+
+    // Trigger a normal runArchive() which will resume from previously completed steps
+    const res = await runArchive();
+
+    // If this run finished (res.incomplete !== true), clear any older incomplete flags
+    if (!res.incomplete) {
+      await db
+        .collection(COLLECTIONS.ARCHIVE_RUNS)
+        .updateMany(
+          { incomplete: true, runId: { $ne: res.runId } },
+          { $set: { incomplete: false } },
+        );
+    }
+
+    // If no more incomplete runs remain, we are done
+    const remaining = await db
+      .collection(COLLECTIONS.ARCHIVE_RUNS)
+      .findOne({ incomplete: true });
+    if (!remaining) return { attempts: attempts + 1, finished: true };
+  }
+
+  return { attempts, finished: false };
 }

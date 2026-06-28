@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test:archive-resume": "node ./scripts/test_archive_resume.js",
+    "archive:clear-lock": "node ./scripts/clear_archive_lock.js"
   },
   "dependencies": {
     "@chakra-ui/icons": "^2.2.4",

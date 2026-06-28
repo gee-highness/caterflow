@@ -269,6 +269,17 @@ export default function ArchiveManagementPage() {
     }
   };
 
+  const renderIncomplete = (run: ArchiveLog) => {
+    // Highlight incomplete runs if present
+    // Some runs include `incomplete: true` in their payload
+    // Type may be missing on older entries
+    const anyRun: any = run as any;
+    if (anyRun.incomplete) {
+      return <Badge colorScheme="yellow">Incomplete</Badge>;
+    }
+    return null;
+  };
+
   if (sessionStatus === "loading") {
     return (
       <Flex justifyContent="center" alignItems="center" height="50vh">
@@ -305,6 +316,42 @@ export default function ArchiveManagementPage() {
             onClick={handleDownloadBackup}
           >
             Download Backup
+          </Button>
+          <Button
+            leftIcon={<FiTrash2 />}
+            colorScheme="yellow"
+            variant="outline"
+            onClick={async () => {
+              const secret = window.prompt(
+                "Enter admin/cron secret to clear archive lock:",
+              );
+              if (!secret) return;
+              try {
+                const res = await fetch("/api/archive/lock/clear", {
+                  method: "POST",
+                  headers: { "x-admin-secret": `Bearer ${secret}` },
+                });
+                const body = await res.json();
+                if (!res.ok) throw new Error(body.error || "Failed");
+                toast({
+                  title: "Lock cleared",
+                  status: "success",
+                  duration: 3000,
+                  isClosable: true,
+                });
+                fetchLogs();
+              } catch (err: any) {
+                toast({
+                  title: "Clear lock failed",
+                  description: err?.message || String(err),
+                  status: "error",
+                  duration: 4000,
+                  isClosable: true,
+                });
+              }
+            }}
+          >
+            Clear Lock
           </Button>
           <Button
             leftIcon={<FiPlay />}
@@ -370,6 +417,22 @@ export default function ArchiveManagementPage() {
                       Docs Deleted
                     </Th>
                     <Th color={textColor} isNumeric>
+                      <Tooltip
+                        label="Prefers run.totalInserted; falls back to summing step.inserted"
+                        placement="top"
+                      >
+                        <Box as="span">Docs Inserted</Box>
+                      </Tooltip>
+                    </Th>
+                    <Th color={textColor} isNumeric>
+                      <Tooltip
+                        label="Prefers run.totalSkipped; falls back to summing step.skipped"
+                        placement="top"
+                      >
+                        <Box as="span">Docs Skipped</Box>
+                      </Tooltip>
+                    </Th>
+                    <Th color={textColor} isNumeric>
                       Assets Deleted
                     </Th>
                     <Th color={textColor}>Details</Th>
@@ -389,12 +452,52 @@ export default function ArchiveManagementPage() {
                         <Td color={textColorSecondary} whiteSpace="nowrap">
                           {new Date(log.runDate).toLocaleString()}
                         </Td>
-                        <Td>{getStatusBadge(log.status)}</Td>
-                        <Td color={textColorSecondary} isNumeric>
-                          {log.documentsArchived}
+                        <Td>
+                          <HStack spacing={2}>
+                            {getStatusBadge(log.status)}
+                            {renderIncomplete(log)}
+                          </HStack>
                         </Td>
                         <Td color={textColorSecondary} isNumeric>
-                          {log.documentsDeleted}
+                          {log.documentsArchived ??
+                            (log.steps
+                              ? log.steps.reduce(
+                                  (s: number, st: any) => s + (st.count || 0),
+                                  0,
+                                )
+                              : Object.values(log.archived || {}).reduce(
+                                  (s: number, v: any) => s + (v || 0),
+                                  0,
+                                ))}
+                        </Td>
+                        <Td color={textColorSecondary} isNumeric>
+                          {log.documentsDeleted ??
+                            (log.steps
+                              ? log.steps.reduce(
+                                  (s: number, st: any) =>
+                                    s + (st.deletedCount || 0),
+                                  0,
+                                )
+                              : 0)}
+                        </Td>
+                        <Td color={textColorSecondary} isNumeric>
+                          {log.totalInserted ??
+                            (log.steps
+                              ? log.steps.reduce(
+                                  (s: number, st: any) =>
+                                    s + (st.inserted || 0),
+                                  0,
+                                )
+                              : 0)}
+                        </Td>
+                        <Td color={textColorSecondary} isNumeric>
+                          {log.totalSkipped ??
+                            (log.steps
+                              ? log.steps.reduce(
+                                  (s: number, st: any) => s + (st.skipped || 0),
+                                  0,
+                                )
+                              : 0)}
                         </Td>
                         <Td color={textColorSecondary} isNumeric>
                           {log.assetsDeleted}
@@ -496,6 +599,8 @@ export default function ArchiveManagementPage() {
                         <Td>{step.name}</Td>
                         <Td isNumeric>{step.count}</Td>
                         <Td isNumeric>{step.deletedCount}</Td>
+                        <Td isNumeric>{step.inserted ?? 0}</Td>
+                        <Td isNumeric>{step.skipped ?? 0}</Td>
                         <Td>{getStatusBadge(step.status)}</Td>
                         <Td>{step.errors?.length || 0}</Td>
                       </Tr>

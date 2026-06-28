@@ -24,6 +24,21 @@ export async function GET(request: Request) {
           sum + (typeof value === "number" ? value : 0),
         0,
       );
+      const totalInserted =
+        typeof run.totalInserted === "number"
+          ? run.totalInserted
+          : run.steps
+            ? run.steps.reduce(
+                (s: number, st: any) => s + (st.inserted || 0),
+                0,
+              )
+            : 0;
+      const totalSkipped =
+        typeof run.totalSkipped === "number"
+          ? run.totalSkipped
+          : run.steps
+            ? run.steps.reduce((s: number, st: any) => s + (st.skipped || 0), 0)
+            : 0;
       const status = run.errors?.length
         ? documentsArchived > 0
           ? "partial"
@@ -36,6 +51,8 @@ export async function GET(request: Request) {
         runDate: run.startedAt,
         status,
         documentsArchived,
+        totalInserted,
+        totalSkipped,
         documentsDeleted: run.steps
           ? run.steps.reduce(
               (sum: number, step: any) => sum + (step.deletedCount || 0),

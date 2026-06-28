@@ -517,6 +517,52 @@ interface SafeDeleteResponse {
 }
 ```
 
+### Archive Status API
+
+The archive system exposes a read-only status endpoint that the admin UI and client hooks use to show recent runs and aggregated metrics.
+
+- Endpoint: `GET /api/archive/status`
+
+- Important response fields:
+  - `runs`: Array of recent `ArchiveRunResult` objects (most recent first).
+  - `ArchiveRunResult.totalInserted` (number): total documents inserted into the archive during the run. New runs include this field; older runs may omit it — clients should fall back to summing `steps[].inserted`.
+  - `ArchiveRunResult.totalSkipped` (number): total documents skipped due to dedupe during the run. New runs include this field; fallback is sum of `steps[].skipped`.
+  - `ArchiveRunResult.incomplete` (boolean): true if the run was persisted mid-run and needs resume.
+  - `ArchiveRunResult.steps[]`: ordered step objects. Each step includes `name`, `status`, `inserted` (number), `skipped` (number), and any `error` messages.
+
+Example response shape (abridged):
+
+```json
+{
+  "runs": [
+    {
+      "runId": "run-2026-06-28-153245",
+      "startedAt": "2026-06-28T15:32:45.123Z",
+      "completedAt": "2026-06-28T15:35:12.456Z",
+      "incomplete": false,
+      "totalInserted": 1234,
+      "totalSkipped": 56,
+      "steps": [
+        {
+          "name": "archiveStockItems",
+          "status": "done",
+          "inserted": 900,
+          "skipped": 10
+        },
+        {
+          "name": "archivePurchaseOrders",
+          "status": "done",
+          "inserted": 334,
+          "skipped": 46
+        }
+      ]
+    }
+  ]
+}
+```
+
+Clients (UI and hooks) should prefer `totalInserted`/`totalSkipped` when present for quick display, and compute fallbacks from the `steps` array for older runs.
+
 ---
 
 ## ✅ Testing Scenarios
