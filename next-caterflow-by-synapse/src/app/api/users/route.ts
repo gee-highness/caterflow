@@ -1,8 +1,9 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { writeClient } from '@/lib/sanity';
-import { groq } from 'next-sanity';
-import bcrypt from 'bcryptjs';
-import { logSanityInteraction } from '@/lib/sanityLogger';
+import { NextRequest, NextResponse } from "next/server";
+import { writeClient } from "@/lib/sanity";
+import { createSafeDeleteHandler } from "@/lib/deleteWithBackupSafety";
+import { groq } from "next-sanity";
+import bcrypt from "bcryptjs";
+import { logSanityInteraction } from "@/lib/sanityLogger";
 
 interface UserData {
   _id?: string;
@@ -18,7 +19,7 @@ interface UserData {
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
-    const role = searchParams.get('role');
+    const role = searchParams.get("role");
 
     let query;
     let params = {};
@@ -47,10 +48,10 @@ export async function GET(req: NextRequest) {
     const users = await writeClient.fetch(query, params);
     return NextResponse.json(users);
   } catch (error) {
-    console.error('Error fetching users:', error);
+    console.error("Error fetching users:", error);
     return NextResponse.json(
-      { error: 'Failed to fetch users' },
-      { status: 500 }
+      { error: "Failed to fetch users" },
+      { status: 500 },
     );
   }
 }
@@ -63,56 +64,58 @@ export async function POST(req: NextRequest) {
     // Validate required fields
     if (!userData.name || !userData.email || !userData.role) {
       return NextResponse.json(
-        { error: 'Name, email, and role are required' },
-        { status: 400 }
+        { error: "Name, email, and role are required" },
+        { status: 400 },
       );
     }
 
     // Check if user already exists
     const existingUser = await writeClient.fetch(
       groq`*[_type == "AppUser" && email == $email][0]`,
-      { email: userData.email }
+      { email: userData.email },
     );
 
     if (existingUser) {
       return NextResponse.json(
-        { error: 'User with this email already exists' },
-        { status: 409 }
+        { error: "User with this email already exists" },
+        { status: 409 },
       );
     }
 
     // Create user document
     const newUser = {
-      _type: 'AppUser',
+      _type: "AppUser",
       name: userData.name,
       email: userData.email,
       role: userData.role,
       isActive: userData.isActive !== undefined ? userData.isActive : true,
-      associatedSite: userData.associatedSite ? {
-        _type: 'reference',
-        _ref: userData.associatedSite
-      } : undefined,
-      requiresPasswordSetup: true
+      associatedSite: userData.associatedSite
+        ? {
+            _type: "reference",
+            _ref: userData.associatedSite,
+          }
+        : undefined,
+      requiresPasswordSetup: true,
     };
 
     const result = await writeClient.create(newUser);
 
     // Log the action
     await logSanityInteraction(
-      'user_management',
-      'User created',
-      'AppUser',
+      "user_management",
+      "User created",
+      "AppUser",
       result._id,
       userData.email,
-      true
+      true,
     );
 
     return NextResponse.json(result, { status: 201 });
   } catch (error) {
-    console.error('Error creating user:', error);
+    console.error("Error creating user:", error);
     return NextResponse.json(
-      { error: 'Failed to create user' },
-      { status: 500 }
+      { error: "Failed to create user" },
+      { status: 500 },
     );
   }
 }
@@ -124,35 +127,32 @@ export async function PATCH(req: NextRequest) {
 
     if (!userData._id) {
       return NextResponse.json(
-        { error: 'User ID is required' },
-        { status: 400 }
+        { error: "User ID is required" },
+        { status: 400 },
       );
     }
 
     // Check if user exists
     const existingUser = await writeClient.fetch(
       groq`*[_type == "AppUser" && _id == $id][0]`,
-      { id: userData._id }
+      { id: userData._id },
     );
 
     if (!existingUser) {
-      return NextResponse.json(
-        { error: 'User not found' },
-        { status: 404 }
-      );
+      return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
     // Check if email is already used by another user
     if (userData.email && userData.email !== existingUser.email) {
       const userWithEmail = await writeClient.fetch(
         groq`*[_type == "AppUser" && email == $email && _id != $id][0]`,
-        { email: userData.email, id: userData._id }
+        { email: userData.email, id: userData._id },
       );
 
       if (userWithEmail) {
         return NextResponse.json(
-          { error: 'Email already in use by another user' },
-          { status: 409 }
+          { error: "Email already in use by another user" },
+          { status: 409 },
         );
       }
     }
@@ -162,7 +162,7 @@ export async function PATCH(req: NextRequest) {
       name: userData.name,
       email: userData.email,
       role: userData.role,
-      isActive: userData.isActive
+      isActive: userData.isActive,
     };
 
     // Hash password if provided
@@ -173,8 +173,8 @@ export async function PATCH(req: NextRequest) {
     // Handle site reference
     if (userData.associatedSite) {
       updateData.associatedSite = {
-        _type: 'reference',
-        _ref: userData.associatedSite
+        _type: "reference",
+        _ref: userData.associatedSite,
       };
     } else if (userData.associatedSite === null) {
       updateData.associatedSite = null;
@@ -188,20 +188,20 @@ export async function PATCH(req: NextRequest) {
 
     // Log the action
     await logSanityInteraction(
-      'user_management',
-      'User updated',
-      'AppUser',
+      "user_management",
+      "User updated",
+      "AppUser",
       userData._id,
       userData.email,
-      true
+      true,
     );
 
     return NextResponse.json(result);
   } catch (error) {
-    console.error('Error updating user:', error);
+    console.error("Error updating user:", error);
     return NextResponse.json(
-      { error: 'Failed to update user' },
-      { status: 500 }
+      { error: "Failed to update user" },
+      { status: 500 },
     );
   }
 }
@@ -210,47 +210,58 @@ export async function PATCH(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
-    const id = searchParams.get('id');
+    const id = searchParams.get("id");
 
     if (!id) {
       return NextResponse.json(
-        { error: 'User ID is required' },
-        { status: 400 }
+        { error: "User ID is required" },
+        { status: 400 },
       );
     }
 
     // Check if user exists
     const existingUser = await writeClient.fetch(
       groq`*[_type == "AppUser" && _id == $id][0]`,
-      { id }
+      { id },
     );
 
     if (!existingUser) {
-      return NextResponse.json(
-        { error: 'User not found' },
-        { status: 404 }
-      );
+      return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
-    // Delete user
-    await writeClient.delete(id);
+    // Perform safe delete (enforces backup checks and may auto-trigger archive)
+    const safeDelete = createSafeDeleteHandler(async (ids: string[]) => {
+      for (const did of ids) {
+        await writeClient.delete(did);
+      }
+    }, "AppUser");
 
-    // Log the action
-    await logSanityInteraction(
-      'user_management',
-      'User deleted',
-      'AppUser',
-      id,
-      existingUser.email,
-      true
-    );
+    try {
+      const result = await safeDelete([id], "user deletion");
 
-    return NextResponse.json({ message: 'User deleted successfully' });
+      // Log the action only when deletion succeeded
+      await logSanityInteraction(
+        "user_management",
+        "User deleted",
+        "AppUser",
+        id,
+        existingUser.email,
+        true,
+      );
+
+      return NextResponse.json(result);
+    } catch (err: any) {
+      console.error("Delete blocked or failed:", err);
+      return NextResponse.json(
+        { error: err?.message || "Delete failed" },
+        { status: err?.status || 500 },
+      );
+    }
   } catch (error) {
-    console.error('Error deleting user:', error);
+    console.error("Error deleting user:", error);
     return NextResponse.json(
-      { error: 'Failed to delete user' },
-      { status: 500 }
+      { error: "Failed to delete user" },
+      { status: 500 },
     );
   }
 }

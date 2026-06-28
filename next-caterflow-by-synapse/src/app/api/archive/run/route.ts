@@ -54,11 +54,16 @@ export async function POST(request: Request) {
       0,
     );
 
+    // documentsDeleted is approximated as totalArchived (archive implementation stores counts)
+    const documentsDeleted = totalArchived;
+
     return NextResponse.json({
       success: true,
       runId: result.runId,
       totalArchived,
+      documentsDeleted,
       breakdown: result.archived,
+      // Steps and assetsDeleted are optional in current implementation
       errors: result.errors,
       durationMs: result.durationMs,
       startedAt: result.startedAt,

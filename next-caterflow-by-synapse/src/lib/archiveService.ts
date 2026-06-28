@@ -5,6 +5,17 @@ import type { Db } from "mongodb";
 
 const ARCHIVE_DAYS = parseInt(process.env.ARCHIVE_DAYS_THRESHOLD || "90", 10);
 
+export interface ArchiveStepResult {
+  name: string;
+  count: number;
+  deletedCount: number;
+  status: "success" | "partial" | "failed";
+  errors: string[];
+  warnings: string[];
+  assetsDeleted?: number;
+  message?: string;
+}
+
 export interface ArchiveRunResult {
   runId: string;
   startedAt: string;
@@ -13,9 +24,32 @@ export interface ArchiveRunResult {
   archived: Record<string, number>;
   errors: string[];
   skipped: number;
+  steps: ArchiveStepResult[];
+  assetsDeleted: number;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function createArchiveStepResult(options: {
+  name: string;
+  count: number;
+  deletedCount: number;
+  errors?: string[];
+  warnings?: string[];
+  assetsDeleted?: number;
+  message?: string;
+}): ArchiveStepResult {
+  return {
+    name: options.name,
+    count: options.count,
+    deletedCount: options.deletedCount,
+    status: options.errors && options.errors.length ? "partial" : "success",
+    errors: options.errors || [],
+    warnings: options.warnings || [],
+    assetsDeleted: options.assetsDeleted || 0,
+    message: options.message,
+  };
+}
 
 function getCutoffDate(): string {
   const d = new Date();
@@ -122,7 +156,8 @@ async function archiveDispatchLogs(
   db: Db,
   cutoff: string,
   errors: string[],
-): Promise<number> {
+): Promise<ArchiveStepResult> {
+  const name = "DispatchLogs";
   const docs = await sanityClient.fetch(
     groq`
         *[_type == "DispatchLog"
@@ -146,7 +181,14 @@ async function archiveDispatchLogs(
     { cutoff },
   );
 
-  if (!docs.length) return 0;
+  if (!docs.length) {
+    return createArchiveStepResult({
+      name,
+      count: 0,
+      deletedCount: 0,
+      message: "No DispatchLogs to archive",
+    });
+  }
 
   const numbers = docs.map((d: any) => d.dispatchNumber);
   await updateSequenceCounter(db, "DispatchLog", "DL", numbers);
@@ -161,23 +203,34 @@ async function archiveDispatchLogs(
   await db.collection(COLLECTIONS.DISPATCH_LOGS).insertMany(toInsert);
 
   const ids = docs.map((d: any) => d._id);
+  let deletedCount = 0;
+  const stepErrors: string[] = [];
   for (const id of ids) {
     try {
       await writeClient.delete(id);
+      deletedCount += 1;
     } catch (e: any) {
-      errors.push(`Failed to delete DispatchLog ${id}: ${e?.message}`);
+      const message = `Failed to delete DispatchLog ${id}: ${e?.message}`;
+      errors.push(message);
+      stepErrors.push(message);
     }
   }
 
   console.log(`✅ Archived ${docs.length} DispatchLogs`);
-  return docs.length;
+  return createArchiveStepResult({
+    name,
+    count: docs.length,
+    deletedCount,
+    errors: stepErrors,
+  });
 }
 
 async function archivePurchaseOrders(
   db: Db,
   cutoff: string,
   errors: string[],
-): Promise<number> {
+): Promise<ArchiveStepResult> {
+  const name = "PurchaseOrders";
   const docs = await sanityClient.fetch(
     groq`
         *[_type == "PurchaseOrder"
@@ -201,7 +254,14 @@ async function archivePurchaseOrders(
     { cutoff },
   );
 
-  if (!docs.length) return 0;
+  if (!docs.length) {
+    return createArchiveStepResult({
+      name,
+      count: 0,
+      deletedCount: 0,
+      message: "No PurchaseOrders to archive",
+    });
+  }
 
   const numbers = docs.map((d: any) => d.poNumber);
   await updateSequenceCounter(db, "PurchaseOrder", "PO", numbers);
@@ -216,23 +276,34 @@ async function archivePurchaseOrders(
   await db.collection(COLLECTIONS.PURCHASE_ORDERS).insertMany(toInsert);
 
   const ids = docs.map((d: any) => d._id);
+  let deletedCount = 0;
+  const stepErrors: string[] = [];
   for (const id of ids) {
     try {
       await writeClient.delete(id);
+      deletedCount += 1;
     } catch (e: any) {
-      errors.push(`Failed to delete PurchaseOrder ${id}: ${e?.message}`);
+      const message = `Failed to delete PurchaseOrder ${id}: ${e?.message}`;
+      errors.push(message);
+      stepErrors.push(message);
     }
   }
 
   console.log(`✅ Archived ${docs.length} PurchaseOrders`);
-  return docs.length;
+  return createArchiveStepResult({
+    name,
+    count: docs.length,
+    deletedCount,
+    errors: stepErrors,
+  });
 }
 
 async function archiveGoodsReceipts(
   db: Db,
   cutoff: string,
   errors: string[],
-): Promise<number> {
+): Promise<ArchiveStepResult> {
+  const name = "GoodsReceipts";
   const docs = await sanityClient.fetch(
     groq`
         *[_type == "GoodsReceipt"
@@ -264,7 +335,14 @@ async function archiveGoodsReceipts(
     { cutoff },
   );
 
-  if (!docs.length) return 0;
+  if (!docs.length) {
+    return createArchiveStepResult({
+      name,
+      count: 0,
+      deletedCount: 0,
+      message: "No GoodsReceipts to archive",
+    });
+  }
 
   const numbers = docs.map((d: any) => d.receiptNumber);
   await updateSequenceCounter(db, "GoodsReceipt", "GR", numbers);
@@ -279,23 +357,34 @@ async function archiveGoodsReceipts(
   await db.collection(COLLECTIONS.GOODS_RECEIPTS).insertMany(toInsert);
 
   const ids = docs.map((d: any) => d._id);
+  let deletedCount = 0;
+  const stepErrors: string[] = [];
   for (const id of ids) {
     try {
       await writeClient.delete(id);
+      deletedCount += 1;
     } catch (e: any) {
-      errors.push(`Failed to delete GoodsReceipt ${id}: ${e?.message}`);
+      const message = `Failed to delete GoodsReceipt ${id}: ${e?.message}`;
+      errors.push(message);
+      stepErrors.push(message);
     }
   }
 
   console.log(`✅ Archived ${docs.length} GoodsReceipts`);
-  return docs.length;
+  return createArchiveStepResult({
+    name,
+    count: docs.length,
+    deletedCount,
+    errors: stepErrors,
+  });
 }
 
 async function archiveInternalTransfers(
   db: Db,
   cutoff: string,
   errors: string[],
-): Promise<number> {
+): Promise<ArchiveStepResult> {
+  const name = "InternalTransfers";
   const docs = await sanityClient.fetch(
     groq`
         *[_type == "InternalTransfer"
@@ -317,7 +406,14 @@ async function archiveInternalTransfers(
     { cutoff },
   );
 
-  if (!docs.length) return 0;
+  if (!docs.length) {
+    return createArchiveStepResult({
+      name,
+      count: 0,
+      deletedCount: 0,
+      message: "No InternalTransfers to archive",
+    });
+  }
 
   const numbers = docs.map((d: any) => d.transferNumber);
   await updateSequenceCounter(db, "InternalTransfer", "TRF", numbers);
@@ -332,23 +428,34 @@ async function archiveInternalTransfers(
   await db.collection(COLLECTIONS.INTERNAL_TRANSFERS).insertMany(toInsert);
 
   const ids = docs.map((d: any) => d._id);
+  let deletedCount = 0;
+  const stepErrors: string[] = [];
   for (const id of ids) {
     try {
       await writeClient.delete(id);
+      deletedCount += 1;
     } catch (e: any) {
-      errors.push(`Failed to delete InternalTransfer ${id}: ${e?.message}`);
+      const message = `Failed to delete InternalTransfer ${id}: ${e?.message}`;
+      errors.push(message);
+      stepErrors.push(message);
     }
   }
 
   console.log(`✅ Archived ${docs.length} InternalTransfers`);
-  return docs.length;
+  return createArchiveStepResult({
+    name,
+    count: docs.length,
+    deletedCount,
+    errors: stepErrors,
+  });
 }
 
 async function archiveStockAdjustments(
   db: Db,
   cutoff: string,
   errors: string[],
-): Promise<number> {
+): Promise<ArchiveStepResult> {
+  const name = "StockAdjustments";
   const docs = await sanityClient.fetch(
     groq`
         *[_type == "StockAdjustment"
@@ -370,7 +477,14 @@ async function archiveStockAdjustments(
     { cutoff },
   );
 
-  if (!docs.length) return 0;
+  if (!docs.length) {
+    return createArchiveStepResult({
+      name,
+      count: 0,
+      deletedCount: 0,
+      message: "No StockAdjustments to archive",
+    });
+  }
 
   const toInsert = docs.map((d: any) => ({
     ...sanitizeForMongo(d),
@@ -382,23 +496,34 @@ async function archiveStockAdjustments(
   await db.collection(COLLECTIONS.STOCK_ADJUSTMENTS).insertMany(toInsert);
 
   const ids = docs.map((d: any) => d._id);
+  let deletedCount = 0;
+  const stepErrors: string[] = [];
   for (const id of ids) {
     try {
       await writeClient.delete(id);
+      deletedCount += 1;
     } catch (e: any) {
-      errors.push(`Failed to delete StockAdjustment ${id}: ${e?.message}`);
+      const message = `Failed to delete StockAdjustment ${id}: ${e?.message}`;
+      errors.push(message);
+      stepErrors.push(message);
     }
   }
 
   console.log(`✅ Archived ${docs.length} StockAdjustments`);
-  return docs.length;
+  return createArchiveStepResult({
+    name,
+    count: docs.length,
+    deletedCount,
+    errors: stepErrors,
+  });
 }
 
 async function archiveInventoryCounts(
   db: Db,
   cutoff: string,
   errors: string[],
-): Promise<number> {
+): Promise<ArchiveStepResult> {
+  const name = "InventoryCounts";
   const docs = await sanityClient.fetch(
     groq`
         *[_type == "InventoryCount"
@@ -417,7 +542,14 @@ async function archiveInventoryCounts(
     { cutoff },
   );
 
-  if (!docs.length) return 0;
+  if (!docs.length) {
+    return createArchiveStepResult({
+      name,
+      count: 0,
+      deletedCount: 0,
+      message: "No InventoryCounts to archive",
+    });
+  }
 
   const toInsert = docs.map((d: any) => ({
     ...sanitizeForMongo(d),
@@ -429,23 +561,34 @@ async function archiveInventoryCounts(
   await db.collection(COLLECTIONS.INVENTORY_COUNTS).insertMany(toInsert);
 
   const ids = docs.map((d: any) => d._id);
+  let deletedCount = 0;
+  const stepErrors: string[] = [];
   for (const id of ids) {
     try {
       await writeClient.delete(id);
+      deletedCount += 1;
     } catch (e: any) {
-      errors.push(`Failed to delete InventoryCount ${id}: ${e?.message}`);
+      const message = `Failed to delete InventoryCount ${id}: ${e?.message}`;
+      errors.push(message);
+      stepErrors.push(message);
     }
   }
 
   console.log(`✅ Archived ${docs.length} InventoryCounts`);
-  return docs.length;
+  return createArchiveStepResult({
+    name,
+    count: docs.length,
+    deletedCount,
+    errors: stepErrors,
+  });
 }
 
 async function archiveFileAttachments(
   db: Db,
   cutoff: string,
   errors: string[],
-): Promise<number> {
+): Promise<ArchiveStepResult> {
+  const name = "FileAttachments";
   const docs = await sanityClient.fetch(
     groq`
         *[_type == "FileAttachment" && uploadedAt < $cutoff] {
@@ -458,7 +601,14 @@ async function archiveFileAttachments(
     { cutoff },
   );
 
-  if (!docs.length) return 0;
+  if (!docs.length) {
+    return createArchiveStepResult({
+      name,
+      count: 0,
+      deletedCount: 0,
+      message: "No FileAttachments to archive",
+    });
+  }
 
   const toInsert = docs.map((d: any) => ({
     ...sanitizeForMongo(d),
@@ -469,29 +619,49 @@ async function archiveFileAttachments(
 
   await db.collection(COLLECTIONS.FILE_ATTACHMENTS).insertMany(toInsert);
 
+  let deletedCount = 0;
+  let assetsDeleted = 0;
+  const stepErrors: string[] = [];
+
   for (const doc of docs) {
-    // Delete the Sanity asset first (the actual file)
     const assetId = doc.file?.asset?._id;
     if (assetId) {
-      await deleteSanityAsset(assetId);
+      try {
+        await deleteSanityAsset(assetId);
+        assetsDeleted += 1;
+      } catch (e: any) {
+        const message = `Failed to delete asset ${assetId} for FileAttachment ${doc._id}: ${e?.message}`;
+        errors.push(message);
+        stepErrors.push(message);
+      }
     }
-    // Then delete the document
+
     try {
       await writeClient.delete(doc._id);
+      deletedCount += 1;
     } catch (e: any) {
-      errors.push(`Failed to delete FileAttachment ${doc._id}: ${e?.message}`);
+      const message = `Failed to delete FileAttachment ${doc._id}: ${e?.message}`;
+      errors.push(message);
+      stepErrors.push(message);
     }
   }
 
   console.log(`✅ Archived ${docs.length} FileAttachments`);
-  return docs.length;
+  return createArchiveStepResult({
+    name,
+    count: docs.length,
+    deletedCount,
+    errors: stepErrors,
+    assetsDeleted,
+  });
 }
 
 async function archiveStockSnapshots(
   db: Db,
   cutoff: string,
   errors: string[],
-): Promise<number> {
+): Promise<ArchiveStepResult> {
+  const name = "StockSnapshots";
   const docs = await sanityClient.fetch(
     groq`
         *[_type == "stockSnapshot" && _createdAt < $cutoff] {
@@ -503,7 +673,14 @@ async function archiveStockSnapshots(
     { cutoff },
   );
 
-  if (!docs.length) return 0;
+  if (!docs.length) {
+    return createArchiveStepResult({
+      name,
+      count: 0,
+      deletedCount: 0,
+      message: "No StockSnapshots to archive",
+    });
+  }
 
   const toInsert = docs.map((d: any) => ({
     ...sanitizeForMongo(d),
@@ -515,16 +692,26 @@ async function archiveStockSnapshots(
   await db.collection(COLLECTIONS.STOCK_SNAPSHOTS).insertMany(toInsert);
 
   const ids = docs.map((d: any) => d._id);
+  let deletedCount = 0;
+  const stepErrors: string[] = [];
   for (const id of ids) {
     try {
       await writeClient.delete(id);
+      deletedCount += 1;
     } catch (e: any) {
-      errors.push(`Failed to delete stockSnapshot ${id}: ${e?.message}`);
+      const message = `Failed to delete stockSnapshot ${id}: ${e?.message}`;
+      errors.push(message);
+      stepErrors.push(message);
     }
   }
 
   console.log(`✅ Archived ${docs.length} StockSnapshots`);
-  return docs.length;
+  return createArchiveStepResult({
+    name,
+    count: docs.length,
+    deletedCount,
+    errors: stepErrors,
+  });
 }
 
 // ─── Index Creation ────────────────────────────────────────────────────────────
@@ -658,67 +845,140 @@ export async function runArchive(): Promise<ArchiveRunResult> {
 
   const cutoff = getCutoffDate();
 
-  // Step 2: Archive each document type
-  const dispatchLogs = await archiveDispatchLogs(db, cutoff, errors).catch(
+  // Step 2: Archive each document type (collect step objects)
+  const dispatchLogsStep = await archiveDispatchLogs(db, cutoff, errors).catch(
     (e) => {
       errors.push(`DispatchLog batch failed: ${e?.message}`);
-      return 0;
+      return {
+        name: "DispatchLogs",
+        count: 0,
+        deletedCount: 0,
+        status: "failed",
+        errors: [e?.message || "unknown"],
+        warnings: [],
+      } as ArchiveStepResult;
     },
   );
-  const purchaseOrders = await archivePurchaseOrders(db, cutoff, errors).catch(
-    (e) => {
-      errors.push(`PurchaseOrder batch failed: ${e?.message}`);
-      return 0;
-    },
-  );
-  const goodsReceipts = await archiveGoodsReceipts(db, cutoff, errors).catch(
-    (e) => {
-      errors.push(`GoodsReceipt batch failed: ${e?.message}`);
-      return 0;
-    },
-  );
-  const internalTransfers = await archiveInternalTransfers(
+  const purchaseOrdersStep = await archivePurchaseOrders(
+    db,
+    cutoff,
+    errors,
+  ).catch((e) => {
+    errors.push(`PurchaseOrder batch failed: ${e?.message}`);
+    return {
+      name: "PurchaseOrders",
+      count: 0,
+      deletedCount: 0,
+      status: "failed",
+      errors: [e?.message || "unknown"],
+      warnings: [],
+    } as ArchiveStepResult;
+  });
+  const goodsReceiptsStep = await archiveGoodsReceipts(
+    db,
+    cutoff,
+    errors,
+  ).catch((e) => {
+    errors.push(`GoodsReceipt batch failed: ${e?.message}`);
+    return {
+      name: "GoodsReceipts",
+      count: 0,
+      deletedCount: 0,
+      status: "failed",
+      errors: [e?.message || "unknown"],
+      warnings: [],
+    } as ArchiveStepResult;
+  });
+  const internalTransfersStep = await archiveInternalTransfers(
     db,
     cutoff,
     errors,
   ).catch((e) => {
     errors.push(`InternalTransfer batch failed: ${e?.message}`);
-    return 0;
+    return {
+      name: "InternalTransfers",
+      count: 0,
+      deletedCount: 0,
+      status: "failed",
+      errors: [e?.message || "unknown"],
+      warnings: [],
+    } as ArchiveStepResult;
   });
-  const stockAdjustments = await archiveStockAdjustments(
+  const stockAdjustmentsStep = await archiveStockAdjustments(
     db,
     cutoff,
     errors,
   ).catch((e) => {
     errors.push(`StockAdjustment batch failed: ${e?.message}`);
-    return 0;
+    return {
+      name: "StockAdjustments",
+      count: 0,
+      deletedCount: 0,
+      status: "failed",
+      errors: [e?.message || "unknown"],
+      warnings: [],
+    } as ArchiveStepResult;
   });
-  const inventoryCounts = await archiveInventoryCounts(
+  const inventoryCountsStep = await archiveInventoryCounts(
     db,
     cutoff,
     errors,
   ).catch((e) => {
     errors.push(`InventoryCount batch failed: ${e?.message}`);
-    return 0;
+    return {
+      name: "InventoryCounts",
+      count: 0,
+      deletedCount: 0,
+      status: "failed",
+      errors: [e?.message || "unknown"],
+      warnings: [],
+    } as ArchiveStepResult;
   });
-  const fileAttachments = await archiveFileAttachments(
+  const fileAttachmentsStep = await archiveFileAttachments(
     db,
     cutoff,
     errors,
   ).catch((e) => {
     errors.push(`FileAttachment batch failed: ${e?.message}`);
-    return 0;
+    return {
+      name: "FileAttachments",
+      count: 0,
+      deletedCount: 0,
+      status: "failed",
+      errors: [e?.message || "unknown"],
+      warnings: [],
+    } as ArchiveStepResult;
   });
-  const stockSnapshots = await archiveStockSnapshots(db, cutoff, errors).catch(
-    (e) => {
-      errors.push(`StockSnapshot batch failed: ${e?.message}`);
-      return 0;
-    },
-  );
+  const stockSnapshotsStep = await archiveStockSnapshots(
+    db,
+    cutoff,
+    errors,
+  ).catch((e) => {
+    errors.push(`StockSnapshot batch failed: ${e?.message}`);
+    return {
+      name: "StockSnapshots",
+      count: 0,
+      deletedCount: 0,
+      status: "failed",
+      errors: [e?.message || "unknown"],
+      warnings: [],
+    } as ArchiveStepResult;
+  });
 
   const completedAt = new Date().toISOString();
   const durationMs =
     new Date(completedAt).getTime() - new Date(startedAt).getTime();
+
+  const steps: ArchiveStepResult[] = [
+    dispatchLogsStep,
+    purchaseOrdersStep,
+    goodsReceiptsStep,
+    internalTransfersStep,
+    stockAdjustmentsStep,
+    inventoryCountsStep,
+    fileAttachmentsStep,
+    stockSnapshotsStep,
+  ];
 
   const result: ArchiveRunResult = {
     runId,
@@ -726,17 +986,22 @@ export async function runArchive(): Promise<ArchiveRunResult> {
     completedAt,
     durationMs,
     archived: {
-      dispatchLogs,
-      purchaseOrders,
-      goodsReceipts,
-      internalTransfers,
-      stockAdjustments,
-      inventoryCounts,
-      fileAttachments,
-      stockSnapshots,
+      dispatchLogs: dispatchLogsStep.count,
+      purchaseOrders: purchaseOrdersStep.count,
+      goodsReceipts: goodsReceiptsStep.count,
+      internalTransfers: internalTransfersStep.count,
+      stockAdjustments: stockAdjustmentsStep.count,
+      inventoryCounts: inventoryCountsStep.count,
+      fileAttachments: fileAttachmentsStep.count,
+      stockSnapshots: stockSnapshotsStep.count,
     },
     errors,
     skipped: 0,
+    steps,
+    assetsDeleted: steps.reduce(
+      (sum, step) => sum + (step.assetsDeleted || 0),
+      0,
+    ),
   };
 
   // Step 3: Log the run

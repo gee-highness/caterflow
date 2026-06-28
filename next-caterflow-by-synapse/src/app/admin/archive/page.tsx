@@ -44,10 +44,28 @@ import {
   IconButton,
   CardHeader,
   Tooltip,
+  Code,
 } from "@chakra-ui/react";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
-import { FiDownload, FiPlay, FiRefreshCw, FiTrash2 } from "react-icons/fi";
+import {
+  FiDownload,
+  FiPlay,
+  FiRefreshCw,
+  FiTrash2,
+  FiChevronDown,
+} from "react-icons/fi";
+
+interface ArchiveStepResult {
+  name: string;
+  count: number;
+  deletedCount: number;
+  status: "success" | "partial" | "failed";
+  errors: string[];
+  warnings: string[];
+  assetsDeleted?: number;
+  message?: string;
+}
 
 interface ArchiveLog {
   _id: string;
@@ -56,6 +74,7 @@ interface ArchiveLog {
   documentsArchived: number;
   documentsDeleted: number;
   assetsDeleted: number;
+  steps?: ArchiveStepResult[];
   errors?: string[];
   durationMs?: number;
 }
@@ -72,6 +91,8 @@ export default function ArchiveManagementPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [isRunning, setIsRunning] = useState(false);
   const [page, setPage] = useState(1);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [showRawLog, setShowRawLog] = useState(false);
   const rowsPerPage = 10;
   const { isOpen, onOpen, onClose } = useDisclosure();
   const [deleteOld, setDeleteOld] = useState(false);
@@ -204,6 +225,37 @@ export default function ArchiveManagementPage() {
     window.location.href = "/api/archive/export";
   };
 
+  const selectedRun = selectedRunId
+    ? logs.find((log) => log._id === selectedRunId) || null
+    : null;
+
+  const handleSelectRun = (runId: string) => {
+    setSelectedRunId((current) => (current === runId ? null : runId));
+    setShowRawLog(false);
+  };
+
+  const handleCopyRawLog = async () => {
+    if (!selectedRun) return;
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(selectedRun, null, 2));
+      toast({
+        title: "Raw log copied",
+        description: "The full archive run JSON has been copied to clipboard.",
+        status: "success",
+        duration: 4000,
+        isClosable: true,
+      });
+    } catch (error) {
+      toast({
+        title: "Copy failed",
+        description: "Unable to copy raw log to clipboard.",
+        status: "error",
+        duration: 4000,
+        isClosable: true,
+      });
+    }
+  };
+
   const getStatusBadge = (status: string) => {
     switch (status) {
       case "success":
@@ -320,6 +372,7 @@ export default function ArchiveManagementPage() {
                     <Th color={textColor} isNumeric>
                       Assets Deleted
                     </Th>
+                    <Th color={textColor}>Details</Th>
                   </Tr>
                 </Thead>
                 <Tbody>
@@ -330,6 +383,8 @@ export default function ArchiveManagementPage() {
                         key={log._id}
                         borderBottom="1px solid"
                         borderColor={tableBorderColor}
+                        cursor="pointer"
+                        onClick={() => handleSelectRun(log._id)}
                       >
                         <Td color={textColorSecondary} whiteSpace="nowrap">
                           {new Date(log.runDate).toLocaleString()}
@@ -344,12 +399,21 @@ export default function ArchiveManagementPage() {
                         <Td color={textColorSecondary} isNumeric>
                           {log.assetsDeleted}
                         </Td>
+                        <Td>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            rightIcon={<FiChevronDown />}
+                          >
+                            Details
+                          </Button>
+                        </Td>
                       </Tr>
                     ))}
                   {/* Pagination Controls */}
                   {logs.length > rowsPerPage && (
                     <Tr>
-                      <Td colSpan={5} textAlign="right">
+                      <Td colSpan={6} textAlign="right">
                         <Button
                           size="sm"
                           onClick={() => setPage((p) => Math.max(p - 1, 1))}
@@ -378,6 +442,129 @@ export default function ArchiveManagementPage() {
           )}
         </CardBody>
       </Card>
+
+      {selectedRun && (
+        <Card bg={cardBgColor} borderRadius="lg" boxShadow="sm" mb={8}>
+          <CardHeader pb={0}>
+            <Heading as="h3" size="md" color={textColor}>
+              Run details for {new Date(selectedRun.runDate).toLocaleString()}
+            </Heading>
+          </CardHeader>
+          <CardBody>
+            <SimpleGrid columns={{ base: 1, md: 4 }} spacing={4} mb={4}>
+              <Stat>
+                <StatLabel>Documents Archived</StatLabel>
+                <StatNumber>{selectedRun.documentsArchived}</StatNumber>
+              </Stat>
+              <Stat>
+                <StatLabel>Documents Deleted</StatLabel>
+                <StatNumber>{selectedRun.documentsDeleted}</StatNumber>
+              </Stat>
+              <Stat>
+                <StatLabel>Assets Deleted</StatLabel>
+                <StatNumber>{selectedRun.assetsDeleted}</StatNumber>
+              </Stat>
+              <Stat>
+                <StatLabel>Duration</StatLabel>
+                <StatNumber>
+                  {selectedRun.durationMs
+                    ? `${selectedRun.durationMs} ms`
+                    : "n/a"}
+                </StatNumber>
+              </Stat>
+            </SimpleGrid>
+
+            {selectedRun.steps?.length ? (
+              <Box overflowX="auto" mb={4}>
+                <Table variant="simple" size="sm">
+                  <Thead bg={tableHeaderBg}>
+                    <Tr>
+                      <Th>Step</Th>
+                      <Th isNumeric>Count</Th>
+                      <Th isNumeric>Deleted</Th>
+                      <Th>Status</Th>
+                      <Th>Errors</Th>
+                    </Tr>
+                  </Thead>
+                  <Tbody>
+                    {selectedRun.steps.map((step) => (
+                      <Tr
+                        key={step.name}
+                        borderBottom="1px solid"
+                        borderColor={tableBorderColor}
+                      >
+                        <Td>{step.name}</Td>
+                        <Td isNumeric>{step.count}</Td>
+                        <Td isNumeric>{step.deletedCount}</Td>
+                        <Td>{getStatusBadge(step.status)}</Td>
+                        <Td>{step.errors?.length || 0}</Td>
+                      </Tr>
+                    ))}
+                  </Tbody>
+                </Table>
+              </Box>
+            ) : null}
+
+            {selectedRun.steps?.length ? (
+              <Box mb={4}>
+                <Flex justify="space-between" align="center" mb={3}>
+                  <Heading as="h4" size="sm" color={textColor}>
+                    Raw run payload
+                  </Heading>
+                  <HStack spacing={2}>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setShowRawLog((value) => !value)}
+                    >
+                      {showRawLog ? "Hide raw" : "Show raw"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={handleCopyRawLog}
+                    >
+                      Copy JSON
+                    </Button>
+                  </HStack>
+                </Flex>
+                {showRawLog ? (
+                  <Box
+                    maxH="420px"
+                    overflowY="auto"
+                    p={3}
+                    bg={tableHeaderBg}
+                    borderRadius="md"
+                  >
+                    <Code whiteSpace="pre" width="100%">
+                      {JSON.stringify(selectedRun, null, 2)}
+                    </Code>
+                  </Box>
+                ) : null}
+              </Box>
+            ) : null}
+
+            {selectedRun.errors?.length ? (
+              <Alert status="error" borderRadius="md">
+                <AlertIcon />
+                <Box>
+                  <AlertTitle>Archive run errors</AlertTitle>
+                  <AlertDescription display="block">
+                    {selectedRun.errors.slice(0, 5).map((message, index) => (
+                      <Text key={index}>{message}</Text>
+                    ))}
+                    {selectedRun.errors.length > 5 && (
+                      <Text mt={2} fontStyle="italic">
+                        And {selectedRun.errors.length - 5} more errors.
+                      </Text>
+                    )}
+                  </AlertDescription>
+                </Box>
+              </Alert>
+            ) : null}
+          </CardBody>
+        </Card>
+      )}
 
       {/* Delete Confirmation Modal */}
       <Modal isOpen={isOpen} onClose={onClose} isCentered>

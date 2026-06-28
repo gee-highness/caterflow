@@ -36,8 +36,14 @@ export async function GET(request: Request) {
         runDate: run.startedAt,
         status,
         documentsArchived,
-        documentsDeleted: documentsArchived,
+        documentsDeleted: run.steps
+          ? run.steps.reduce(
+              (sum: number, step: any) => sum + (step.deletedCount || 0),
+              0,
+            )
+          : documentsArchived,
         assetsDeleted: run.assetsDeleted || 0,
+        steps: run.steps || [],
         errors: run.errors || [],
       };
     });
