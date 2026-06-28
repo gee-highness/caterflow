@@ -7,10 +7,15 @@ export interface ArchiveSummary {
   count: number;
 }
 
+declare global {
+  interface Window {
+    __ARCHIVE_STATUS__?: ArchiveSummary | null;
+  }
+}
+
 // Simple hook that fetches /api/archive/status and caches in window for reuse
 export function useArchiveStatus(pollMs: number | null = 60_000) {
   const [data, setData] = useState<ArchiveSummary | null>(
-    // @ts-ignore
     typeof window !== "undefined" ? window.__ARCHIVE_STATUS__ || null : null,
   );
   const [loading, setLoading] = useState(!data);
@@ -26,7 +31,6 @@ export function useArchiveStatus(pollMs: number | null = 60_000) {
         const json = await res.json();
         if (!mounted) return;
         setData(json);
-        // @ts-ignore
         if (typeof window !== "undefined") window.__ARCHIVE_STATUS__ = json;
       } catch (err) {
         console.error("Failed to fetch archive status:", err);

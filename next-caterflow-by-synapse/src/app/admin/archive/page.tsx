@@ -60,6 +60,8 @@ interface ArchiveStepResult {
   name: string;
   count: number;
   deletedCount: number;
+  inserted?: number;
+  skipped?: number;
   status: "success" | "partial" | "failed";
   errors: string[];
   warnings: string[];
@@ -74,6 +76,9 @@ interface ArchiveLog {
   documentsArchived: number;
   documentsDeleted: number;
   assetsDeleted: number;
+  archived?: Record<string, number>;
+  totalInserted?: number;
+  totalSkipped?: number;
   steps?: ArchiveStepResult[];
   errors?: string[];
   durationMs?: number;
@@ -585,6 +590,8 @@ export default function ArchiveManagementPage() {
                       <Th>Step</Th>
                       <Th isNumeric>Count</Th>
                       <Th isNumeric>Deleted</Th>
+                      <Th isNumeric>Inserted</Th>
+                      <Th isNumeric>Skipped</Th>
                       <Th>Status</Th>
                       <Th>Errors</Th>
                     </Tr>
