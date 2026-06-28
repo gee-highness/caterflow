@@ -22,7 +22,7 @@ async function clearStaleArchiveLock(): Promise<boolean> {
 
   const lockDoc = await db
     .collection(COLLECTIONS.ARCHIVE_RUNS)
-    .findOne({ _id: lockId });
+    .findOne({ _id: lockId } as any);
 
   if (!lockDoc || !lockDoc.locked || !lockDoc.acquiredAt) {
     return false;
@@ -34,7 +34,7 @@ async function clearStaleArchiveLock(): Promise<boolean> {
   }
 
   await db.collection(COLLECTIONS.ARCHIVE_RUNS).updateOne(
-    { _id: lockId },
+    { _id: lockId } as any,
     {
       $set: {
         locked: false,
