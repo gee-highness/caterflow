@@ -5,7 +5,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { getRecentArchiveRuns } from "@/lib/archiveQueries";
-import { isArchiveInProgress } from "@/lib/archiveService";
+import { getArchiveProgress } from "@/lib/archiveService";
 
 export async function GET(request: Request) {
   try {
@@ -19,7 +19,8 @@ export async function GET(request: Request) {
 
     const runs = await getRecentArchiveRuns(Math.min(limit, 50));
 
-    const inProgress = await isArchiveInProgress();
+    const progress = await getArchiveProgress();
+    const inProgress = progress.inProgress;
     const serialized = runs.map((run) => {
       const documentsArchived = Object.values(run.archived || {}).reduce(
         (sum: number, value: any) =>
@@ -71,6 +72,7 @@ export async function GET(request: Request) {
       recentRuns: serialized,
       count: serialized.length,
       archiveInProgress: inProgress,
+      currentRun: progress.currentRun,
     });
   } catch (error: any) {
     console.error("Failed to fetch archive status:", error);

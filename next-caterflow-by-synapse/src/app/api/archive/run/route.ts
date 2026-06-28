@@ -6,7 +6,11 @@ import { NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { runArchive, cleanupOldArchiveMetadata } from "@/lib/archiveService";
+import {
+  runArchive,
+  cleanupOldArchiveMetadata,
+  getArchiveProgress,
+} from "@/lib/archiveService";
 
 export const maxDuration = 300; // 5 minutes — Vercel Pro allows up to 300s
 
@@ -48,8 +52,20 @@ export async function POST(request: Request) {
     }
 
     if (!isCronCall) {
+      const progress = await getArchiveProgress();
+      if (progress.inProgress) {
+        return NextResponse.json(
+          {
+            success: false,
+            error:
+              "Archive already in progress. Please wait for the current run to finish.",
+          },
+          { status: 409 },
+        );
+      }
+
       // For manual admin triggers: start archive in background and return quickly
-      runArchive({ skipLock: true })
+      runArchive()
         .then((res) => console.log("Manual archive finished:", res.runId))
         .catch((err) => console.error("Manual archive failed:", err));
 
@@ -59,7 +75,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const result = await runArchive({ skipLock: !isCronCall });
+    const result = await runArchive();
 
     const totalArchived = Object.values(result.archived).reduce(
       (a, b) => a + b,

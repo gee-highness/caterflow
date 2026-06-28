@@ -921,7 +921,24 @@ export async function cleanupOldArchiveMetadata(): Promise<{
   };
 }
 
-export async function isArchiveInProgress(): Promise<boolean> {
+export interface ArchiveCurrentRunStatus {
+  runId: string;
+  status: "running" | "failed" | "success" | "incomplete";
+  startedAt: string;
+  currentStep: string | null;
+  currentStepIndex: number;
+  totalSteps: number;
+  completedSteps: string[];
+  pendingSteps: string[];
+  errors: string[];
+  progressPercent: number;
+  lastUpdatedAt: string;
+}
+
+export async function getArchiveProgress(): Promise<{
+  inProgress: boolean;
+  currentRun: ArchiveCurrentRunStatus | null;
+}> {
   const db = await getArchiveDb();
   const lockId = "archive-lock";
   const lockTimeoutMs = parseInt(
@@ -933,19 +950,39 @@ export async function isArchiveInProgress(): Promise<boolean> {
     _id: lockId,
   } as any);
 
-  return (
-    lockDoc?.locked === true &&
-    lockDoc?.owner &&
-    lockDoc?.acquiredAt &&
-    lockDoc.acquiredAt > lockCutoff
-  );
+  if (
+    !lockDoc ||
+    lockDoc.locked !== true ||
+    !lockDoc.acquiredAt ||
+    lockDoc.acquiredAt <= lockCutoff
+  ) {
+    return { inProgress: false, currentRun: null };
+  }
+
+  const currentRun: ArchiveCurrentRunStatus = {
+    runId: lockDoc.owner || lockId,
+    status: lockDoc.status || "running",
+    startedAt: lockDoc.startedAt || lockDoc.acquiredAt,
+    currentStep: lockDoc.currentStep || null,
+    currentStepIndex: lockDoc.currentStepIndex || 0,
+    totalSteps: lockDoc.totalSteps || 0,
+    completedSteps: lockDoc.completedSteps || [],
+    pendingSteps: lockDoc.pendingSteps || [],
+    errors: lockDoc.errors || [],
+    progressPercent: lockDoc.progressPercent || 0,
+    lastUpdatedAt: lockDoc.lastUpdatedAt || lockDoc.acquiredAt,
+  };
+
+  return { inProgress: true, currentRun };
+}
+
+export async function isArchiveInProgress(): Promise<boolean> {
+  return (await getArchiveProgress()).inProgress;
 }
 
 // ─── Main Archive Runner ───────────────────────────────────────────────────────
 
-export async function runArchive(options?: {
-  skipLock?: boolean;
-}): Promise<ArchiveRunResult> {
+export async function runArchive(): Promise<ArchiveRunResult> {
   const startedAt = new Date().toISOString();
   const runId = `archive-${Date.now()}`;
   const errors: string[] = [];
@@ -958,58 +995,52 @@ export async function runArchive(options?: {
   const db = await getArchiveDb();
   await ensureIndexes(db);
 
-  const skipLock = options?.skipLock === true;
   const lockId = "archive-lock";
   const lockTimeoutMs = parseInt(
     process.env.ARCHIVE_LOCK_TIMEOUT_MS || "600000",
     10,
   ); // 10m
   const lockCutoff = new Date(Date.now() - lockTimeoutMs).toISOString();
-  let lockCol: any = null;
+  const lockCol = db.collection(COLLECTIONS.ARCHIVE_RUNS);
   let lockAcquired = false;
 
-  if (!skipLock) {
-    // Try to acquire a simple Mongo lock to prevent concurrent archive runs
-    lockCol = db.collection(COLLECTIONS.ARCHIVE_RUNS);
-    const lockResult = await lockCol.findOneAndUpdate(
-      {
-        _id: lockId,
-        $or: [
-          { locked: { $exists: false } },
-          { locked: false },
-          { acquiredAt: { $lt: lockCutoff } },
-        ],
-      } as any,
-      {
-        $set: {
-          _id: lockId,
-          locked: true,
-          owner: runId,
-          acquiredAt: new Date().toISOString(),
-        },
-      } as any,
-      { upsert: true, returnDocument: "after" } as any,
-    );
-
-    if (!lockResult.value || lockResult.value.owner !== runId) {
-      throw new Error("Archive run already in progress");
-    }
-
-    lockAcquired = true;
-  } else {
-    console.log("⚠️ Manual archive run: skipping archive lock acquisition.");
-    const lockDoc = await db.collection(COLLECTIONS.ARCHIVE_RUNS).findOne({
+  // Acquire a shared archive lock so progress can be reported and concurrency is prevented.
+  const lockResult = await lockCol.findOneAndUpdate(
+    {
       _id: lockId,
-    } as any);
-    if (
-      lockDoc?.locked === true &&
-      lockDoc?.owner &&
-      lockDoc?.acquiredAt &&
-      lockDoc.acquiredAt > lockCutoff
-    ) {
-      throw new Error("Archive run already in progress");
-    }
+      $or: [
+        { locked: { $exists: false } },
+        { locked: false },
+        { acquiredAt: { $lt: lockCutoff } },
+      ],
+    } as any,
+    {
+      $set: {
+        _id: lockId,
+        locked: true,
+        owner: runId,
+        acquiredAt: new Date().toISOString(),
+        status: "running",
+        startedAt,
+        runId,
+        currentStep: null,
+        currentStepIndex: 0,
+        totalSteps: 0,
+        completedSteps: [],
+        pendingSteps: [],
+        errors: [],
+        progressPercent: 0,
+        lastUpdatedAt: new Date().toISOString(),
+      },
+    } as any,
+    { upsert: true, returnDocument: "after" } as any,
+  );
+
+  if (!lockResult.value || lockResult.value.owner !== runId) {
+    throw new Error("Archive run already in progress");
   }
+
+  lockAcquired = true;
 
   try {
     // Step 1: Capture stock baseline BEFORE any deletions
@@ -1076,6 +1107,18 @@ export async function runArchive(options?: {
       },
     ];
 
+    await lockCol.updateOne(
+      { _id: lockId, owner: runId } as any,
+      {
+        $set: {
+          totalSteps: stepFns.length,
+          completedSteps: [],
+          pendingSteps: stepFns.map((step) => step.name),
+          lastUpdatedAt: new Date().toISOString(),
+        },
+      } as any,
+    );
+
     const steps: ArchiveStepResult[] = [];
     const archived: Record<string, number> = {};
     let totalInserted = 0;
@@ -1116,6 +1159,28 @@ export async function runArchive(options?: {
           incomplete: true,
         };
         await db.collection(COLLECTIONS.ARCHIVE_RUNS).insertOne(partialResult);
+        await lockCol.updateOne(
+          { _id: lockId, owner: runId } as any,
+          {
+            $set: {
+              status: "incomplete",
+              currentStep: s.name,
+              currentStepIndex: steps.length,
+              completedSteps: steps.map((step) => step.name),
+              pendingSteps: stepFns
+                .map((step) => step.name)
+                .filter(
+                  (name) => !steps.map((step) => step.name).includes(name),
+                ),
+              errors,
+              progressPercent: Math.min(
+                100,
+                Math.round((steps.length / stepFns.length) * 100),
+              ),
+              lastUpdatedAt: new Date().toISOString(),
+            },
+          } as any,
+        );
         console.log(
           "⚠️ Archive run paused due to time limit; will resume on next trigger",
         );
@@ -1138,6 +1203,33 @@ export async function runArchive(options?: {
         totalInserted += stepRes.inserted || 0;
         totalSkipped += stepRes.skipped || 0;
         archived[s.key] = stepRes.count || 0;
+
+        const completedStepNames = steps
+          .filter((runStep) => runStep.status === "success")
+          .map((runStep) => runStep.name);
+        const pendingStepNames = stepFns
+          .map((step) => step.name)
+          .filter((name) => !completedStepNames.includes(name));
+        const progressPercent = Math.min(
+          100,
+          Math.round((steps.length / stepFns.length) * 100),
+        );
+
+        await lockCol.updateOne(
+          { _id: lockId, owner: runId } as any,
+          {
+            $set: {
+              currentStep: s.name,
+              currentStepIndex: steps.length,
+              stepStatus: stepRes.status,
+              completedSteps: completedStepNames,
+              pendingSteps: pendingStepNames,
+              errors,
+              progressPercent,
+              lastUpdatedAt: new Date().toISOString(),
+            },
+          } as any,
+        );
       } catch (e: any) {
         const stepErr = createArchiveStepResult({
           name: s.name,
@@ -1174,6 +1266,28 @@ export async function runArchive(options?: {
 
     // Step 3: Log the run
     await db.collection(COLLECTIONS.ARCHIVE_RUNS).insertOne(result);
+    await lockCol.updateOne(
+      { _id: lockId, owner: runId } as any,
+      {
+        $set: {
+          locked: false,
+          releasedAt: new Date().toISOString(),
+          status: result.incomplete
+            ? "incomplete"
+            : result.errors.length
+              ? "failed"
+              : "success",
+          completedAt: result.completedAt,
+          currentStep: null,
+          currentStepIndex: stepFns.length,
+          completedSteps: stepFns.map((step) => step.name),
+          pendingSteps: [],
+          errors,
+          progressPercent: 100,
+          lastUpdatedAt: new Date().toISOString(),
+        },
+      } as any,
+    );
 
     const totalArchived = Object.values(result.archived).reduce(
       (a, b) => a + b,

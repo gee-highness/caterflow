@@ -45,6 +45,7 @@ import {
   CardHeader,
   Tooltip,
   Code,
+  Progress,
 } from "@chakra-ui/react";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
@@ -84,6 +85,20 @@ interface ArchiveLog {
   durationMs?: number;
 }
 
+interface ArchiveCurrentRun {
+  runId: string;
+  status: "running" | "failed" | "success" | "incomplete";
+  startedAt: string;
+  currentStep: string | null;
+  currentStepIndex: number;
+  totalSteps: number;
+  completedSteps: string[];
+  pendingSteps: string[];
+  errors: string[];
+  progressPercent: number;
+  lastUpdatedAt: string;
+}
+
 export default function ArchiveManagementPage() {
   const { data: session, status: sessionStatus } = useSession();
   const isAuthenticated = sessionStatus === "authenticated";
@@ -96,11 +111,17 @@ export default function ArchiveManagementPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [isRunning, setIsRunning] = useState(false);
   const [archiveInProgress, setArchiveInProgress] = useState(false);
+  const [currentRun, setCurrentRun] = useState<ArchiveCurrentRun | null>(null);
   const [page, setPage] = useState(1);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [showRawLog, setShowRawLog] = useState(false);
   const rowsPerPage = 10;
   const { isOpen, onOpen, onClose } = useDisclosure();
+  const {
+    isOpen: isRunModalOpen,
+    onOpen: onRunModalOpen,
+    onClose: onRunModalClose,
+  } = useDisclosure();
   const [deleteOld, setDeleteOld] = useState(false);
 
   const ARCHIVE_DAYS = Number(process.env.NEXT_PUBLIC_ARCHIVE_DAYS || "90");
@@ -136,6 +157,7 @@ export default function ArchiveManagementPage() {
       const data = await res.json();
       setLogs(data.recentRuns || data.runs || []);
       setArchiveInProgress(data.archiveInProgress === true);
+      setCurrentRun(data.currentRun || null);
     } catch (error) {
       console.error("Failed to fetch archive logs:", error);
       toast({
@@ -267,8 +289,9 @@ export default function ArchiveManagementPage() {
     : null;
 
   const handleSelectRun = (runId: string) => {
-    setSelectedRunId((current) => (current === runId ? null : runId));
+    setSelectedRunId(runId);
     setShowRawLog(false);
+    onRunModalOpen();
   };
 
   const handleCopyRawLog = async () => {
@@ -376,6 +399,84 @@ export default function ArchiveManagementPage() {
         </HStack>
       </Flex>
 
+      {currentRun ? (
+        <Card bg={cardBgColor} borderRadius="lg" boxShadow="sm" mb={8}>
+          <CardHeader pb={0}>
+            <Flex justify="space-between" align="center">
+              <Box>
+                <Heading as="h2" size="md" color={textColor}>
+                  Current Archive Status
+                </Heading>
+                <Text color={textColorSecondary} fontSize="sm">
+                  Run ID: {currentRun.runId}
+                </Text>
+              </Box>
+              <Badge
+                colorScheme={
+                  currentRun.status === "running"
+                    ? "blue"
+                    : currentRun.status === "success"
+                      ? "green"
+                      : currentRun.status === "failed"
+                        ? "red"
+                        : "yellow"
+                }
+              >
+                {currentRun.status.toUpperCase()}
+              </Badge>
+            </Flex>
+          </CardHeader>
+          <CardBody>
+            <SimpleGrid columns={{ base: 1, md: 4 }} spacing={4} mb={4}>
+              <Stat>
+                <StatLabel>Started</StatLabel>
+                <StatNumber>
+                  {new Date(currentRun.startedAt).toLocaleString()}
+                </StatNumber>
+              </Stat>
+              <Stat>
+                <StatLabel>Step</StatLabel>
+                <StatNumber>
+                  {currentRun.currentStep || "Starting..."}
+                </StatNumber>
+                <StatHelpText>
+                  {currentRun.currentStepIndex}/{currentRun.totalSteps}
+                </StatHelpText>
+              </Stat>
+              <Stat>
+                <StatLabel>Progress</StatLabel>
+                <StatNumber>{currentRun.progressPercent}%</StatNumber>
+              </Stat>
+              <Stat>
+                <StatLabel>Last updated</StatLabel>
+                <StatNumber>
+                  {new Date(currentRun.lastUpdatedAt).toLocaleString()}
+                </StatNumber>
+              </Stat>
+            </SimpleGrid>
+            <Progress
+              value={currentRun.progressPercent}
+              size="sm"
+              colorScheme={currentRun.status === "failed" ? "red" : "blue"}
+              mb={4}
+            />
+            <HStack spacing={3} wrap="wrap">
+              <Badge colorScheme="green">
+                Completed: {currentRun.completedSteps.length}
+              </Badge>
+              <Badge colorScheme="yellow">
+                Pending: {currentRun.pendingSteps.length}
+              </Badge>
+              {currentRun.errors.length > 0 && (
+                <Badge colorScheme="red">
+                  Errors: {currentRun.errors.length}
+                </Badge>
+              )}
+            </HStack>
+          </CardBody>
+        </Card>
+      ) : null}
+
       <Card bg={cardBgColor} borderRadius="lg" boxShadow="sm" mb={8}>
         <CardHeader pb={0}>
           <Flex justify="space-between" align="center">
@@ -448,8 +549,6 @@ export default function ArchiveManagementPage() {
                         key={log._id}
                         borderBottom="1px solid"
                         borderColor={tableBorderColor}
-                        cursor="pointer"
-                        onClick={() => handleSelectRun(log._id)}
                       >
                         <Td color={textColorSecondary} whiteSpace="nowrap">
                           {new Date(log.runDate).toLocaleString()}
@@ -509,6 +608,7 @@ export default function ArchiveManagementPage() {
                             size="sm"
                             variant="outline"
                             rightIcon={<FiChevronDown />}
+                            onClick={() => handleSelectRun(log._id)}
                           >
                             Details
                           </Button>
@@ -674,6 +774,105 @@ export default function ArchiveManagementPage() {
           </CardBody>
         </Card>
       )}
+
+      <Modal
+        isOpen={isRunModalOpen}
+        onClose={onRunModalClose}
+        size="xl"
+        scrollBehavior="inside"
+      >
+        <ModalOverlay />
+        <ModalContent>
+          <ModalHeader>Archive Run Details</ModalHeader>
+          <ModalCloseButton />
+          <ModalBody>
+            {selectedRun ? (
+              <Box>
+                <Text mb={4} color={textColorSecondary}>
+                  {new Date(selectedRun.runDate).toLocaleString()}
+                </Text>
+                <SimpleGrid columns={{ base: 1, md: 2 }} spacing={4} mb={4}>
+                  <Stat>
+                    <StatLabel>Status</StatLabel>
+                    <StatNumber>{selectedRun.status}</StatNumber>
+                  </Stat>
+                  <Stat>
+                    <StatLabel>Documents Archived</StatLabel>
+                    <StatNumber>{selectedRun.documentsArchived}</StatNumber>
+                  </Stat>
+                  <Stat>
+                    <StatLabel>Documents Deleted</StatLabel>
+                    <StatNumber>{selectedRun.documentsDeleted}</StatNumber>
+                  </Stat>
+                  <Stat>
+                    <StatLabel>Duration</StatLabel>
+                    <StatNumber>
+                      {selectedRun.durationMs
+                        ? `${selectedRun.durationMs} ms`
+                        : "n/a"}
+                    </StatNumber>
+                  </Stat>
+                </SimpleGrid>
+                {selectedRun.steps?.length ? (
+                  <Box overflowX="auto" mb={4}>
+                    <Table variant="simple" size="sm">
+                      <Thead bg={tableHeaderBg}>
+                        <Tr>
+                          <Th>Step</Th>
+                          <Th isNumeric>Count</Th>
+                          <Th isNumeric>Deleted</Th>
+                          <Th isNumeric>Inserted</Th>
+                          <Th isNumeric>Skipped</Th>
+                          <Th>Status</Th>
+                          <Th>Errors</Th>
+                        </Tr>
+                      </Thead>
+                      <Tbody>
+                        {selectedRun.steps.map((step) => (
+                          <Tr key={step.name}>
+                            <Td>{step.name}</Td>
+                            <Td isNumeric>{step.count}</Td>
+                            <Td isNumeric>{step.deletedCount}</Td>
+                            <Td isNumeric>{step.inserted ?? 0}</Td>
+                            <Td isNumeric>{step.skipped ?? 0}</Td>
+                            <Td>{getStatusBadge(step.status)}</Td>
+                            <Td>{step.errors?.length || 0}</Td>
+                          </Tr>
+                        ))}
+                      </Tbody>
+                    </Table>
+                  </Box>
+                ) : null}
+                {selectedRun.errors?.length ? (
+                  <Alert status="error" borderRadius="md">
+                    <AlertIcon />
+                    <Box>
+                      <AlertTitle>Archive run errors</AlertTitle>
+                      <AlertDescription display="block">
+                        {selectedRun.errors
+                          .slice(0, 5)
+                          .map((message, index) => (
+                            <Text key={index}>{message}</Text>
+                          ))}
+                        {selectedRun.errors.length > 5 && (
+                          <Text mt={2} fontStyle="italic">
+                            And {selectedRun.errors.length - 5} more errors.
+                          </Text>
+                        )}
+                      </AlertDescription>
+                    </Box>
+                  </Alert>
+                ) : null}
+              </Box>
+            ) : (
+              <Text>No run selected.</Text>
+            )}
+          </ModalBody>
+          <ModalFooter>
+            <Button onClick={onRunModalClose}>Close</Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
 
       {/* Delete Confirmation Modal */}
       <Modal isOpen={isOpen} onClose={onClose} isCentered>
