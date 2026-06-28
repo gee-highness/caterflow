@@ -24,7 +24,7 @@ export async function POST(request: Request) {
     const lockId = "archive-lock";
     // Reset the lock document so future runs can acquire it
     await db.collection(COLLECTIONS.ARCHIVE_RUNS).updateOne(
-      { _id: lockId },
+      { _id: lockId } as any,
       {
         $set: {
           locked: false,
