@@ -72,6 +72,58 @@ function sanitizeForMongo(doc: any): any {
   return cleaned;
 }
 
+/**
+ * Insert documents into archive collection but skip those already archived (by _sanityId)
+ * Returns number inserted and number skipped
+ */
+async function insertIfNotExists(
+  db: Db,
+  collectionName: string,
+  docs: any[],
+  errors: string[],
+): Promise<{ inserted: number; skipped: number }> {
+  if (!docs.length) return { inserted: 0, skipped: 0 };
+
+  const collection = db.collection(collectionName);
+  const sanityIds = docs.map((d) => d._sanityId).filter(Boolean);
+  const existing = await collection
+    .find({ _sanityId: { $in: sanityIds } })
+    .project({ _sanityId: 1 })
+    .toArray();
+  const existingSet = new Set(existing.map((e: any) => e._sanityId));
+
+  const toInsert = docs.filter((d) => !existingSet.has(d._sanityId));
+  const skipped = docs.length - toInsert.length;
+
+  if (!toInsert.length) {
+    if (skipped > 0) {
+      errors.push(
+        `Skipped ${skipped} already-archived documents for ${collectionName}`,
+      );
+    }
+    return { inserted: 0, skipped };
+  }
+
+  try {
+    const res = await collection.insertMany(toInsert, { ordered: false });
+    const inserted = (res?.insertedCount as number) || toInsert.length;
+    if (skipped > 0) {
+      errors.push(
+        `Skipped ${skipped} already-archived documents for ${collectionName}`,
+      );
+    }
+    return { inserted, skipped };
+  } catch (e: any) {
+    // Capture duplicate key / partial insert situations
+    const msg = e?.message || String(e);
+    errors.push(`${collectionName} insert error: ${msg}`);
+    // Try to approximate how many were inserted
+    const inserted = (e?.result?.nInserted as number) || 0;
+    const totalSkipped = skipped + (docs.length - inserted - skipped);
+    return { inserted, skipped: totalSkipped };
+  }
+}
+
 // ─── Sequence Counter Management ──────────────────────────────────────────────
 
 async function updateSequenceCounter(
@@ -200,7 +252,8 @@ async function archiveDispatchLogs(
     _archivedAt: new Date().toISOString(),
   }));
 
-  await db.collection(COLLECTIONS.DISPATCH_LOGS).insertMany(toInsert);
+  const { inserted: _inserted_dispatch, skipped: _skipped_dispatch } =
+    await insertIfNotExists(db, COLLECTIONS.DISPATCH_LOGS, toInsert, errors);
 
   const ids = docs.map((d: any) => d._id);
   let deletedCount = 0;
@@ -273,7 +326,8 @@ async function archivePurchaseOrders(
     _archivedAt: new Date().toISOString(),
   }));
 
-  await db.collection(COLLECTIONS.PURCHASE_ORDERS).insertMany(toInsert);
+  const { inserted: _inserted_po, skipped: _skipped_po } =
+    await insertIfNotExists(db, COLLECTIONS.PURCHASE_ORDERS, toInsert, errors);
 
   const ids = docs.map((d: any) => d._id);
   let deletedCount = 0;
@@ -354,7 +408,8 @@ async function archiveGoodsReceipts(
     _archivedAt: new Date().toISOString(),
   }));
 
-  await db.collection(COLLECTIONS.GOODS_RECEIPTS).insertMany(toInsert);
+  const { inserted: _inserted_gr, skipped: _skipped_gr } =
+    await insertIfNotExists(db, COLLECTIONS.GOODS_RECEIPTS, toInsert, errors);
 
   const ids = docs.map((d: any) => d._id);
   let deletedCount = 0;
@@ -425,7 +480,13 @@ async function archiveInternalTransfers(
     _archivedAt: new Date().toISOString(),
   }));
 
-  await db.collection(COLLECTIONS.INTERNAL_TRANSFERS).insertMany(toInsert);
+  const { inserted: _inserted_it, skipped: _skipped_it } =
+    await insertIfNotExists(
+      db,
+      COLLECTIONS.INTERNAL_TRANSFERS,
+      toInsert,
+      errors,
+    );
 
   const ids = docs.map((d: any) => d._id);
   let deletedCount = 0;
@@ -493,7 +554,13 @@ async function archiveStockAdjustments(
     _archivedAt: new Date().toISOString(),
   }));
 
-  await db.collection(COLLECTIONS.STOCK_ADJUSTMENTS).insertMany(toInsert);
+  const { inserted: _inserted_sa, skipped: _skipped_sa } =
+    await insertIfNotExists(
+      db,
+      COLLECTIONS.STOCK_ADJUSTMENTS,
+      toInsert,
+      errors,
+    );
 
   const ids = docs.map((d: any) => d._id);
   let deletedCount = 0;
@@ -558,7 +625,8 @@ async function archiveInventoryCounts(
     _archivedAt: new Date().toISOString(),
   }));
 
-  await db.collection(COLLECTIONS.INVENTORY_COUNTS).insertMany(toInsert);
+  const { inserted: _inserted_ic, skipped: _skipped_ic } =
+    await insertIfNotExists(db, COLLECTIONS.INVENTORY_COUNTS, toInsert, errors);
 
   const ids = docs.map((d: any) => d._id);
   let deletedCount = 0;
@@ -617,7 +685,8 @@ async function archiveFileAttachments(
     _archivedAt: new Date().toISOString(),
   }));
 
-  await db.collection(COLLECTIONS.FILE_ATTACHMENTS).insertMany(toInsert);
+  const { inserted: _inserted_fa, skipped: _skipped_fa } =
+    await insertIfNotExists(db, COLLECTIONS.FILE_ATTACHMENTS, toInsert, errors);
 
   let deletedCount = 0;
   let assetsDeleted = 0;
@@ -689,7 +758,8 @@ async function archiveStockSnapshots(
     _archivedAt: new Date().toISOString(),
   }));
 
-  await db.collection(COLLECTIONS.STOCK_SNAPSHOTS).insertMany(toInsert);
+  const { inserted: _inserted_ss, skipped: _skipped_ss } =
+    await insertIfNotExists(db, COLLECTIONS.STOCK_SNAPSHOTS, toInsert, errors);
 
   const ids = docs.map((d: any) => d._id);
   let deletedCount = 0;
