@@ -921,6 +921,26 @@ export async function cleanupOldArchiveMetadata(): Promise<{
   };
 }
 
+export async function isArchiveInProgress(): Promise<boolean> {
+  const db = await getArchiveDb();
+  const lockId = "archive-lock";
+  const lockTimeoutMs = parseInt(
+    process.env.ARCHIVE_LOCK_TIMEOUT_MS || "600000",
+    10,
+  );
+  const lockCutoff = new Date(Date.now() - lockTimeoutMs).toISOString();
+  const lockDoc = await db.collection(COLLECTIONS.ARCHIVE_RUNS).findOne({
+    _id: lockId,
+  } as any);
+
+  return (
+    lockDoc?.locked === true &&
+    lockDoc?.owner &&
+    lockDoc?.acquiredAt &&
+    lockDoc.acquiredAt > lockCutoff
+  );
+}
+
 // ─── Main Archive Runner ───────────────────────────────────────────────────────
 
 export async function runArchive(options?: {
@@ -978,6 +998,17 @@ export async function runArchive(options?: {
     lockAcquired = true;
   } else {
     console.log("⚠️ Manual archive run: skipping archive lock acquisition.");
+    const lockDoc = await db.collection(COLLECTIONS.ARCHIVE_RUNS).findOne({
+      _id: lockId,
+    });
+    if (
+      lockDoc?.locked === true &&
+      lockDoc?.owner &&
+      lockDoc?.acquiredAt &&
+      lockDoc.acquiredAt > lockCutoff
+    ) {
+      throw new Error("Archive run already in progress");
+    }
   }
 
   try {

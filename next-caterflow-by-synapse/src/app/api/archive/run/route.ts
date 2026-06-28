@@ -47,6 +47,18 @@ export async function POST(request: Request) {
       });
     }
 
+    if (!isCronCall) {
+      // For manual admin triggers: start archive in background and return quickly
+      runArchive({ skipLock: true })
+        .then((res) => console.log("Manual archive finished:", res.runId))
+        .catch((err) => console.error("Manual archive failed:", err));
+
+      return NextResponse.json(
+        { success: true, started: true },
+        { status: 202 },
+      );
+    }
+
     const result = await runArchive({ skipLock: !isCronCall });
 
     const totalArchived = Object.values(result.archived).reduce(

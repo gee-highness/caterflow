@@ -95,6 +95,7 @@ export default function ArchiveManagementPage() {
   const [logs, setLogs] = useState<ArchiveLog[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRunning, setIsRunning] = useState(false);
+  const [archiveInProgress, setArchiveInProgress] = useState(false);
   const [page, setPage] = useState(1);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [showRawLog, setShowRawLog] = useState(false);
@@ -134,6 +135,7 @@ export default function ArchiveManagementPage() {
       if (!res.ok) throw new Error("Failed to fetch logs");
       const data = await res.json();
       setLogs(data.recentRuns || data.runs || []);
+      setArchiveInProgress(data.archiveInProgress === true);
     } catch (error) {
       console.error("Failed to fetch archive logs:", error);
       toast({
@@ -143,10 +145,18 @@ export default function ArchiveManagementPage() {
         duration: 3000,
         isClosable: true,
       });
+      setArchiveInProgress(false);
     } finally {
       setIsLoading(false);
     }
   }, [toast]);
+
+  useEffect(() => {
+    if (!isAuthenticated || !isAdmin || !archiveInProgress) return;
+
+    const intervalId = window.setInterval(fetchLogs, 15000);
+    return () => window.clearInterval(intervalId);
+  }, [archiveInProgress, fetchLogs, isAuthenticated, isAdmin]);
 
   useEffect(() => {
     if (sessionStatus === "loading") return;
@@ -189,7 +199,19 @@ export default function ArchiveManagementPage() {
         throw new Error(customMessage);
       }
 
-      if (options?.deleteOld) {
+      // If server accepted the request and started the archive in background
+      if (res.status === 202 || data.started) {
+        toast({
+          title: "Archive Started",
+          description:
+            "Archive is running in the background. Check run history for progress.",
+          status: "info",
+          duration: 5000,
+          isClosable: true,
+        });
+        // Refresh logs/status once immediately and let the periodic fetch update later
+        fetchLogs();
+      } else if (options?.deleteOld) {
         toast({
           title: "Archive Cleanup Completed",
           description: `Deleted ${data.deletedArchiveRuns || 0} old archive run logs and ${data.deletedBaselineSnapshots || 0} baseline snapshots older than ${ARCHIVE_DAYS} days.`,
@@ -337,9 +359,10 @@ export default function ArchiveManagementPage() {
             colorScheme="brand"
             onClick={() => handleRunArchive()}
             isLoading={isRunning}
+            isDisabled={archiveInProgress || isRunning}
             loadingText="Running..."
           >
-            Run Archive Now
+            {archiveInProgress ? "Archive Running" : "Run Archive Now"}
           </Button>
           <Button
             leftIcon={<FiTrash2 />}
