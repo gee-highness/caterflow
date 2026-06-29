@@ -106,9 +106,36 @@ export async function POST(request: Request) {
         );
 
         // Start the archive in the background (pass queuedRunId so progress uses same id)
-        runArchive(queuedRunId)
-          .then((res) => console.log("Manual archive finished:", res.runId))
-          .catch((err) => console.error("Manual archive failed:", err));
+        // Try to start the archive in a separate serverless invocation by calling
+        // the cron-run endpoint with the cron secret. This is more reliable than
+        // depending on background promises in the current function.
+        try {
+          const base = process.env.VERCEL_URL
+            ? `https://${process.env.VERCEL_URL}`
+            : process.env.BASE_URL || "http://localhost:3000";
+
+          // Fire-and-forget fetch to trigger cron invocation
+          fetch(new URL("/api/archive/run", base).toString(), {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${process.env.CRON_SECRET}`,
+              "Content-Type": "application/json",
+            },
+            // don't await; allow the request to start the run in a new invocation
+          })
+            .then((r) =>
+              console.log("Triggered cron archive run, status:", r.status),
+            )
+            .catch((err) =>
+              console.error("Failed to trigger cron archive run:", err),
+            );
+        } catch (err) {
+          console.warn("Unable to trigger external cron run:", err);
+          // Fallback: attempt in-process start (may be less reliable)
+          runArchive(queuedRunId)
+            .then((res) => console.log("Manual archive finished:", res.runId))
+            .catch((err) => console.error("Manual archive failed:", err));
+        }
 
         return NextResponse.json(
           {
