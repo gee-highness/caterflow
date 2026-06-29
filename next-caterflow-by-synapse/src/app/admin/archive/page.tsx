@@ -112,6 +112,8 @@ export default function ArchiveManagementPage() {
   const [isRunning, setIsRunning] = useState(false);
   const [archiveInProgress, setArchiveInProgress] = useState(false);
   const [currentRun, setCurrentRun] = useState<ArchiveCurrentRun | null>(null);
+  const [previousArchiveInProgress, setPreviousArchiveInProgress] =
+    useState(false);
   const [page, setPage] = useState(1);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [showRawLog, setShowRawLog] = useState(false);
@@ -181,6 +183,37 @@ export default function ArchiveManagementPage() {
   }, [archiveInProgress, fetchLogs, isAuthenticated, isAdmin]);
 
   useEffect(() => {
+    if (previousArchiveInProgress && !archiveInProgress) {
+      const latestRun = logs[0];
+      if (latestRun) {
+        const runStatus = latestRun.status || "success";
+        toast({
+          title:
+            runStatus === "success"
+              ? "Archive Complete"
+              : runStatus === "failed"
+                ? "Archive Failed"
+                : "Archive Finished",
+          description:
+            runStatus === "success"
+              ? `Archive completed successfully. ${latestRun.documentsArchived} documents archived.`
+              : runStatus === "failed"
+                ? `Archive failed. Check run details for errors.`
+                : `Archive finished with status: ${runStatus}.`,
+          status: runStatus === "success" ? "success" : "error",
+          duration: 8000,
+          isClosable: true,
+        });
+      }
+
+      const refreshTimer = window.setTimeout(fetchLogs, 2000);
+      return () => window.clearTimeout(refreshTimer);
+    }
+
+    setPreviousArchiveInProgress(archiveInProgress);
+  }, [archiveInProgress, previousArchiveInProgress, logs, toast, fetchLogs]);
+
+  useEffect(() => {
     if (sessionStatus === "loading") return;
 
     if (isAuthenticated && isAdmin) {
@@ -236,7 +269,7 @@ export default function ArchiveManagementPage() {
       } else if (options?.deleteOld) {
         toast({
           title: "Archive Cleanup Completed",
-          description: `Deleted ${data.deletedArchiveRuns || 0} old archive run logs and ${data.deletedBaselineSnapshots || 0} baseline snapshots older than ${ARCHIVE_DAYS} days.`,
+          description: `Deleted ${data.deletedSanityDocuments || 0} old Sanity documents already backed up to Mongo and cleaned up ${data.deletedArchiveRuns || 0} archive run records older than ${ARCHIVE_DAYS} days.`,
           status: "success",
           duration: 5000,
           isClosable: true,
@@ -394,7 +427,7 @@ export default function ArchiveManagementPage() {
             isLoading={isRunning && deleteOld}
             loadingText="Deleting..."
           >
-            Delete Old Archive Logs
+            Delete Old Archived Sanity Data
           </Button>
         </HStack>
       </Flex>
@@ -878,14 +911,13 @@ export default function ArchiveManagementPage() {
       <Modal isOpen={isOpen} onClose={onClose} isCentered>
         <ModalOverlay />
         <ModalContent>
-          <ModalHeader>Delete Old Archive Logs</ModalHeader>
+          <ModalHeader>Delete Old Archived Sanity Data</ModalHeader>
           <ModalCloseButton />
           <ModalBody>
             <Text>
-              Are you sure you want to permanently delete archive run history
-              and baseline snapshots older than {ARCHIVE_DAYS} days? This
-              removes archive metadata only; archived transaction data remains
-              preserved.
+              This will delete Sanity documents that were already backed up to
+              MongoDB and are older than {ARCHIVE_DAYS} days. It will also clean
+              up old archive metadata records. This action cannot be undone.
             </Text>
           </ModalBody>
           <ModalFooter>

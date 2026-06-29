@@ -9,7 +9,7 @@ import { authOptions } from "@/lib/auth";
 import {
   runArchive,
   cleanupOldArchiveMetadata,
-  getArchiveProgress,
+  cleanupArchivedSanityData,
 } from "@/lib/archiveService";
 
 export const maxDuration = 300; // 5 minutes — Vercel Pro allows up to 300s
@@ -41,30 +41,21 @@ export async function POST(request: Request) {
 
   try {
     if (deleteOld) {
-      const cleanupResult = await cleanupOldArchiveMetadata();
+      const metadataCleanup = await cleanupOldArchiveMetadata();
+      const sanityCleanup = await cleanupArchivedSanityData();
       return NextResponse.json({
         success: true,
         cleanup: true,
-        deletedArchiveRuns: cleanupResult.deletedRuns,
-        deletedBaselineSnapshots: cleanupResult.deletedBaselines,
-        cutoff: cleanupResult.cutoff,
+        deletedArchiveRuns: metadataCleanup.deletedRuns,
+        deletedBaselineSnapshots: metadataCleanup.deletedBaselines,
+        deletedSanityDocuments: sanityCleanup.deletedSanityDocuments,
+        collectionsProcessed: sanityCleanup.collectionsProcessed,
+        cutoff: sanityCleanup.cutoff,
       });
     }
 
     if (!isCronCall) {
-      const progress = await getArchiveProgress();
-      if (progress.inProgress) {
-        return NextResponse.json(
-          {
-            success: false,
-            error:
-              "Archive already in progress. Please wait for the current run to finish.",
-          },
-          { status: 409 },
-        );
-      }
-
-      // For manual admin triggers: start archive in background and return quickly
+      // For manual admin triggers: start archive in the background and return quickly.
       runArchive()
         .then((res) => console.log("Manual archive finished:", res.runId))
         .catch((err) => console.error("Manual archive failed:", err));
@@ -99,23 +90,6 @@ export async function POST(request: Request) {
     });
   } catch (error: any) {
     console.error("❌ Archive run failed:", error);
-    if (error?.message === "Archive run already in progress") {
-      if (!isCronCall) {
-        return NextResponse.json(
-          {
-            success: false,
-            error:
-              "Manual archive run attempted to bypass the lock but the archive cannot start right now. Please retry in a moment.",
-          },
-          { status: 500 },
-        );
-      }
-
-      return NextResponse.json(
-        { success: false, error: error.message, archiveInProgress: true },
-        { status: 409 },
-      );
-    }
     return NextResponse.json(
       { success: false, error: error?.message || "Archive run failed" },
       { status: 500 },

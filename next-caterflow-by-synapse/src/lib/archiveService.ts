@@ -82,9 +82,41 @@ function sanitizeForMongo(doc: any): any {
   return cleaned;
 }
 
+function normalizeForComparison(value: any): any {
+  if (value === null || value === undefined) return value;
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeForComparison(item));
+  }
+  if (typeof value === "object") {
+    return Object.keys(value)
+      .sort()
+      .reduce(
+        (acc, key) => {
+          acc[key] = normalizeForComparison(value[key]);
+          return acc;
+        },
+        {} as Record<string, any>,
+      );
+  }
+  return value;
+}
+
+function stableSerialize(value: any): string {
+  return JSON.stringify(normalizeForComparison(value));
+}
+
+function buildArchivedDocumentPayload(doc: any): any {
+  return {
+    ...sanitizeForMongo(doc),
+    _sanityId: doc._id,
+    _isArchived: true,
+  };
+}
+
 /**
- * Insert documents into archive collection but skip those already archived (by _sanityId)
- * Returns number inserted and number skipped
+ * Sync Sanity documents into Mongo using _sanityId as the identity key.
+ * New documents are inserted, existing documents with changed content are updated,
+ * and unchanged documents are skipped.
  */
 async function insertIfNotExists(
   db: Db,
@@ -95,43 +127,50 @@ async function insertIfNotExists(
   if (!docs.length) return { inserted: 0, skipped: 0 };
 
   const collection = db.collection(collectionName);
-  const sanityIds = docs.map((d) => d._sanityId).filter(Boolean);
-  const existing = await collection
-    .find({ _sanityId: { $in: sanityIds } })
-    .project({ _sanityId: 1 })
-    .toArray();
-  const existingSet = new Set(existing.map((e: any) => e._sanityId));
+  let inserted = 0;
+  let skipped = 0;
 
-  const toInsert = docs.filter((d) => !existingSet.has(d._sanityId));
-  const skipped = docs.length - toInsert.length;
+  for (const doc of docs) {
+    const payload = buildArchivedDocumentPayload(doc);
+    const existing = await collection.findOne({ _sanityId: payload._sanityId });
 
-  if (!toInsert.length) {
-    if (skipped > 0) {
-      errors.push(
-        `Skipped ${skipped} already-archived documents for ${collectionName}`,
-      );
+    if (!existing) {
+      await collection.insertOne({
+        ...payload,
+        _archivedAt: new Date().toISOString(),
+      });
+      inserted += 1;
+      continue;
     }
-    return { inserted: 0, skipped };
+
+    const existingComparable = { ...existing };
+    const payloadComparable = { ...payload };
+    delete (existingComparable as any)._id;
+    delete (existingComparable as any)._archivedAt;
+    delete (existingComparable as any)._lastSyncedAt;
+    delete (payloadComparable as any)._archivedAt;
+    delete (payloadComparable as any)._lastSyncedAt;
+
+    if (
+      stableSerialize(existingComparable) === stableSerialize(payloadComparable)
+    ) {
+      skipped += 1;
+      continue;
+    }
+
+    await collection.replaceOne(
+      { _sanityId: payload._sanityId },
+      {
+        ...payload,
+        _archivedAt: new Date().toISOString(),
+        _lastSyncedAt: new Date().toISOString(),
+      },
+      { upsert: true },
+    );
+    inserted += 1;
   }
 
-  try {
-    const res = await collection.insertMany(toInsert, { ordered: false });
-    const inserted = (res?.insertedCount as number) || toInsert.length;
-    if (skipped > 0) {
-      errors.push(
-        `Skipped ${skipped} already-archived documents for ${collectionName}`,
-      );
-    }
-    return { inserted, skipped };
-  } catch (e: any) {
-    // Capture duplicate key / partial insert situations
-    const msg = e?.message || String(e);
-    errors.push(`${collectionName} insert error: ${msg}`);
-    // Try to approximate how many were inserted
-    const inserted = (e?.result?.nInserted as number) || 0;
-    const totalSkipped = skipped + (docs.length - inserted - skipped);
-    return { inserted, skipped: totalSkipped };
-  }
+  return { inserted, skipped };
 }
 
 // ─── Sequence Counter Management ──────────────────────────────────────────────
@@ -265,21 +304,10 @@ async function archiveDispatchLogs(
   const { inserted: inserted_dispatch, skipped: skipped_dispatch } =
     await insertIfNotExists(db, COLLECTIONS.DISPATCH_LOGS, toInsert, errors);
 
-  const ids = docs.map((d: any) => d._id);
-  let deletedCount = 0;
+  const deletedCount = 0;
   const stepErrors: string[] = [];
-  for (const id of ids) {
-    try {
-      await writeClient.delete(id);
-      deletedCount += 1;
-    } catch (e: any) {
-      const message = `Failed to delete DispatchLog ${id}: ${e?.message}`;
-      errors.push(message);
-      stepErrors.push(message);
-    }
-  }
 
-  console.log(`✅ Archived ${docs.length} DispatchLogs`);
+  console.log(`✅ Synced ${docs.length} DispatchLogs`);
   return createArchiveStepResult({
     name,
     count: docs.length,
@@ -341,21 +369,10 @@ async function archivePurchaseOrders(
   const { inserted: _inserted_po, skipped: _skipped_po } =
     await insertIfNotExists(db, COLLECTIONS.PURCHASE_ORDERS, toInsert, errors);
 
-  const ids = docs.map((d: any) => d._id);
-  let deletedCount = 0;
+  const deletedCount = 0;
   const stepErrors: string[] = [];
-  for (const id of ids) {
-    try {
-      await writeClient.delete(id);
-      deletedCount += 1;
-    } catch (e: any) {
-      const message = `Failed to delete PurchaseOrder ${id}: ${e?.message}`;
-      errors.push(message);
-      stepErrors.push(message);
-    }
-  }
 
-  console.log(`✅ Archived ${docs.length} PurchaseOrders`);
+  console.log(`✅ Synced ${docs.length} PurchaseOrders`);
   return createArchiveStepResult({
     name,
     count: docs.length,
@@ -425,21 +442,10 @@ async function archiveGoodsReceipts(
   const { inserted: _inserted_gr, skipped: _skipped_gr } =
     await insertIfNotExists(db, COLLECTIONS.GOODS_RECEIPTS, toInsert, errors);
 
-  const ids = docs.map((d: any) => d._id);
-  let deletedCount = 0;
+  const deletedCount = 0;
   const stepErrors: string[] = [];
-  for (const id of ids) {
-    try {
-      await writeClient.delete(id);
-      deletedCount += 1;
-    } catch (e: any) {
-      const message = `Failed to delete GoodsReceipt ${id}: ${e?.message}`;
-      errors.push(message);
-      stepErrors.push(message);
-    }
-  }
 
-  console.log(`✅ Archived ${docs.length} GoodsReceipts`);
+  console.log(`✅ Synced ${docs.length} GoodsReceipts`);
   return createArchiveStepResult({
     name,
     count: docs.length,
@@ -504,21 +510,10 @@ async function archiveInternalTransfers(
       errors,
     );
 
-  const ids = docs.map((d: any) => d._id);
-  let deletedCount = 0;
+  const deletedCount = 0;
   const stepErrors: string[] = [];
-  for (const id of ids) {
-    try {
-      await writeClient.delete(id);
-      deletedCount += 1;
-    } catch (e: any) {
-      const message = `Failed to delete InternalTransfer ${id}: ${e?.message}`;
-      errors.push(message);
-      stepErrors.push(message);
-    }
-  }
 
-  console.log(`✅ Archived ${docs.length} InternalTransfers`);
+  console.log(`✅ Synced ${docs.length} InternalTransfers`);
   return createArchiveStepResult({
     name,
     count: docs.length,
@@ -580,21 +575,10 @@ async function archiveStockAdjustments(
       errors,
     );
 
-  const ids = docs.map((d: any) => d._id);
-  let deletedCount = 0;
+  const deletedCount = 0;
   const stepErrors: string[] = [];
-  for (const id of ids) {
-    try {
-      await writeClient.delete(id);
-      deletedCount += 1;
-    } catch (e: any) {
-      const message = `Failed to delete StockAdjustment ${id}: ${e?.message}`;
-      errors.push(message);
-      stepErrors.push(message);
-    }
-  }
 
-  console.log(`✅ Archived ${docs.length} StockAdjustments`);
+  console.log(`✅ Synced ${docs.length} StockAdjustments`);
   return createArchiveStepResult({
     name,
     count: docs.length,
@@ -648,21 +632,10 @@ async function archiveInventoryCounts(
   const { inserted: _inserted_ic, skipped: _skipped_ic } =
     await insertIfNotExists(db, COLLECTIONS.INVENTORY_COUNTS, toInsert, errors);
 
-  const ids = docs.map((d: any) => d._id);
-  let deletedCount = 0;
+  const deletedCount = 0;
   const stepErrors: string[] = [];
-  for (const id of ids) {
-    try {
-      await writeClient.delete(id);
-      deletedCount += 1;
-    } catch (e: any) {
-      const message = `Failed to delete InventoryCount ${id}: ${e?.message}`;
-      errors.push(message);
-      stepErrors.push(message);
-    }
-  }
 
-  console.log(`✅ Archived ${docs.length} InventoryCounts`);
+  console.log(`✅ Synced ${docs.length} InventoryCounts`);
   return createArchiveStepResult({
     name,
     count: docs.length,
@@ -710,34 +683,11 @@ async function archiveFileAttachments(
   const { inserted: _inserted_fa, skipped: _skipped_fa } =
     await insertIfNotExists(db, COLLECTIONS.FILE_ATTACHMENTS, toInsert, errors);
 
-  let deletedCount = 0;
+  const deletedCount = 0;
   let assetsDeleted = 0;
   const stepErrors: string[] = [];
 
-  for (const doc of docs) {
-    const assetId = doc.file?.asset?._id;
-    if (assetId) {
-      try {
-        await deleteSanityAsset(assetId);
-        assetsDeleted += 1;
-      } catch (e: any) {
-        const message = `Failed to delete asset ${assetId} for FileAttachment ${doc._id}: ${e?.message}`;
-        errors.push(message);
-        stepErrors.push(message);
-      }
-    }
-
-    try {
-      await writeClient.delete(doc._id);
-      deletedCount += 1;
-    } catch (e: any) {
-      const message = `Failed to delete FileAttachment ${doc._id}: ${e?.message}`;
-      errors.push(message);
-      stepErrors.push(message);
-    }
-  }
-
-  console.log(`✅ Archived ${docs.length} FileAttachments`);
+  console.log(`✅ Synced ${docs.length} FileAttachments`);
   return createArchiveStepResult({
     name,
     count: docs.length,
@@ -785,21 +735,10 @@ async function archiveStockSnapshots(
   const { inserted: _inserted_ss, skipped: _skipped_ss } =
     await insertIfNotExists(db, COLLECTIONS.STOCK_SNAPSHOTS, toInsert, errors);
 
-  const ids = docs.map((d: any) => d._id);
-  let deletedCount = 0;
+  const deletedCount = 0;
   const stepErrors: string[] = [];
-  for (const id of ids) {
-    try {
-      await writeClient.delete(id);
-      deletedCount += 1;
-    } catch (e: any) {
-      const message = `Failed to delete stockSnapshot ${id}: ${e?.message}`;
-      errors.push(message);
-      stepErrors.push(message);
-    }
-  }
 
-  console.log(`✅ Archived ${docs.length} StockSnapshots`);
+  console.log(`✅ Synced ${docs.length} StockSnapshots`);
   return createArchiveStepResult({
     name,
     count: docs.length,
@@ -921,6 +860,60 @@ export async function cleanupOldArchiveMetadata(): Promise<{
   };
 }
 
+export async function cleanupArchivedSanityData(): Promise<{
+  deletedSanityDocuments: number;
+  collectionsProcessed: number;
+  cutoff: string;
+}> {
+  const db = await getArchiveDb();
+  const cutoff = getCutoffDate();
+  const cutoffDate = new Date(cutoff);
+
+  let deletedSanityDocuments = 0;
+  const collectionsToProcess = [
+    { collectionName: COLLECTIONS.DISPATCH_LOGS, sanityType: "DispatchLog" },
+    { collectionName: COLLECTIONS.PURCHASE_ORDERS, sanityType: "PurchaseOrder" },
+    { collectionName: COLLECTIONS.GOODS_RECEIPTS, sanityType: "GoodsReceipt" },
+    { collectionName: COLLECTIONS.INTERNAL_TRANSFERS, sanityType: "InternalTransfer" },
+    { collectionName: COLLECTIONS.STOCK_ADJUSTMENTS, sanityType: "StockAdjustment" },
+    { collectionName: COLLECTIONS.INVENTORY_COUNTS, sanityType: "InventoryCount" },
+    { collectionName: COLLECTIONS.FILE_ATTACHMENTS, sanityType: "FileAttachment" },
+    { collectionName: COLLECTIONS.STOCK_SNAPSHOTS, sanityType: "stockSnapshot" },
+  ];
+
+  for (const { collectionName } of collectionsToProcess) {
+    const docs = await db
+      .collection(collectionName)
+      .find({
+        _isArchived: true,
+        _archivedAt: { $lt: cutoffDate.toISOString() },
+      })
+      .project({ _sanityId: 1 })
+      .toArray();
+
+    for (const doc of docs) {
+      if (!doc._sanityId) continue;
+      try {
+        await writeClient.delete(doc._sanityId);
+        deletedSanityDocuments += 1;
+      } catch (err: any) {
+        if (err?.statusCode !== 404) {
+          console.error(
+            `Failed to delete Sanity document ${doc._sanityId} from ${collectionName}:`,
+            err?.message,
+          );
+        }
+      }
+    }
+  }
+
+  return {
+    deletedSanityDocuments,
+    collectionsProcessed: collectionsToProcess.length,
+    cutoff,
+  };
+}
+
 export interface ArchiveCurrentRunStatus {
   runId: string;
   status: "running" | "failed" | "success" | "incomplete";
@@ -940,37 +933,33 @@ export async function getArchiveProgress(): Promise<{
   currentRun: ArchiveCurrentRunStatus | null;
 }> {
   const db = await getArchiveDb();
-  const lockId = "archive-lock";
-  const lockTimeoutMs = parseInt(
-    process.env.ARCHIVE_LOCK_TIMEOUT_MS || "600000",
-    10,
-  );
-  const lockCutoff = new Date(Date.now() - lockTimeoutMs).toISOString();
-  const lockDoc = await db.collection(COLLECTIONS.ARCHIVE_RUNS).findOne({
-    _id: lockId,
+  const progressId = "archive-progress";
+  const progressDoc = await db.collection(COLLECTIONS.ARCHIVE_RUNS).findOne({
+    _id: progressId,
+    kind: "progress",
   } as any);
 
-  if (
-    !lockDoc ||
-    lockDoc.locked !== true ||
-    !lockDoc.acquiredAt ||
-    lockDoc.acquiredAt <= lockCutoff
-  ) {
+  if (!progressDoc) {
+    return { inProgress: false, currentRun: null };
+  }
+
+  const inProgress = ["running", "incomplete"].includes(progressDoc.status);
+  if (!inProgress) {
     return { inProgress: false, currentRun: null };
   }
 
   const currentRun: ArchiveCurrentRunStatus = {
-    runId: lockDoc.owner || lockId,
-    status: lockDoc.status || "running",
-    startedAt: lockDoc.startedAt || lockDoc.acquiredAt,
-    currentStep: lockDoc.currentStep || null,
-    currentStepIndex: lockDoc.currentStepIndex || 0,
-    totalSteps: lockDoc.totalSteps || 0,
-    completedSteps: lockDoc.completedSteps || [],
-    pendingSteps: lockDoc.pendingSteps || [],
-    errors: lockDoc.errors || [],
-    progressPercent: lockDoc.progressPercent || 0,
-    lastUpdatedAt: lockDoc.lastUpdatedAt || lockDoc.acquiredAt,
+    runId: progressDoc.owner || progressDoc.runId || progressId,
+    status: progressDoc.status || "running",
+    startedAt: progressDoc.startedAt || progressDoc.acquiredAt,
+    currentStep: progressDoc.currentStep || null,
+    currentStepIndex: progressDoc.currentStepIndex || 0,
+    totalSteps: progressDoc.totalSteps || 0,
+    completedSteps: progressDoc.completedSteps || [],
+    pendingSteps: progressDoc.pendingSteps || [],
+    errors: progressDoc.errors || [],
+    progressPercent: progressDoc.progressPercent || 0,
+    lastUpdatedAt: progressDoc.lastUpdatedAt || progressDoc.acquiredAt,
   };
 
   return { inProgress: true, currentRun };
@@ -995,31 +984,16 @@ export async function runArchive(): Promise<ArchiveRunResult> {
   const db = await getArchiveDb();
   await ensureIndexes(db);
 
-  const lockId = "archive-lock";
-  const lockTimeoutMs = parseInt(
-    process.env.ARCHIVE_LOCK_TIMEOUT_MS || "600000",
-    10,
-  ); // 10m
-  const lockCutoff = new Date(Date.now() - lockTimeoutMs).toISOString();
-  const lockCol = db.collection(COLLECTIONS.ARCHIVE_RUNS);
-  let lockAcquired = false;
+  const progressId = "archive-progress";
+  const progressCollection = db.collection(COLLECTIONS.ARCHIVE_RUNS);
 
-  // Acquire a shared archive lock so progress can be reported and concurrency is prevented.
-  const lockResult = await lockCol.findOneAndUpdate(
-    {
-      _id: lockId,
-      $or: [
-        { locked: { $exists: false } },
-        { locked: false },
-        { acquiredAt: { $lt: lockCutoff } },
-      ],
-    } as any,
+  await progressCollection.updateOne(
+    { _id: progressId } as any,
     {
       $set: {
-        _id: lockId,
-        locked: true,
+        _id: progressId,
+        kind: "progress",
         owner: runId,
-        acquiredAt: new Date().toISOString(),
         status: "running",
         startedAt,
         runId,
@@ -1033,17 +1007,10 @@ export async function runArchive(): Promise<ArchiveRunResult> {
         lastUpdatedAt: new Date().toISOString(),
       },
     } as any,
-    { upsert: true, returnDocument: "after" } as any,
+    { upsert: true },
   );
 
-  if (!lockResult.value || lockResult.value.owner !== runId) {
-    throw new Error("Archive run already in progress");
-  }
-
-  lockAcquired = true;
-
-  try {
-    // Step 1: Capture stock baseline BEFORE any deletions
+  // Step 1: Capture stock baseline BEFORE any deletions
     await captureStockBaseline(db);
 
     const cutoff = getCutoffDate();
@@ -1107,8 +1074,8 @@ export async function runArchive(): Promise<ArchiveRunResult> {
       },
     ];
 
-    await lockCol.updateOne(
-      { _id: lockId, owner: runId } as any,
+    await progressCollection.updateOne(
+      { _id: progressId } as any,
       {
         $set: {
           totalSteps: stepFns.length,
@@ -1159,8 +1126,8 @@ export async function runArchive(): Promise<ArchiveRunResult> {
           incomplete: true,
         };
         await db.collection(COLLECTIONS.ARCHIVE_RUNS).insertOne(partialResult);
-        await lockCol.updateOne(
-          { _id: lockId, owner: runId } as any,
+        await progressCollection.updateOne(
+          { _id: progressId } as any,
           {
             $set: {
               status: "incomplete",
@@ -1215,8 +1182,8 @@ export async function runArchive(): Promise<ArchiveRunResult> {
           Math.round((steps.length / stepFns.length) * 100),
         );
 
-        await lockCol.updateOne(
-          { _id: lockId, owner: runId } as any,
+        await progressCollection.updateOne(
+          { _id: progressId } as any,
           {
             $set: {
               currentStep: s.name,
@@ -1266,12 +1233,10 @@ export async function runArchive(): Promise<ArchiveRunResult> {
 
     // Step 3: Log the run
     await db.collection(COLLECTIONS.ARCHIVE_RUNS).insertOne(result);
-    await lockCol.updateOne(
-      { _id: lockId, owner: runId } as any,
+    await progressCollection.updateOne(
+      { _id: progressId } as any,
       {
         $set: {
-          locked: false,
-          releasedAt: new Date().toISOString(),
           status: result.incomplete
             ? "incomplete"
             : result.errors.length
@@ -1300,20 +1265,6 @@ export async function runArchive(): Promise<ArchiveRunResult> {
       console.error(`⚠️  ${errors.length} errors occurred:`, errors);
 
     return result;
-  } finally {
-    if (lockAcquired) {
-      try {
-        await lockCol.updateOne(
-          { _id: lockId, owner: runId } as any,
-          {
-            $set: { locked: false, releasedAt: new Date().toISOString() },
-          } as any,
-        );
-      } catch (e) {
-        console.error("Failed to release archive lock:", e);
-      }
-    }
-  }
 }
 
 /**

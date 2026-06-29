@@ -368,7 +368,9 @@ export async function getRecentArchiveRuns(limit = 10) {
   const db = await getArchiveDb();
   return db
     .collection(COLLECTIONS.ARCHIVE_RUNS)
-    .find({})
+    .find({
+      $or: [{ kind: { $exists: false } }, { kind: { $ne: "progress" } }],
+    })
     .sort({ startedAt: -1 })
     .limit(limit)
     .toArray();
