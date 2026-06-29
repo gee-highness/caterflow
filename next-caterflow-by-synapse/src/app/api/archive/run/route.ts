@@ -11,7 +11,7 @@ import {
   cleanupOldArchiveMetadata,
   cleanupArchivedSanityData,
 } from "@/lib/archiveService";
-import { getArchiveDb } from "@/lib/mongoClient";
+import { getArchiveDb, COLLECTIONS } from "@/lib/mongoClient";
 
 export const maxDuration = 300; // 5 minutes — Vercel Pro allows up to 300s
 
@@ -56,10 +56,11 @@ export async function POST(request: Request) {
     }
 
     if (!isCronCall) {
-      // For manual admin triggers: validate the archive DB connection before starting.
+      // For manual admin triggers: validate the archive DB connection and create a queued progress document so the UI sees a run immediately.
+      let dbRef: any = null;
       try {
-        const db = await getArchiveDb();
-        await db.admin().ping();
+        dbRef = await getArchiveDb();
+        await dbRef.admin().ping();
       } catch (err: any) {
         console.error("Manual archive startup failed:", err);
         return NextResponse.json(
@@ -77,19 +78,61 @@ export async function POST(request: Request) {
         );
       }
 
-      runArchive()
-        .then((res) => console.log("Manual archive finished:", res.runId))
-        .catch((err) => console.error("Manual archive failed:", err));
+      try {
+        const queuedRunId = `archive-queued-${Date.now()}`;
+        const progressId = "archive-progress";
+        await dbRef.collection(COLLECTIONS.ARCHIVE_RUNS).updateOne(
+          { _id: progressId } as any,
+          {
+            $set: {
+              _id: progressId,
+              kind: "progress",
+              owner: queuedRunId,
+              status: "queued",
+              startedAt: new Date().toISOString(),
+              runId: queuedRunId,
+              currentStep: null,
+              currentStepIndex: 0,
+              totalSteps: 0,
+              completedSteps: [],
+              pendingSteps: [],
+              errors: [],
+              progressPercent: 0,
+              lastUpdatedAt: new Date().toISOString(),
+            },
+            $push: { progressMessages: "Archive run queued by admin" },
+          } as any,
+          { upsert: true },
+        );
 
-      return NextResponse.json(
-        {
-          success: true,
-          started: true,
-          status: "started",
-          message: "Archive run has been queued and will start shortly.",
-        },
-        { status: 202 },
-      );
+        // Start the archive in the background (pass queuedRunId so progress uses same id)
+        runArchive(queuedRunId)
+          .then((res) => console.log("Manual archive finished:", res.runId))
+          .catch((err) => console.error("Manual archive failed:", err));
+
+        return NextResponse.json(
+          {
+            success: true,
+            started: true,
+            status: "started",
+            runId: queuedRunId,
+            message: "Archive run has been queued and will start shortly.",
+          },
+          { status: 202 },
+        );
+      } catch (err: any) {
+        console.error("Failed to write queued progress doc:", err);
+        // Fall back to returning an informative error
+        return NextResponse.json(
+          {
+            success: false,
+            status: "failed",
+            error: err?.message || "Failed to queue archive run",
+            errorMessage: err?.message || "Failed to queue archive run",
+          },
+          { status: 500 },
+        );
+      }
     }
 
     const result = await runArchive();

@@ -1221,9 +1221,11 @@ export async function getArchiveProgress(): Promise<{
   };
 }
 
-export async function runArchive(): Promise<ArchiveRunResult> {
+export async function runArchive(
+  providedRunId?: string,
+): Promise<ArchiveRunResult> {
   const startedAt = new Date().toISOString();
-  const runId = `archive-${Date.now()}`;
+  const runId = providedRunId || `archive-${Date.now()}`;
   const errors: string[] = [];
 
   console.log(`\n🗂️  Starting archive run: ${runId}`);
@@ -1542,7 +1544,8 @@ export async function resumeIncompleteArchives(
       `🔁 Resuming incomplete archive run (found: ${incompleteRun.runId})`,
     );
 
-    const res = await runArchive();
+    // Pass the original runId so resumed run updates the same progress record
+    const res = await runArchive(incompleteRun.runId);
 
     if (!res.incomplete) {
       await db
