@@ -97,6 +97,7 @@ interface ArchiveCurrentRun {
   errors: string[];
   progressPercent: number;
   lastUpdatedAt: string;
+  logs: string[];
 }
 
 export default function ArchiveManagementPage() {
@@ -120,9 +121,14 @@ export default function ArchiveManagementPage() {
   const rowsPerPage = 10;
   const { isOpen, onOpen, onClose } = useDisclosure();
   const {
-    isOpen: isRunModalOpen,
-    onOpen: onRunModalOpen,
-    onClose: onRunModalClose,
+    isOpen: isRunDetailsModalOpen,
+    onOpen: onRunDetailsModalOpen,
+    onClose: onRunDetailsModalClose,
+  } = useDisclosure();
+  const {
+    isOpen: isProgressModalOpen,
+    onOpen: onProgressModalOpen,
+    onClose: onProgressModalClose,
   } = useDisclosure();
   const [deleteOld, setDeleteOld] = useState(false);
 
@@ -236,6 +242,11 @@ export default function ArchiveManagementPage() {
       if (!confirm(confirmationMessage)) return;
     }
 
+    if (!options?.deleteOld) {
+      setCurrentRun(null);
+      onProgressModalOpen();
+    }
+
     setIsRunning(true);
     try {
       const query = options?.deleteOld ? "?deleteOld=true" : "";
@@ -247,6 +258,9 @@ export default function ArchiveManagementPage() {
       });
       const data = await res.json();
       if (!res.ok) {
+        if (!options?.deleteOld) {
+          onProgressModalClose();
+        }
         const customMessage =
           data.archiveInProgress || res.status === 409
             ? "Archive already in progress. Please wait for the current run to finish."
@@ -254,19 +268,7 @@ export default function ArchiveManagementPage() {
         throw new Error(customMessage);
       }
 
-      // If server accepted the request and started the archive in background
-      if (res.status === 202 || data.started) {
-        toast({
-          title: "Archive Started",
-          description:
-            "Archive is running in the background. Check run history for progress.",
-          status: "info",
-          duration: 5000,
-          isClosable: true,
-        });
-        // Refresh logs/status once immediately and let the periodic fetch update later
-        fetchLogs();
-      } else if (options?.deleteOld) {
+      if (options?.deleteOld) {
         toast({
           title: "Archive Cleanup Completed",
           description: `Deleted ${data.deletedSanityDocuments || 0} old Sanity documents already backed up to Mongo and cleaned up ${data.deletedArchiveRuns || 0} archive run records older than ${ARCHIVE_DAYS} days.`,
@@ -274,19 +276,8 @@ export default function ArchiveManagementPage() {
           duration: 5000,
           isClosable: true,
         });
-      } else {
-        const lockClearedMessage = data.lockCleared
-          ? "A stale archive lock was found and cleared automatically. "
-          : "";
-
-        toast({
-          title: "Archive Completed",
-          description: `${lockClearedMessage}Successfully archived ${data.totalArchived || 0} documents.`,
-          status: "success",
-          duration: 5000,
-          isClosable: true,
-        });
       }
+
       fetchLogs();
     } catch (error: any) {
       toast({
@@ -324,7 +315,7 @@ export default function ArchiveManagementPage() {
   const handleSelectRun = (runId: string) => {
     setSelectedRunId(runId);
     setShowRawLog(false);
-    onRunModalOpen();
+    onRunDetailsModalOpen();
   };
 
   const handleCopyRawLog = async () => {
@@ -347,6 +338,11 @@ export default function ArchiveManagementPage() {
         isClosable: true,
       });
     }
+  };
+
+  const closeProgressModal = () => {
+    if (currentRun?.status === "running" || archiveInProgress) return;
+    onProgressModalClose();
   };
 
   const getStatusBadge = (status: string) => {
@@ -509,6 +505,144 @@ export default function ArchiveManagementPage() {
           </CardBody>
         </Card>
       ) : null}
+
+      <Modal
+        isOpen={isProgressModalOpen}
+        onClose={closeProgressModal}
+        size="xl"
+        closeOnEsc={currentRun?.status !== "running"}
+        closeOnOverlayClick={currentRun?.status !== "running"}
+        scrollBehavior="inside"
+      >
+        <ModalOverlay />
+        <ModalContent>
+          <ModalHeader>Archive Run Progress</ModalHeader>
+          {currentRun?.status !== "running" ? <ModalCloseButton /> : null}
+          <ModalBody>
+            {currentRun ? (
+              <Box>
+                <Flex justify="space-between" align="center" mb={4}>
+                  <Box>
+                    <Text color={textColorSecondary} mb={2}>
+                      Run ID: {currentRun.runId}
+                    </Text>
+                    <Heading as="h3" size="md" color={textColor}>
+                      {currentRun.status === "running"
+                        ? "Archive is running"
+                        : currentRun.status === "success"
+                          ? "Archive completed"
+                          : "Archive finished"}
+                    </Heading>
+                  </Box>
+                  <Badge
+                    colorScheme={
+                      currentRun.status === "running"
+                        ? "blue"
+                        : currentRun.status === "success"
+                          ? "green"
+                          : "red"
+                    }
+                    fontSize="sm"
+                  >
+                    {currentRun.status.toUpperCase()}
+                  </Badge>
+                </Flex>
+                <Progress
+                  value={currentRun.progressPercent}
+                  size="sm"
+                  colorScheme={currentRun.status === "failed" ? "red" : "blue"}
+                  mb={4}
+                />
+                <SimpleGrid columns={{ base: 1, md: 2 }} spacing={4} mb={4}>
+                  <Stat>
+                    <StatLabel>Started</StatLabel>
+                    <StatNumber>
+                      {new Date(currentRun.startedAt).toLocaleString()}
+                    </StatNumber>
+                  </Stat>
+                  <Stat>
+                    <StatLabel>Last updated</StatLabel>
+                    <StatNumber>
+                      {new Date(currentRun.lastUpdatedAt).toLocaleString()}
+                    </StatNumber>
+                  </Stat>
+                  <Stat>
+                    <StatLabel>Current step</StatLabel>
+                    <StatNumber>
+                      {currentRun.currentStep || "Starting..."}
+                    </StatNumber>
+                  </Stat>
+                  <Stat>
+                    <StatLabel>Step progress</StatLabel>
+                    <StatNumber>
+                      {currentRun.currentStepIndex}/{currentRun.totalSteps}
+                    </StatNumber>
+                  </Stat>
+                </SimpleGrid>
+                <Box mb={4}>
+                  <HStack spacing={3} wrap="wrap">
+                    <Badge colorScheme="green">
+                      Completed: {currentRun.completedSteps.length}
+                    </Badge>
+                    <Badge colorScheme="yellow">
+                      Pending: {currentRun.pendingSteps.length}
+                    </Badge>
+                    {currentRun.errors.length > 0 && (
+                      <Badge colorScheme="red">
+                        Errors: {currentRun.errors.length}
+                      </Badge>
+                    )}
+                  </HStack>
+                </Box>
+                <Box mb={4}>
+                  <Heading as="h4" size="sm" mb={2} color={textColor}>
+                    Archive logs
+                  </Heading>
+                  <Box
+                    maxH="320px"
+                    overflowY="auto"
+                    p={3}
+                    bg={tableHeaderBg}
+                    borderRadius="md"
+                  >
+                    {currentRun.logs && currentRun.logs.length > 0 ? (
+                      currentRun.logs.map((message, index) => (
+                        <Text
+                          key={`${message}-${index}`}
+                          whiteSpace="pre-wrap"
+                          fontSize="sm"
+                          mb={2}
+                        >
+                          {message}
+                        </Text>
+                      ))
+                    ) : (
+                      <Text color={textColorSecondary}>
+                        Waiting for archive progress...
+                      </Text>
+                    )}
+                  </Box>
+                </Box>
+              </Box>
+            ) : (
+              <Flex direction="column" align="center" justify="center" py={12}>
+                <Spinner size="xl" mb={4} />
+                <Text color={textColorSecondary}>
+                  Starting archive run... please wait.
+                </Text>
+              </Flex>
+            )}
+          </ModalBody>
+          <ModalFooter>
+            <Button
+              onClick={closeProgressModal}
+              isDisabled={currentRun?.status === "running" || archiveInProgress}
+            >
+              Close
+            </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
 
       <Card bg={cardBgColor} borderRadius="lg" boxShadow="sm" mb={8}>
         <CardHeader pb={0}>
@@ -809,8 +943,8 @@ export default function ArchiveManagementPage() {
       )}
 
       <Modal
-        isOpen={isRunModalOpen}
-        onClose={onRunModalClose}
+        isOpen={isRunDetailsModalOpen}
+        onClose={onRunDetailsModalClose}
         size="xl"
         scrollBehavior="inside"
       >
@@ -902,7 +1036,7 @@ export default function ArchiveManagementPage() {
             )}
           </ModalBody>
           <ModalFooter>
-            <Button onClick={onRunModalClose}>Close</Button>
+            <Button onClick={onRunDetailsModalClose}>Close</Button>
           </ModalFooter>
         </ModalContent>
       </Modal>
