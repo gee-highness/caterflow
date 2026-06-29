@@ -110,12 +110,30 @@ export async function POST(request: Request) {
         // the cron-run endpoint with the cron secret. This is more reliable than
         // depending on background promises in the current function.
         try {
-          const base = process.env.VERCEL_URL
-            ? `https://${process.env.VERCEL_URL}`
-            : process.env.BASE_URL || "http://localhost:3000";
+          // Build absolute URL using request headers when available, fallback to env
+          const protoHeader =
+            headersList.get("x-forwarded-proto") ||
+            headersList.get("x-forwarded-protocol") ||
+            (process.env.VERCEL_URL ? "https" : "http");
+          const hostHeader =
+            headersList.get("x-forwarded-host") ||
+            headersList.get("host") ||
+            process.env.VERCEL_URL ||
+            process.env.BASE_URL ||
+            null;
+
+          if (!hostHeader)
+            throw new Error("Cannot determine base host for cron trigger");
+
+          const base = hostHeader.startsWith("http")
+            ? hostHeader
+            : `${protoHeader}://${hostHeader}`;
+
+          const target = new URL("/api/archive/run", base).toString();
+          console.log("Triggering cron run at:", target);
 
           // Fire-and-forget fetch to trigger cron invocation
-          fetch(new URL("/api/archive/run", base).toString(), {
+          fetch(target, {
             method: "POST",
             headers: {
               Authorization: `Bearer ${process.env.CRON_SECRET}`,
