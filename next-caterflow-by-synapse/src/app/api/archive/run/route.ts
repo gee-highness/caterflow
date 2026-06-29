@@ -65,7 +65,11 @@ export async function POST(request: Request) {
         return NextResponse.json(
           {
             success: false,
+            status: "failed",
             error:
+              err?.message ||
+              "Unable to connect to archive MongoDB. Check MONGODB_URL / MONGODB_URI and network access.",
+            errorMessage:
               err?.message ||
               "Unable to connect to archive MongoDB. Check MONGODB_URL / MONGODB_URI and network access.",
           },
@@ -78,7 +82,12 @@ export async function POST(request: Request) {
         .catch((err) => console.error("Manual archive failed:", err));
 
       return NextResponse.json(
-        { success: true, started: true },
+        {
+          success: true,
+          started: true,
+          status: "started",
+          message: "Archive run has been queued and will start shortly.",
+        },
         { status: 202 },
       );
     }
@@ -95,6 +104,11 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       success: true,
+      status: result.errors?.length
+        ? "failed"
+        : result.incomplete
+          ? "incomplete"
+          : "success",
       runId: result.runId,
       totalArchived,
       documentsDeleted,
@@ -108,7 +122,12 @@ export async function POST(request: Request) {
   } catch (error: any) {
     console.error("❌ Archive run failed:", error);
     return NextResponse.json(
-      { success: false, error: error?.message || "Archive run failed" },
+      {
+        success: false,
+        status: "failed",
+        error: error?.message || "Archive run failed",
+        errorMessage: error?.message || "Archive run failed",
+      },
       { status: 500 },
     );
   }

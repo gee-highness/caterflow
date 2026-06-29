@@ -157,6 +157,9 @@ export default function ArchiveManagementPage() {
     theme.colors.neutral?.dark?.["text-secondary"] || "gray.400",
   );
 
+  const wait = (ms: number) =>
+    new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+
   const fetchLogs = useCallback(async () => {
     setIsLoading(true);
     try {
@@ -166,6 +169,7 @@ export default function ArchiveManagementPage() {
       setLogs(data.recentRuns || data.runs || []);
       setArchiveInProgress(data.archiveInProgress === true);
       setCurrentRun(data.currentRun || null);
+      return data;
     } catch (error) {
       console.error("Failed to fetch archive logs:", error);
       toast({
@@ -176,10 +180,32 @@ export default function ArchiveManagementPage() {
         isClosable: true,
       });
       setArchiveInProgress(false);
+      setCurrentRun(null);
+      return null;
     } finally {
       setIsLoading(false);
     }
   }, [toast]);
+
+  const pollArchiveStart = useCallback(async () => {
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      await wait(1500);
+      try {
+        const res = await fetch("/api/archive/status");
+        if (!res.ok) continue;
+        const data = await res.json();
+        setLogs(data.recentRuns || data.runs || []);
+        setArchiveInProgress(data.archiveInProgress === true);
+        setCurrentRun(data.currentRun || null);
+        if (data.archiveInProgress || data.currentRun) {
+          return true;
+        }
+      } catch (err) {
+        console.warn("Archive status poll failed:", err);
+      }
+    }
+    return false;
+  }, []);
 
   useEffect(() => {
     if (!isAuthenticated || !isAdmin || !archiveInProgress) return;
@@ -262,10 +288,24 @@ export default function ArchiveManagementPage() {
           onProgressModalClose();
         }
         const customMessage =
-          data.archiveInProgress || res.status === 409
-            ? "Archive already in progress. Please wait for the current run to finish."
-            : data.error || "Failed to complete action";
+          data.status === "failed"
+            ? data.errorMessage || data.error || "Archive failed"
+            : data.archiveInProgress || res.status === 409
+              ? "Archive already in progress. Please wait for the current run to finish."
+              : data.errorMessage || data.error || "Failed to complete action";
         throw new Error(customMessage);
+      }
+
+      if (!options?.deleteOld && data.status === "started") {
+        toast({
+          title: "Archive Started",
+          description:
+            data.message ||
+            "Archive run has been queued and will start shortly.",
+          status: "success",
+          duration: 5000,
+          isClosable: true,
+        });
       }
 
       if (options?.deleteOld) {
@@ -278,7 +318,25 @@ export default function ArchiveManagementPage() {
         });
       }
 
-      fetchLogs();
+      const statusData = await fetchLogs();
+      if (
+        !options?.deleteOld &&
+        statusData &&
+        !statusData.archiveInProgress &&
+        !statusData.currentRun
+      ) {
+        const started = await pollArchiveStart();
+        if (!started) {
+          toast({
+            title: "Archive start pending",
+            description:
+              "No active archive run was immediately detected. The archive status will continue to update if the run begins.",
+            status: "warning",
+            duration: 7000,
+            isClosable: true,
+          });
+        }
+      }
     } catch (error: any) {
       toast({
         title: options?.deleteOld ? "Archive Cleanup Failed" : "Archive Failed",
@@ -624,11 +682,19 @@ export default function ArchiveManagementPage() {
                   </Box>
                 </Box>
               </Box>
-            ) : (
+            ) : archiveInProgress ? (
               <Flex direction="column" align="center" justify="center" py={12}>
                 <Spinner size="xl" mb={4} />
                 <Text color={textColorSecondary}>
                   Starting archive run... please wait.
+                </Text>
+              </Flex>
+            ) : (
+              <Flex direction="column" align="center" justify="center" py={12}>
+                <Text color={textColorSecondary} textAlign="center" maxW="xl">
+                  No active archive run was detected. If the run was just
+                  started, it may take a few seconds to appear. If this
+                  persists, verify the archive service and MongoDB connection.
                 </Text>
               </Flex>
             )}
