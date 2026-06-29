@@ -106,54 +106,9 @@ export async function POST(request: Request) {
         );
 
         // Start the archive in the background (pass queuedRunId so progress uses same id)
-        // Try to start the archive in a separate serverless invocation by calling
-        // the cron-run endpoint with the cron secret. This is more reliable than
-        // depending on background promises in the current function.
-        try {
-          // Build absolute URL using request headers when available, fallback to env
-          const protoHeader =
-            headersList.get("x-forwarded-proto") ||
-            headersList.get("x-forwarded-protocol") ||
-            (process.env.VERCEL_URL ? "https" : "http");
-          const hostHeader =
-            headersList.get("x-forwarded-host") ||
-            headersList.get("host") ||
-            process.env.VERCEL_URL ||
-            process.env.BASE_URL ||
-            null;
-
-          if (!hostHeader)
-            throw new Error("Cannot determine base host for cron trigger");
-
-          const base = hostHeader.startsWith("http")
-            ? hostHeader
-            : `${protoHeader}://${hostHeader}`;
-
-          const target = new URL("/api/archive/run", base).toString();
-          console.log("Triggering cron run at:", target);
-
-          // Fire-and-forget fetch to trigger cron invocation
-          fetch(target, {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${process.env.CRON_SECRET}`,
-              "Content-Type": "application/json",
-            },
-            // don't await; allow the request to start the run in a new invocation
-          })
-            .then((r) =>
-              console.log("Triggered cron archive run, status:", r.status),
-            )
-            .catch((err) =>
-              console.error("Failed to trigger cron archive run:", err),
-            );
-        } catch (err) {
-          console.warn("Unable to trigger external cron run:", err);
-          // Fallback: attempt in-process start (may be less reliable)
-          runArchive(queuedRunId)
-            .then((res) => console.log("Manual archive finished:", res.runId))
-            .catch((err) => console.error("Manual archive failed:", err));
-        }
+        runArchive(queuedRunId)
+          .then((res) => console.log("Manual archive finished:", res.runId))
+          .catch((err) => console.error("Manual archive failed:", err));
 
         return NextResponse.json(
           {
