@@ -1162,7 +1162,7 @@ async function updateArchiveProgress(
 
 export interface ArchiveCurrentRunStatus {
   runId: string;
-  status: "running" | "failed" | "success" | "incomplete";
+  status: "queued" | "running" | "failed" | "success" | "incomplete";
   startedAt: string;
   currentStep: string | null;
   currentStepIndex: number;
@@ -1190,7 +1190,9 @@ export async function getArchiveProgress(): Promise<{
     return { inProgress: false, currentRun: null };
   }
 
-  const inProgress = ["running", "incomplete"].includes(progressDoc.status);
+  const inProgress = ["queued", "running", "incomplete"].includes(
+    progressDoc.status,
+  );
   if (!inProgress) {
     return { inProgress: false, currentRun: null };
   }
