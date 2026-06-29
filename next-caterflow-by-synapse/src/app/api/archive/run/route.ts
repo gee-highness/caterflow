@@ -11,6 +11,7 @@ import {
   cleanupOldArchiveMetadata,
   cleanupArchivedSanityData,
 } from "@/lib/archiveService";
+import { getArchiveDb } from "@/lib/mongoClient";
 
 export const maxDuration = 300; // 5 minutes — Vercel Pro allows up to 300s
 
@@ -55,7 +56,23 @@ export async function POST(request: Request) {
     }
 
     if (!isCronCall) {
-      // For manual admin triggers: start archive in the background and return quickly.
+      // For manual admin triggers: validate the archive DB connection before starting.
+      try {
+        const db = await getArchiveDb();
+        await db.admin().ping();
+      } catch (err: any) {
+        console.error("Manual archive startup failed:", err);
+        return NextResponse.json(
+          {
+            success: false,
+            error:
+              err?.message ||
+              "Unable to connect to archive MongoDB. Check MONGODB_URL / MONGODB_URI and network access.",
+          },
+          { status: 500 },
+        );
+      }
+
       runArchive()
         .then((res) => console.log("Manual archive finished:", res.runId))
         .catch((err) => console.error("Manual archive failed:", err));
