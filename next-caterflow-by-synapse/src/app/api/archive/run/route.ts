@@ -105,20 +105,33 @@ export async function POST(request: Request) {
           { upsert: true },
         );
 
-        // Start the archive in the background (pass queuedRunId so progress uses same id)
-        runArchive(queuedRunId)
-          .then((res) => console.log("Manual archive finished:", res.runId))
-          .catch((err) => console.error("Manual archive failed:", err));
+        const result = await runArchive(queuedRunId);
+
+        const status = result.errors?.length
+          ? result.incomplete
+            ? "incomplete"
+            : "failed"
+          : result.incomplete
+            ? "incomplete"
+            : "success";
 
         return NextResponse.json(
           {
             success: true,
             started: true,
-            status: "started",
+            status,
             runId: queuedRunId,
-            message: "Archive run has been queued and will start shortly.",
+            message: result.incomplete
+              ? "Archive run is paused due to the execution time limit and will resume on the next scheduled trigger."
+              : "Archive run completed successfully.",
+            archived: result.archived,
+            errors: result.errors,
+            durationMs: result.durationMs,
+            startedAt: result.startedAt,
+            completedAt: result.completedAt,
+            incomplete: result.incomplete,
           },
-          { status: 202 },
+          { status: 200 },
         );
       } catch (err: any) {
         console.error("Failed to write queued progress doc:", err);
