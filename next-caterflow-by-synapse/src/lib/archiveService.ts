@@ -1283,6 +1283,15 @@ export async function runArchive(
   let totalInserted = 0;
   let totalSkipped = 0;
   let startMs = Date.now();
+  let stepFns: {
+    key: string;
+    name: string;
+    fn: (
+      db: Db,
+      cutoff: string,
+      errors: string[],
+    ) => Promise<ArchiveStepResult>;
+  }[] = [];
 
   appendProgress = (message: string) => {
     void updateArchiveProgress(progressCollection, progressId, {}, message);
@@ -1311,15 +1320,7 @@ export async function runArchive(
       }
     }
 
-    const stepFns: {
-      key: string;
-      name: string;
-      fn: (
-        db: Db,
-        cutoff: string,
-        errors: string[],
-      ) => Promise<ArchiveStepResult>;
-    }[] = [
+    stepFns = [
       { key: "dispatchLogs", name: "DispatchLogs", fn: archiveDispatchLogs },
       {
         key: "purchaseOrders",
