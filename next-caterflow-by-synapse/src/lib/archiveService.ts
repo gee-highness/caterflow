@@ -1278,6 +1278,11 @@ export async function runArchive(
     "Preparing archive run",
   );
 
+  let steps: ArchiveStepResult[] = [];
+  let archived: Record<string, number> = {};
+  let totalInserted = 0;
+  let totalSkipped = 0;
+
   appendProgress = (message: string) => {
     void updateArchiveProgress(progressCollection, progressId, {}, message);
   };
@@ -1359,10 +1364,10 @@ export async function runArchive(
       `Archive has ${stepFns.length} steps`,
     );
 
-    const steps: ArchiveStepResult[] = [];
-    const archived: Record<string, number> = {};
-    let totalInserted = 0;
-    let totalSkipped = 0;
+    steps = [];
+    archived = {};
+    totalInserted = 0;
+    totalSkipped = 0;
 
     for (const [index, step] of stepFns.entries()) {
       if (completedSteps.has(step.name)) {
@@ -1524,6 +1529,54 @@ export async function runArchive(
       console.error(`⚠️  ${errors.length} errors occurred:`, errors);
 
     return result;
+  } catch (err: any) {
+    const message = err?.message || String(err);
+    console.error("❌ Archive run failed with exception:", message);
+    errors.push(`Archive run failed: ${message}`);
+
+    const failedAt = new Date().toISOString();
+    const durationMs = Date.now() - startMs;
+    const failedResult: ArchiveRunResult = {
+      runId,
+      startedAt,
+      completedAt: failedAt,
+      durationMs,
+      archived,
+      errors,
+      skipped: totalSkipped,
+      totalInserted,
+      totalSkipped,
+      steps,
+      assetsDeleted: steps.reduce(
+        (sum, step) => sum + (step.assetsDeleted || 0),
+        0,
+      ),
+      incomplete: false,
+    };
+
+    await db.collection(COLLECTIONS.ARCHIVE_RUNS).insertOne(failedResult);
+    await updateArchiveProgress(
+      progressCollection,
+      progressId,
+      {
+        status: "failed",
+        completedAt: failedAt,
+        currentStep: null,
+        currentStepIndex: steps.length,
+        completedSteps: steps.map((s) => s.name),
+        pendingSteps: stepFns
+          .map((s) => s.name)
+          .filter((name) => !steps.map((s) => s.name).includes(name)),
+        errors,
+        progressPercent: Math.min(
+          100,
+          Math.round((steps.length / stepFns.length) * 100),
+        ),
+      },
+      `Archive run failed: ${message}`,
+    );
+
+    throw err;
   } finally {
     appendProgress = undefined;
   }

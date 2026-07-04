@@ -134,8 +134,34 @@ export async function POST(request: Request) {
           { status: 200 },
         );
       } catch (err: any) {
-        console.error("Failed to write queued progress doc:", err);
-        // Fall back to returning an informative error
+        console.error("Manual archive run failed:", err);
+        try {
+          const progressId = "archive-progress";
+          await dbRef.collection(COLLECTIONS.ARCHIVE_RUNS).updateOne(
+            { _id: progressId } as any,
+            {
+              $set: {
+                status: "failed",
+                completedAt: new Date().toISOString(),
+                currentStep: null,
+                currentStepIndex: 0,
+                pendingSteps: [],
+                errors: [err?.message || "Manual archive run failed"],
+                progressPercent: 0,
+                lastUpdatedAt: new Date().toISOString(),
+              },
+              $push: {
+                progressMessages: `Manual archive run failed: ${err?.message || "unknown error"}`,
+              },
+            } as any,
+          );
+        } catch (updateErr: any) {
+          console.error(
+            "Failed to mark archive progress as failed:",
+            updateErr,
+          );
+        }
+
         return NextResponse.json(
           {
             success: false,
