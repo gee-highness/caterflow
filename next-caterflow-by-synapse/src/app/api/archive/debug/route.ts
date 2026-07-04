@@ -29,6 +29,11 @@ export async function GET(request: Request) {
       : null;
     const now = Date.now();
     const isStale = lastUpdatedTs ? now - lastUpdatedTs > STALE_MS : false;
+    const activeStatus = progressDoc?.status;
+    const isActiveStatus = ["queued", "running", "incomplete"].includes(
+      activeStatus,
+    );
+    const staleActiveState = isActiveStatus && isStale;
 
     return NextResponse.json({
       success: true,
@@ -43,6 +48,8 @@ export async function GET(request: Request) {
         lastUpdatedAt,
         staleThresholdMs: STALE_MS,
         isStale,
+        isActiveStatus,
+        staleActiveState,
         now: new Date().toISOString(),
       },
     });

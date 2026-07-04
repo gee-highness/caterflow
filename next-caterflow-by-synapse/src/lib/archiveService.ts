@@ -1282,6 +1282,7 @@ export async function runArchive(
   let archived: Record<string, number> = {};
   let totalInserted = 0;
   let totalSkipped = 0;
+  let startMs = Date.now();
 
   appendProgress = (message: string) => {
     void updateArchiveProgress(progressCollection, progressId, {}, message);
@@ -1298,7 +1299,7 @@ export async function runArchive(
     const cutoff = getCutoffDate();
     const maxSeconds = parseInt(process.env.ARCHIVE_MAX_SECONDS || "270", 10);
     const allowedMs = maxSeconds * 1000;
-    const startMs = Date.now();
+    startMs = Date.now();
 
     const lastRun = await db
       .collection(COLLECTIONS.ARCHIVE_RUNS)
