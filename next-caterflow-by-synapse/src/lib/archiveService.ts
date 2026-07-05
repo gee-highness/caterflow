@@ -213,7 +213,7 @@ async function resolveDuplicateKeyConflict(
  * New documents are inserted, existing documents with changed content are updated,
  * and unchanged documents are skipped.
  */
-async function insertIfNotExists(
+export async function insertIfNotExists(
   db: Db,
   collectionName: string,
   docs: any[],

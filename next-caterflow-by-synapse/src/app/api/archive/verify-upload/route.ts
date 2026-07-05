@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { validateArchiveUploadFileContent } from "@/lib/archiveUploadValidation";
+import {
+  validateArchiveUploadFileContent,
+  validateArchiveUploadFileStream,
+  validateArchiveUploadFileStreamEvents,
+} from "@/lib/archiveUploadValidation";
 
 export async function POST(request: Request) {
   const session = await getServerSession(authOptions);
@@ -22,7 +26,47 @@ export async function POST(request: Request) {
           { status: 400 },
         );
       }
-      fileContent = await file.text();
+
+      const url = new URL(request.url);
+      const useStream = url.searchParams.get("stream") === "true";
+      const insertMissing = url.searchParams.get("insert") === "true";
+      if (useStream) {
+        const stream = new ReadableStream<Uint8Array>({
+          async start(controller) {
+            const encoder = new TextEncoder();
+            try {
+              for await (const event of validateArchiveUploadFileStreamEvents(
+                file.stream(),
+                { insertMissing: insertMissing },
+              )) {
+                controller.enqueue(
+                  encoder.encode(`${JSON.stringify(event)}\n`),
+                );
+              }
+            } catch (error: any) {
+              controller.enqueue(
+                encoder.encode(
+                  `${JSON.stringify({
+                    type: "error",
+                    error: error?.message || "Unknown error",
+                  })}\n`,
+                ),
+              );
+            } finally {
+              controller.close();
+            }
+          },
+        });
+
+        return new Response(stream, {
+          headers: {
+            "Content-Type": "application/x-ndjson",
+          },
+        });
+      }
+
+      const validation = await validateArchiveUploadFileStream(file.stream());
+      return NextResponse.json(validation);
     } else {
       const body = await request.json();
       if (!body?.fileContent || typeof body.fileContent !== "string") {

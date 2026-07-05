@@ -129,6 +129,15 @@ export default function ArchiveManagementPage() {
   const [validationInProgress, setValidationInProgress] = useState(false);
   const [validationReport, setValidationReport] = useState<any | null>(null);
   const [validationError, setValidationError] = useState<string | null>(null);
+  const [validationProgress, setValidationProgress] = useState<{
+    linesProcessed: number;
+    batchLines?: number;
+    validDocuments: number;
+    missingDocuments: number;
+    invalidLines: number;
+    unknownTypes: number;
+    message: string;
+  } | null>(null);
   const rowsPerPage = 10;
   const { isOpen, onOpen, onClose } = useDisclosure();
   const {
@@ -142,6 +151,7 @@ export default function ArchiveManagementPage() {
     onClose: onProgressModalClose,
   } = useDisclosure();
   const [deleteOld, setDeleteOld] = useState(false);
+  const [insertMissing, setInsertMissing] = useState(false);
 
   const ARCHIVE_DAYS = Number(process.env.NEXT_PUBLIC_ARCHIVE_DAYS || "90");
 
@@ -521,25 +531,72 @@ export default function ArchiveManagementPage() {
     setValidationInProgress(true);
     setValidationError(null);
     setValidationReport(null);
+    setValidationProgress(null);
 
     try {
       const formData = new FormData();
       formData.append("file", selectedFile);
 
-      const response = await fetch("/api/archive/verify-upload", {
+      const query = insertMissing ? "?stream=true&insert=true" : "?stream=true";
+      const response = await fetch(`/api/archive/verify-upload${query}`, {
         method: "POST",
         body: formData,
       });
 
-      const result = await response.json();
-      if (!response.ok) {
+      if (!response.body) {
+        const result = await response.json();
         throw new Error(result.error || result.message || "Validation failed");
       }
 
-      setValidationReport(result);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let finalResult: any = null;
+      let done = false;
+
+      while (!done) {
+        const { value, done: readerDone } = await reader.read();
+        if (value) {
+          buffer += decoder.decode(value, { stream: true });
+          let newlineIndex = buffer.indexOf("\n");
+          while (newlineIndex !== -1) {
+            const rawLine = buffer.slice(0, newlineIndex).trim();
+            buffer = buffer.slice(newlineIndex + 1);
+            if (rawLine) {
+              const event = JSON.parse(rawLine);
+              if (event.type === "progress") {
+                setValidationProgress(event);
+              } else if (event.type === "final") {
+                finalResult = event.result;
+              } else if (event.type === "error") {
+                throw new Error(event.error || "Validation stream error");
+              }
+            }
+            newlineIndex = buffer.indexOf("\n");
+          }
+        }
+        done = readerDone;
+      }
+
+      if (buffer.trim()) {
+        const event = JSON.parse(buffer.trim());
+        if (event.type === "progress") {
+          setValidationProgress(event);
+        } else if (event.type === "final") {
+          finalResult = event.result;
+        } else if (event.type === "error") {
+          throw new Error(event.error || "Validation stream error");
+        }
+      }
+
+      if (!finalResult) {
+        throw new Error("File validation did not return a final result.");
+      }
+
+      setValidationReport(finalResult);
       toast({
         title: "Archive validation complete",
-        description: `Checked ${result.totalLines} lines and found ${result.validDocuments} archived documents.`,
+        description: `Checked ${finalResult.totalLines} lines and found ${finalResult.validDocuments} archived documents.`,
         status: "success",
         duration: 6000,
         isClosable: true,
@@ -563,6 +620,7 @@ export default function ArchiveManagementPage() {
     setSelectedFile(null);
     setValidationReport(null);
     setValidationError(null);
+    setValidationProgress(null);
   };
 
   const closeProgressModal = () => {
@@ -676,6 +734,14 @@ export default function ArchiveManagementPage() {
               accept=".ndjson,.json,text/plain"
               onChange={handleFileChange}
             />
+            <HStack mt={2}>
+              <Checkbox
+                isChecked={insertMissing}
+                onChange={(e) => setInsertMissing(e.target.checked)}
+              >
+                Insert missing documents into archive
+              </Checkbox>
+            </HStack>
           </FormControl>
           <HStack spacing={3} wrap="wrap">
             <Button
@@ -698,6 +764,25 @@ export default function ArchiveManagementPage() {
             <Text mt={3} color={textColorSecondary} fontSize="sm">
               Selected file: {selectedFile.name} ({selectedFile.size} bytes)
             </Text>
+          ) : null}
+          {validationProgress ? (
+            <Box mt={3} p={3} borderRadius="md" bg={cardBgColor}>
+              <Text fontWeight="bold">Validation progress</Text>
+              <Text fontSize="sm" color={textColorSecondary}>
+                {validationProgress.message}
+              </Text>
+              <Text fontSize="sm">
+                Processed: {validationProgress.linesProcessed} lines
+              </Text>
+              <Text fontSize="sm">
+                Valid: {validationProgress.validDocuments} · Missing:{" "}
+                {validationProgress.missingDocuments} · Invalid:{" "}
+                {validationProgress.invalidLines}
+              </Text>
+              <Text fontSize="sm" color={textColorSecondary}>
+                Unknown types: {validationProgress.unknownTypes}
+              </Text>
+            </Box>
           ) : null}
           {validationError ? (
             <Alert status="error" borderRadius="md" mt={4}>
