@@ -717,12 +717,14 @@ export default function ArchiveManagementPage() {
               </Heading>
               <Badge
                 colorScheme={
-                  validationReport.missingDocuments > 0 || validationReport.invalidLines > 0
+                  validationReport.missingDocuments > 0 ||
+                  validationReport.invalidLines > 0
                     ? "red"
                     : "green"
                 }
               >
-                {validationReport.missingDocuments > 0 || validationReport.invalidLines > 0
+                {validationReport.missingDocuments > 0 ||
+                validationReport.invalidLines > 0
                   ? "Issues found"
                   : "All good"}
               </Badge>
@@ -745,28 +747,44 @@ export default function ArchiveManagementPage() {
               <Stat>
                 <StatLabel>Missing / invalid</StatLabel>
                 <StatNumber>
-                  {validationReport.missingDocuments + validationReport.invalidLines}
+                  {validationReport.missingDocuments +
+                    validationReport.invalidLines}
                 </StatNumber>
               </Stat>
             </SimpleGrid>
             <Box mb={4}>
               <Text color={textColorSecondary} fontSize="sm">
-                Validation took {validationReport.durationMs} ms. {validationReport.unknownTypes} documents had an unknown or unrecognized type and were checked across archive collections.
+                Validation took {validationReport.durationMs} ms.{" "}
+                {validationReport.unknownTypes} documents had an unknown or
+                unrecognized type and were checked across archive collections.
               </Text>
             </Box>
             <Box mb={4}>
               <Heading as="h4" size="sm" mb={2} color={textColor}>
                 Results preview
               </Heading>
-              <Box maxH="320px" overflowY="auto" p={3} bg={tableHeaderBg} borderRadius="md">
+              <Box
+                maxH="320px"
+                overflowY="auto"
+                p={3}
+                bg={tableHeaderBg}
+                borderRadius="md"
+              >
                 {validationReport.lineResults.slice(0, 200).map((line: any) => (
-                  <Text key={`${line.lineNumber}-${line.sanityId}`} whiteSpace="pre-wrap" fontSize="sm" mb={2}>
-                    Line {line.lineNumber}: {line.status.toUpperCase()} — {line.reason}
+                  <Text
+                    key={`${line.lineNumber}-${line.sanityId}`}
+                    whiteSpace="pre-wrap"
+                    fontSize="sm"
+                    mb={2}
+                  >
+                    Line {line.lineNumber}: {line.status.toUpperCase()} —{" "}
+                    {line.reason}
                   </Text>
                 ))}
                 {validationReport.lineResults.length > 200 ? (
                   <Text color={textColorSecondary} fontSize="sm" mt={2}>
-                    Showing first 200 of {validationReport.lineResults.length} results.
+                    Showing first 200 of {validationReport.lineResults.length}{" "}
+                    results.
                   </Text>
                 ) : null}
               </Box>

@@ -209,10 +209,14 @@ export async function validateArchiveUploadFileContent(
   const lineResults: ArchiveUploadLineResult[] = [];
 
   parsedLines.forEach((entry) => {
-    const foundCollections = foundInAnyCollection.get(entry.sanityId as string) || [];
+    const foundCollections =
+      foundInAnyCollection.get(entry.sanityId as string) || [];
     const expected = entry.expectedCollection;
 
-    if (expected && foundByCollection.get(expected)?.has(entry.sanityId as string)) {
+    if (
+      expected &&
+      foundByCollection.get(expected)?.has(entry.sanityId as string)
+    ) {
       lineResults.push({
         lineNumber: entry.lineNumber,
         sanityId: entry.sanityId,
@@ -258,18 +262,23 @@ export async function validateArchiveUploadFileContent(
   const result: ArchiveUploadValidationResult = {
     totalLines,
     parsedLines: parsedLines.length,
-    validDocuments: lineResults.filter((item) => item.status === "valid").length,
-    missingDocuments: lineResults.filter((item) => item.status === "missing").length,
+    validDocuments: lineResults.filter((item) => item.status === "valid")
+      .length,
+    missingDocuments: lineResults.filter((item) => item.status === "missing")
+      .length,
     invalidLines: invalidLines.length,
     unknownTypes: parsedLines.filter((item) => !item.expectedCollection).length,
     durationMs: Date.now() - startTime,
     summary: {
       totalLines,
       parsedLines: parsedLines.length,
-      validDocuments: lineResults.filter((item) => item.status === "valid").length,
-      missingDocuments: lineResults.filter((item) => item.status === "missing").length,
+      validDocuments: lineResults.filter((item) => item.status === "valid")
+        .length,
+      missingDocuments: lineResults.filter((item) => item.status === "missing")
+        .length,
       invalidLines: invalidLines.length,
-      unknownTypes: parsedLines.filter((item) => !item.expectedCollection).length,
+      unknownTypes: parsedLines.filter((item) => !item.expectedCollection)
+        .length,
     },
     lineResults: allResults,
   };
