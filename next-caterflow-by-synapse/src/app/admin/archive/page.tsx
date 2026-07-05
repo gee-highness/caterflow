@@ -103,7 +103,9 @@ interface ArchiveCurrentRun {
   logs: string[];
 }
 
-const CHUNK_SIZE_BYTES = 5 * 1024 * 1024; // 5MB chunk size for large NDJSON uploads
+const CHUNK_SIZE_BYTES = Number(
+  process.env.NEXT_PUBLIC_CHUNK_SIZE_BYTES || String(1 * 1024 * 1024),
+); // default 1MB chunk size for uploads (safe for Vercel limits)
 
 export default function ArchiveManagementPage() {
   const { data: session, status: sessionStatus } = useSession();
