@@ -4,7 +4,9 @@ import { getArchiveDb, COLLECTIONS } from "@/lib/mongoClient";
 import type { Db } from "mongodb";
 
 const ARCHIVE_DAYS = parseInt(process.env.ARCHIVE_DAYS_THRESHOLD || "90", 10);
-let appendProgress: ((message: string) => void) | undefined;
+let appendProgress:
+  | ((message: string | { skippedItem?: any }) => void)
+  | undefined;
 
 export interface ArchiveStepResult {
   name: string;
@@ -169,10 +171,21 @@ function getAlternateUniqueQuery(payload: any): Record<string, any> | null {
 async function resolveDuplicateKeyConflict(
   collection: any,
   payload: any,
-  progress?: (message: string) => void,
+  progress?: (message: string | { skippedItem?: any }) => void,
 ): Promise<boolean> {
   if (!payload._sanityId) {
-    progress?.(buildArchiveProgressMessage(payload, "skipped"));
+    try {
+      progress?.({
+        skippedItem: {
+          collection: collection.collectionName || null,
+          reason: "no_sanity_id",
+          label: getArchivePayloadLabel(payload),
+          message: buildArchiveProgressMessage(payload, "skipped"),
+        },
+      });
+    } catch (e) {
+      /* ignore */
+    }
     return true;
   }
 
@@ -205,7 +218,7 @@ async function insertIfNotExists(
   collectionName: string,
   docs: any[],
   errors: string[],
-  progress?: (message: string) => void,
+  progress?: (message: string | { skippedItem?: any }) => void,
 ): Promise<{ inserted: number; skipped: number }> {
   if (!docs.length) return { inserted: 0, skipped: 0 };
 
@@ -218,6 +231,18 @@ async function insertIfNotExists(
     console.warn(
       `⚠️  Skipping ${skippedNoId} documents without valid Sanity IDs in ${collectionName}`,
     );
+    try {
+      progress?.({
+        skippedItem: {
+          collection: collectionName,
+          reason: "no_sanity_id",
+          count: skippedNoId,
+          message: `Skipped ${skippedNoId} documents without valid Sanity IDs in ${collectionName}`,
+        },
+      });
+    } catch (e) {
+      /* ignore progress callback errors */
+    }
   }
 
   if (!payloads.length) return { inserted: 0, skipped: skippedNoId };
@@ -268,7 +293,20 @@ async function insertIfNotExists(
     if (
       stableSerialize(existingComparable) === stableSerialize(payloadComparable)
     ) {
-      progressMessages.push(buildArchiveProgressMessage(payload, "skipped"));
+      // Record structured skipped item (unchanged)
+      try {
+        progress?.({
+          skippedItem: {
+            collection: collectionName,
+            _sanityId: payload._sanityId,
+            label: getArchivePayloadLabel(payload),
+            reason: "unchanged",
+            message: buildArchiveProgressMessage(payload, "skipped"),
+          },
+        });
+      } catch (e) {
+        /* ignore */
+      }
       skipped += 1;
       continue;
     }
@@ -341,8 +379,21 @@ async function insertIfNotExists(
           stableSerialize(existingComparable) ===
           stableSerialize(payloadComparable)
         ) {
+          // record structured skipped item (unchanged)
+          try {
+            progress?.({
+              skippedItem: {
+                collection: collectionName,
+                _sanityId: payload._sanityId,
+                label: getArchivePayloadLabel(payload),
+                reason: "unchanged",
+                message: buildArchiveProgressMessage(payload, "skipped"),
+              },
+            });
+          } catch (e) {
+            /* ignore */
+          }
           skipped += 1;
-          progress?.(buildArchiveProgressMessage(payload, "skipped"));
           continue;
         }
 
@@ -1226,7 +1277,7 @@ async function updateArchiveProgress(
   progressCollection: any,
   progressId: string,
   updates: Record<string, any>,
-  message?: string,
+  message?: string | { skippedItem?: any },
 ): Promise<void> {
   const update: any = {
     $set: {
@@ -1234,8 +1285,17 @@ async function updateArchiveProgress(
       lastUpdatedAt: new Date().toISOString(),
     },
   };
+
+  // Support either a plain message string or a structured skippedItem object
   if (message) {
-    update.$push = { progressMessages: message };
+    if (typeof message === "string") {
+      update.$push = { progressMessages: message };
+    } else if (typeof message === "object" && message.skippedItem) {
+      update.$push = {
+        progressMessages: message.skippedItem.message || "Skipped item",
+        skippedItems: message.skippedItem,
+      };
+    }
   }
 
   try {
@@ -1260,6 +1320,7 @@ export interface ArchiveCurrentRunStatus {
   progressPercent: number;
   lastUpdatedAt: string;
   logs: string[];
+  skippedItems?: any[];
 }
 
 const ARCHIVE_PROGRESS_STALE_MS = 5 * 60 * 1000;
@@ -1315,6 +1376,7 @@ function buildArchiveCurrentRunStatus(
       progressDoc.startedAt ||
       new Date().toISOString(),
     logs: progressDoc.progressMessages || [],
+    skippedItems: progressDoc.skippedItems || [],
   };
 }
 
@@ -1445,8 +1507,13 @@ export async function runArchive(
     ) => Promise<ArchiveStepResult>;
   }[] = [];
 
-  appendProgress = (message: string) => {
-    void updateArchiveProgress(progressCollection, progressId, {}, message);
+  appendProgress = (message: string | { skippedItem?: any }) => {
+    void updateArchiveProgress(
+      progressCollection,
+      progressId,
+      {},
+      message as any,
+    );
   };
 
   try {
