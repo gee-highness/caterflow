@@ -111,7 +111,7 @@ function stableSerialize(value: any): string {
 function buildArchivedDocumentPayload(doc: any): any {
   return {
     ...sanitizeForMongo(doc),
-    _sanityId: doc._id,
+    _sanityId: doc._sanityId || doc._id,
     _isArchived: true,
   };
 }

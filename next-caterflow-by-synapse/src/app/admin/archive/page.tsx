@@ -45,6 +45,9 @@ import {
   CardHeader,
   Tooltip,
   Code,
+  FormControl,
+  FormLabel,
+  Input,
   Progress,
 } from "@chakra-ui/react";
 import { useSession } from "next-auth/react";
@@ -122,6 +125,10 @@ export default function ArchiveManagementPage() {
   const [page, setPage] = useState(1);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [showRawLog, setShowRawLog] = useState(false);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [validationInProgress, setValidationInProgress] = useState(false);
+  const [validationReport, setValidationReport] = useState<any | null>(null);
+  const [validationError, setValidationError] = useState<string | null>(null);
   const rowsPerPage = 10;
   const { isOpen, onOpen, onClose } = useDisclosure();
   const {
@@ -492,6 +499,72 @@ export default function ArchiveManagementPage() {
     }
   };
 
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    setValidationReport(null);
+    setValidationError(null);
+    const file = event.target.files?.[0] || null;
+    setSelectedFile(file);
+  };
+
+  const handleValidateArchiveFile = async () => {
+    if (!selectedFile) {
+      toast({
+        title: "No file selected",
+        description: "Please choose a data.ndjson file to validate.",
+        status: "warning",
+        duration: 5000,
+        isClosable: true,
+      });
+      return;
+    }
+
+    setValidationInProgress(true);
+    setValidationError(null);
+    setValidationReport(null);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", selectedFile);
+
+      const response = await fetch("/api/archive/verify-upload", {
+        method: "POST",
+        body: formData,
+      });
+
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result.error || result.message || "Validation failed");
+      }
+
+      setValidationReport(result);
+      toast({
+        title: "Archive validation complete",
+        description: `Checked ${result.totalLines} lines and found ${result.validDocuments} archived documents.`,
+        status: "success",
+        duration: 6000,
+        isClosable: true,
+      });
+    } catch (error: any) {
+      console.error("Archive file validation failed:", error);
+      setValidationError(error?.message || "Validation failed");
+      toast({
+        title: "Validation failed",
+        description: error?.message || "Unable to validate the uploaded file.",
+        status: "error",
+        duration: 7000,
+        isClosable: true,
+      });
+    } finally {
+      setValidationInProgress(false);
+    }
+  };
+
+  const handleClearValidation = () => {
+    setSelectedFile(null);
+    setValidationReport(null);
+    setValidationError(null);
+  };
+
   const closeProgressModal = () => {
     if (currentRun?.status === "running" || archiveInProgress) return;
     onProgressModalClose();
@@ -588,6 +661,119 @@ export default function ArchiveManagementPage() {
           </Button>
         </HStack>
       </Flex>
+
+      <Card bg={cardBgColor} borderRadius="lg" boxShadow="sm" mb={8}>
+        <CardHeader pb={0}>
+          <Heading as="h2" size="md" color={textColor}>
+            Archive Upload Verification
+          </Heading>
+        </CardHeader>
+        <CardBody>
+          <FormControl mb={4}>
+            <FormLabel>Upload data.ndjson</FormLabel>
+            <Input
+              type="file"
+              accept=".ndjson,.json,text/plain"
+              onChange={handleFileChange}
+            />
+          </FormControl>
+          <HStack spacing={3} wrap="wrap">
+            <Button
+              colorScheme="blue"
+              onClick={handleValidateArchiveFile}
+              isLoading={validationInProgress}
+              isDisabled={!selectedFile || validationInProgress}
+            >
+              Validate Upload
+            </Button>
+            <Button
+              variant="outline"
+              onClick={handleClearValidation}
+              isDisabled={!selectedFile && !validationReport}
+            >
+              Clear
+            </Button>
+          </HStack>
+          {selectedFile ? (
+            <Text mt={3} color={textColorSecondary} fontSize="sm">
+              Selected file: {selectedFile.name} ({selectedFile.size} bytes)
+            </Text>
+          ) : null}
+          {validationError ? (
+            <Alert status="error" borderRadius="md" mt={4}>
+              <AlertIcon />
+              <Text>{validationError}</Text>
+            </Alert>
+          ) : null}
+        </CardBody>
+      </Card>
+
+      {validationReport ? (
+        <Card bg={cardBgColor} borderRadius="lg" boxShadow="sm" mb={8}>
+          <CardHeader pb={0}>
+            <Flex justify="space-between" align="center">
+              <Heading as="h2" size="md" color={textColor}>
+                Upload Validation Results
+              </Heading>
+              <Badge
+                colorScheme={
+                  validationReport.missingDocuments > 0 || validationReport.invalidLines > 0
+                    ? "red"
+                    : "green"
+                }
+              >
+                {validationReport.missingDocuments > 0 || validationReport.invalidLines > 0
+                  ? "Issues found"
+                  : "All good"}
+              </Badge>
+            </Flex>
+          </CardHeader>
+          <CardBody>
+            <SimpleGrid columns={{ base: 1, md: 4 }} spacing={4} mb={4}>
+              <Stat>
+                <StatLabel>Total lines</StatLabel>
+                <StatNumber>{validationReport.totalLines}</StatNumber>
+              </Stat>
+              <Stat>
+                <StatLabel>Parsed docs</StatLabel>
+                <StatNumber>{validationReport.parsedLines}</StatNumber>
+              </Stat>
+              <Stat>
+                <StatLabel>Archived</StatLabel>
+                <StatNumber>{validationReport.validDocuments}</StatNumber>
+              </Stat>
+              <Stat>
+                <StatLabel>Missing / invalid</StatLabel>
+                <StatNumber>
+                  {validationReport.missingDocuments + validationReport.invalidLines}
+                </StatNumber>
+              </Stat>
+            </SimpleGrid>
+            <Box mb={4}>
+              <Text color={textColorSecondary} fontSize="sm">
+                Validation took {validationReport.durationMs} ms. {validationReport.unknownTypes} documents had an unknown or unrecognized type and were checked across archive collections.
+              </Text>
+            </Box>
+            <Box mb={4}>
+              <Heading as="h4" size="sm" mb={2} color={textColor}>
+                Results preview
+              </Heading>
+              <Box maxH="320px" overflowY="auto" p={3} bg={tableHeaderBg} borderRadius="md">
+                {validationReport.lineResults.slice(0, 200).map((line: any) => (
+                  <Text key={`${line.lineNumber}-${line.sanityId}`} whiteSpace="pre-wrap" fontSize="sm" mb={2}>
+                    Line {line.lineNumber}: {line.status.toUpperCase()} — {line.reason}
+                  </Text>
+                ))}
+                {validationReport.lineResults.length > 200 ? (
+                  <Text color={textColorSecondary} fontSize="sm" mt={2}>
+                    Showing first 200 of {validationReport.lineResults.length} results.
+                  </Text>
+                ) : null}
+              </Box>
+            </Box>
+          </CardBody>
+        </Card>
+      ) : null}
 
       {staleDetected && staleResolution ? (
         <Alert status="warning" borderRadius="lg" mb={6}>
