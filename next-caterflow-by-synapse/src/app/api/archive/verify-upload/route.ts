@@ -111,15 +111,6 @@ export async function POST(request: Request) {
 
     const validation = await validateArchiveUploadFileStream(bodyStream);
     return NextResponse.json(validation);
-    if (fileContent === null) {
-      return NextResponse.json(
-        { error: "Uploaded file content is empty." },
-        { status: 400 },
-      );
-    }
-
-    const validation = await validateArchiveUploadFileContent(fileContent);
-    return NextResponse.json(validation);
   } catch (error: any) {
     console.error("Failed to validate archive upload file:", error);
     return NextResponse.json(
