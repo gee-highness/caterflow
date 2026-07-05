@@ -534,18 +534,31 @@ export default function ArchiveManagementPage() {
     setValidationProgress(null);
 
     try {
-      const formData = new FormData();
-      formData.append("file", selectedFile);
-
       const query = insertMissing ? "?stream=true&insert=true" : "?stream=true";
       const response = await fetch(`/api/archive/verify-upload${query}`, {
         method: "POST",
-        body: formData,
+        headers: {
+          "Content-Type": "application/x-ndjson",
+        },
+        body: selectedFile,
       });
 
+      if (!response.ok) {
+        const contentType = response.headers.get("content-type") || "";
+        const errorText = contentType.includes("application/json")
+          ? await response
+              .json()
+              .then(
+                (data) => data.error || data.message || JSON.stringify(data),
+              )
+          : await response.text();
+        throw new Error(
+          errorText || response.statusText || "Validation failed",
+        );
+      }
+
       if (!response.body) {
-        const result = await response.json();
-        throw new Error(result.error || result.message || "Validation failed");
+        throw new Error("No response body from archive validation.");
       }
 
       const reader = response.body.getReader();

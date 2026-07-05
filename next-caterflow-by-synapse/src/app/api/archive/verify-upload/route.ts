@@ -15,7 +15,9 @@ export async function POST(request: Request) {
 
   try {
     const contentType = request.headers.get("content-type") || "";
-    let fileContent: string | null = null;
+    const url = new URL(request.url);
+    const useStream = url.searchParams.get("stream") === "true";
+    const insertMissing = url.searchParams.get("insert") === "true";
 
     if (contentType.includes("multipart/form-data")) {
       const formData = await request.formData();
@@ -27,9 +29,6 @@ export async function POST(request: Request) {
         );
       }
 
-      const url = new URL(request.url);
-      const useStream = url.searchParams.get("stream") === "true";
-      const insertMissing = url.searchParams.get("insert") === "true";
       if (useStream) {
         const stream = new ReadableStream<Uint8Array>({
           async start(controller) {
@@ -67,17 +66,51 @@ export async function POST(request: Request) {
 
       const validation = await validateArchiveUploadFileStream(file.stream());
       return NextResponse.json(validation);
-    } else {
-      const body = await request.json();
-      if (!body?.fileContent || typeof body.fileContent !== "string") {
-        return NextResponse.json(
-          { error: "Missing fileContent in request body." },
-          { status: 400 },
-        );
-      }
-      fileContent = body.fileContent;
     }
 
+    const bodyStream = request.body;
+    if (!bodyStream) {
+      return NextResponse.json(
+        { error: "Missing request body." },
+        { status: 400 },
+      );
+    }
+
+    if (useStream) {
+      const stream = new ReadableStream<Uint8Array>({
+        async start(controller) {
+          const encoder = new TextEncoder();
+          try {
+            for await (const event of validateArchiveUploadFileStreamEvents(
+              bodyStream,
+              { insertMissing: insertMissing },
+            )) {
+              controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+            }
+          } catch (error: any) {
+            controller.enqueue(
+              encoder.encode(
+                `${JSON.stringify({
+                  type: "error",
+                  error: error?.message || "Unknown error",
+                })}\n`,
+              ),
+            );
+          } finally {
+            controller.close();
+          }
+        },
+      });
+
+      return new Response(stream, {
+        headers: {
+          "Content-Type": "application/x-ndjson",
+        },
+      });
+    }
+
+    const validation = await validateArchiveUploadFileStream(bodyStream);
+    return NextResponse.json(validation);
     if (fileContent === null) {
       return NextResponse.json(
         { error: "Uploaded file content is empty." },
