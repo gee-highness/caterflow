@@ -34,6 +34,13 @@ export async function POST(request: Request) {
       fileContent = body.fileContent;
     }
 
+    if (fileContent === null) {
+      return NextResponse.json(
+        { error: "Uploaded file content is empty." },
+        { status: 400 },
+      );
+    }
+
     const validation = await validateArchiveUploadFileContent(fileContent);
     return NextResponse.json(validation);
   } catch (error: any) {

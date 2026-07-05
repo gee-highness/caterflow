@@ -140,8 +140,6 @@ export async function validateArchiveUploadFileContent(
       const set = collectionIdsMap.get(parsed.expectedCollection) || new Set();
       set.add(parsed.sanityId as string);
       collectionIdsMap.set(parsed.expectedCollection, set);
-    } else {
-      unknownTypeIds.add(parsed.sanityId as string);
     }
   });
 
