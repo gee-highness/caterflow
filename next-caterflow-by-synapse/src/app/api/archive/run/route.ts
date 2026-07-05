@@ -8,6 +8,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import {
   runArchive,
+  resumeIncompleteArchives,
   cleanupOldArchiveMetadata,
   cleanupArchivedSanityData,
 } from "@/lib/archiveService";
@@ -55,8 +56,35 @@ export async function POST(request: Request) {
       });
     }
 
+    if (isCronCall) {
+      const resumeResult = await resumeIncompleteArchives(5);
+      if (resumeResult.attempts > 0) {
+        return NextResponse.json({
+          success: true,
+          resumed: true,
+          attempts: resumeResult.attempts,
+          finished: resumeResult.finished,
+          message: resumeResult.finished
+            ? "Resumed incomplete archive run and it has completed."
+            : "Resumed incomplete archive run; it will continue on the next available cycle.",
+        });
+      }
+    }
+
     if (!isCronCall) {
       // For manual admin triggers: validate the archive DB connection and create a queued progress document so the UI sees a run immediately.
+      const resumeResult = await resumeIncompleteArchives(5);
+      if (resumeResult.attempts > 0) {
+        return NextResponse.json({
+          success: true,
+          resumed: true,
+          attempts: resumeResult.attempts,
+          finished: resumeResult.finished,
+          message: resumeResult.finished
+            ? "Resumed incomplete archive run and it has completed."
+            : "Resumed incomplete archive run; it will continue on the next available cycle.",
+        });
+      }
       let dbRef: any = null;
       try {
         dbRef = await getArchiveDb();

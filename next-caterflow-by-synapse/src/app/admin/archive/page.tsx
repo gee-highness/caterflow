@@ -234,7 +234,7 @@ export default function ArchiveManagementPage() {
   }, [fetchLogs]);
 
   const handleAutoResume = useCallback(async () => {
-    if (resumeTriggered || isResuming || archiveInProgress) return;
+    if (resumeTriggered || isResuming) return;
     if (currentRun?.status !== "incomplete") return;
 
     setIsResuming(true);
@@ -282,14 +282,7 @@ export default function ArchiveManagementPage() {
     } finally {
       setIsResuming(false);
     }
-  }, [
-    archiveInProgress,
-    currentRun,
-    fetchLogs,
-    isResuming,
-    resumeTriggered,
-    toast,
-  ]);
+  }, [currentRun, fetchLogs, isResuming, resumeTriggered, toast]);
 
   useEffect(() => {
     if (!isAuthenticated || !isAdmin || !archiveInProgress) return;
