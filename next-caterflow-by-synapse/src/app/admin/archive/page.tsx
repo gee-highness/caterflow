@@ -103,6 +103,8 @@ interface ArchiveCurrentRun {
   logs: string[];
 }
 
+const CHUNK_SIZE_BYTES = 5 * 1024 * 1024; // 5MB chunk size for large NDJSON uploads
+
 export default function ArchiveManagementPage() {
   const { data: session, status: sessionStatus } = useSession();
   const isAuthenticated = sessionStatus === "authenticated";
@@ -516,6 +518,99 @@ export default function ArchiveManagementPage() {
     setSelectedFile(file);
   };
 
+  const sliceFileChunks = async (file: File, chunkSize: number) => {
+    const chunks: Blob[] = [];
+    let start = 0;
+
+    while (start < file.size) {
+      let end = Math.min(start + chunkSize, file.size);
+      let chunk = file.slice(start, end);
+
+      if (end < file.size) {
+        const text = await chunk.text();
+        const lastNewline = text.lastIndexOf("\n");
+        if (lastNewline === -1) {
+          throw new Error(
+            "Unable to split file into newline-delimited chunks. Please use a smaller file or ensure each line ends with a newline.",
+          );
+        }
+        end = start + lastNewline + 1;
+        chunk = file.slice(start, end);
+      }
+
+      chunks.push(chunk);
+      start = end;
+    }
+
+    return chunks;
+  };
+
+  const parseStreamedValidation = async (
+    response: Response,
+    onProgress: (event: any) => void,
+  ) => {
+    if (!response.ok) {
+      const contentType = response.headers.get("content-type") || "";
+      const errorText = contentType.includes("application/json")
+        ? await response
+            .json()
+            .then((data) => data.error || data.message || JSON.stringify(data))
+        : await response.text();
+      throw new Error(errorText || response.statusText || "Validation failed");
+    }
+
+    if (!response.body) {
+      throw new Error("No response body from archive validation.");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let finalResult: any = null;
+    let done = false;
+
+    while (!done) {
+      const { value, done: readerDone } = await reader.read();
+      if (value) {
+        buffer += decoder.decode(value, { stream: true });
+        let newlineIndex = buffer.indexOf("\n");
+        while (newlineIndex !== -1) {
+          const rawLine = buffer.slice(0, newlineIndex).trim();
+          buffer = buffer.slice(newlineIndex + 1);
+          if (rawLine) {
+            const event = JSON.parse(rawLine);
+            if (event.type === "progress") {
+              onProgress(event);
+            } else if (event.type === "final") {
+              finalResult = event.result;
+            } else if (event.type === "error") {
+              throw new Error(event.error || "Validation stream error");
+            }
+          }
+          newlineIndex = buffer.indexOf("\n");
+        }
+      }
+      done = readerDone;
+    }
+
+    if (buffer.trim()) {
+      const event = JSON.parse(buffer.trim());
+      if (event.type === "progress") {
+        onProgress(event);
+      } else if (event.type === "final") {
+        finalResult = event.result;
+      } else if (event.type === "error") {
+        throw new Error(event.error || "Validation stream error");
+      }
+    }
+
+    if (!finalResult) {
+      throw new Error("File validation did not return a final result.");
+    }
+
+    return finalResult;
+  };
+
   const handleValidateArchiveFile = async () => {
     if (!selectedFile) {
       toast({
@@ -533,83 +628,86 @@ export default function ArchiveManagementPage() {
     setValidationReport(null);
     setValidationProgress(null);
 
+    const query = insertMissing ? "?stream=true&insert=true" : "?stream=true";
+    const useChunkedUpload = selectedFile.size > CHUNK_SIZE_BYTES;
+    const aggregatedReport: any = {
+      totalLines: 0,
+      parsedLines: 0,
+      validDocuments: 0,
+      missingDocuments: 0,
+      invalidLines: 0,
+      unknownTypes: 0,
+      durationMs: 0,
+      summary: {
+        totalLines: 0,
+        parsedLines: 0,
+        validDocuments: 0,
+        missingDocuments: 0,
+        invalidLines: 0,
+        unknownTypes: 0,
+      },
+      lineResults: [],
+    };
+
     try {
-      const query = insertMissing ? "?stream=true&insert=true" : "?stream=true";
-      const response = await fetch(`/api/archive/verify-upload${query}`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-ndjson",
-        },
-        body: selectedFile,
-      });
+      const chunks = useChunkedUpload
+        ? await sliceFileChunks(selectedFile, CHUNK_SIZE_BYTES)
+        : [selectedFile];
+      const startTime = Date.now();
 
-      if (!response.ok) {
-        const contentType = response.headers.get("content-type") || "";
-        const errorText = contentType.includes("application/json")
-          ? await response
-              .json()
-              .then(
-                (data) => data.error || data.message || JSON.stringify(data),
-              )
-          : await response.text();
-        throw new Error(
-          errorText || response.statusText || "Validation failed",
-        );
-      }
+      for (let index = 0; index < chunks.length; index += 1) {
+        const chunk = chunks[index];
+        const response = await fetch(`/api/archive/verify-upload${query}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/x-ndjson",
+          },
+          body: chunk,
+        });
 
-      if (!response.body) {
-        throw new Error("No response body from archive validation.");
-      }
+        const chunkResult = await parseStreamedValidation(response, (event) => {
+          setValidationProgress({
+            ...event,
+            message: useChunkedUpload
+              ? `Chunk ${index + 1}/${chunks.length}: ${event.message}`
+              : event.message,
+          });
+        });
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let finalResult: any = null;
-      let done = false;
+        aggregatedReport.totalLines += chunkResult.totalLines;
+        aggregatedReport.parsedLines += chunkResult.parsedLines;
+        aggregatedReport.validDocuments += chunkResult.validDocuments;
+        aggregatedReport.missingDocuments += chunkResult.missingDocuments;
+        aggregatedReport.invalidLines += chunkResult.invalidLines;
+        aggregatedReport.unknownTypes += chunkResult.unknownTypes;
+        aggregatedReport.durationMs = Date.now() - startTime;
+        aggregatedReport.summary.totalLines = aggregatedReport.totalLines;
+        aggregatedReport.summary.parsedLines = aggregatedReport.parsedLines;
+        aggregatedReport.summary.validDocuments =
+          aggregatedReport.validDocuments;
+        aggregatedReport.summary.missingDocuments =
+          aggregatedReport.missingDocuments;
+        aggregatedReport.summary.invalidLines = aggregatedReport.invalidLines;
+        aggregatedReport.summary.unknownTypes = aggregatedReport.unknownTypes;
 
-      while (!done) {
-        const { value, done: readerDone } = await reader.read();
-        if (value) {
-          buffer += decoder.decode(value, { stream: true });
-          let newlineIndex = buffer.indexOf("\n");
-          while (newlineIndex !== -1) {
-            const rawLine = buffer.slice(0, newlineIndex).trim();
-            buffer = buffer.slice(newlineIndex + 1);
-            if (rawLine) {
-              const event = JSON.parse(rawLine);
-              if (event.type === "progress") {
-                setValidationProgress(event);
-              } else if (event.type === "final") {
-                finalResult = event.result;
-              } else if (event.type === "error") {
-                throw new Error(event.error || "Validation stream error");
-              }
-            }
-            newlineIndex = buffer.indexOf("\n");
-          }
-        }
-        done = readerDone;
-      }
-
-      if (buffer.trim()) {
-        const event = JSON.parse(buffer.trim());
-        if (event.type === "progress") {
-          setValidationProgress(event);
-        } else if (event.type === "final") {
-          finalResult = event.result;
-        } else if (event.type === "error") {
-          throw new Error(event.error || "Validation stream error");
+        if (
+          chunkResult.lineResults?.length &&
+          aggregatedReport.lineResults.length < 200
+        ) {
+          aggregatedReport.lineResults.push(
+            ...chunkResult.lineResults.slice(
+              0,
+              200 - aggregatedReport.lineResults.length,
+            ),
+          );
         }
       }
 
-      if (!finalResult) {
-        throw new Error("File validation did not return a final result.");
-      }
-
-      setValidationReport(finalResult);
+      aggregatedReport.lineResults = aggregatedReport.lineResults.slice(0, 200);
+      setValidationReport(aggregatedReport);
       toast({
         title: "Archive validation complete",
-        description: `Checked ${finalResult.totalLines} lines and found ${finalResult.validDocuments} archived documents.`,
+        description: `Checked ${aggregatedReport.totalLines} lines and found ${aggregatedReport.validDocuments} archived documents.`,
         status: "success",
         duration: 6000,
         isClosable: true,

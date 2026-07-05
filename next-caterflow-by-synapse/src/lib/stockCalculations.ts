@@ -1,20 +1,23 @@
 // src/lib/stockCalculations.ts - UX-OPTIMIZED VERSION (V2: WITH CONCURRENCY FIXES)
-import { client, writeClient } from '@/lib/sanity';
-import { bulkUpdateStockRegistryAPI } from '@/lib/stockRegistryAPI';
-import { groq } from 'next-sanity';
-import Decimal from 'decimal.js';
+import { client, writeClient } from "@/lib/sanity";
+import { bulkUpdateStockRegistryAPI } from "@/lib/stockRegistryAPI";
+import { groq } from "next-sanity";
+import Decimal from "decimal.js";
 import {
   getCachedStock,
   setCachedStock,
   getCachedStockItem,
   setCachedStockItem,
   invalidateStockCache,
-  type StockDataCache
-} from '@/lib/cache';
+  type StockDataCache,
+} from "@/lib/cache";
 
 // Add at the top of the file, after imports:
-import { Mutex } from 'async-mutex';
-import { fetchArchivedTransactions as getArchivedTransactionsForItem, fetchLatestStockBaseline as getLatestStockBaseline } from '@/app/actions/archiveActions';
+import { Mutex } from "async-mutex";
+import {
+  fetchArchivedTransactions as getArchivedTransactionsForItem,
+  fetchLatestStockBaseline as getLatestStockBaseline,
+} from "@/app/actions/archiveActions";
 
 Decimal.set({ precision: 10, rounding: Decimal.ROUND_HALF_UP });
 
@@ -29,27 +32,43 @@ export async function bulkUpdateStockSnapshots(
     stockItemId: string;
     binId: string;
     quantity: number; // Can be positive (add), negative (deduct), or absolute (set)
-    transactionType: 'procurement' | 'dispatch' | 'transfer' | 'inventoryCount' | 'adjustment';
+    transactionType:
+      | "procurement"
+      | "dispatch"
+      | "transfer"
+      | "inventoryCount"
+      | "adjustment";
     transactionId: string;
     isAbsolute?: boolean; // true for inventoryCount (SET value), false for others (ADJUST value)
   }>,
   options?: {
-    onProgress?: (progress: { processed: number; total: number; batch: number }) => void;
+    onProgress?: (progress: {
+      processed: number;
+      total: number;
+      batch: number;
+    }) => void;
     maxRetries?: number;
-  }
+  },
 ): Promise<{
   success: number;
   failed: number;
-  results: Array<{ stockItemId: string; binId: string; success: boolean; error?: string }>;
+  results: Array<{
+    stockItemId: string;
+    binId: string;
+    success: boolean;
+    error?: string;
+  }>;
 }> {
   const startTime = Date.now();
 
   if (!updates || updates.length === 0) {
-    console.log('📭 No updates to process');
+    console.log("📭 No updates to process");
     return { success: 0, failed: 0, results: [] };
   }
 
-  console.log(`🚀 Starting bulk update for ${updates.length} items (using registry)`);
+  console.log(
+    `🚀 Starting bulk update for ${updates.length} items (using registry)`,
+  );
 
   try {
     // Use the new registry-based bulk update
@@ -58,18 +77,18 @@ export async function bulkUpdateStockSnapshots(
         options?.onProgress?.({
           processed: progress.processed,
           total: progress.total,
-          batch: 1
+          batch: 1,
         });
       },
-      maxRetries: options?.maxRetries
+      maxRetries: options?.maxRetries,
     });
 
     // Convert to the expected response format
-    const results = updates.map(update => ({
+    const results = updates.map((update) => ({
       stockItemId: update.stockItemId,
       binId: update.binId,
       success: true, // Registry updates all or nothing
-      error: undefined
+      error: undefined,
     }));
 
     const duration = Date.now() - startTime;
@@ -78,22 +97,21 @@ export async function bulkUpdateStockSnapshots(
     return {
       success: registryResult.success,
       failed: registryResult.failed,
-      results
+      results,
     };
-
   } catch (error) {
-    console.error('❌ Bulk update failed:', error);
+    console.error("❌ Bulk update failed:", error);
 
     // Return all as failed
     return {
       success: 0,
       failed: updates.length,
-      results: updates.map(update => ({
+      results: updates.map((update) => ({
         stockItemId: update.stockItemId,
         binId: update.binId,
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error'
-      }))
+        error: error instanceof Error ? error.message : "Unknown error",
+      })),
     };
   }
 }
@@ -105,7 +123,7 @@ export async function bulkUpdateStockSnapshots(
  */
 const queryStockRegistry = async (
   stockItemIds: string[],
-  binIds: string[]
+  binIds: string[],
 ): Promise<{ [key: string]: number }> => {
   try {
     const query = groq`*[_type == "stockRegistry"][0] {
@@ -144,7 +162,7 @@ const queryStockRegistry = async (
 
     return results;
   } catch (error) {
-    console.error('Error querying stock registry:', error);
+    console.error("Error querying stock registry:", error);
 
     // Return zeros for all combinations
     const results: { [key: string]: number } = {};
@@ -163,7 +181,7 @@ const queryStockRegistry = async (
  */
 async function attemptBulkTransaction(
   updates: any[],
-  options?: { onProgress?: (progress: any) => void }
+  options?: { onProgress?: (progress: any) => void },
 ): Promise<any> {
   console.log(`🔄 Attempting bulk transaction for ${updates.length} items`);
 
@@ -188,18 +206,17 @@ async function attemptBulkTransaction(
       options?.onProgress?.({
         processed: totalSuccess + totalFailed,
         total: updates.length,
-        batch: 1
+        batch: 1,
       });
-
     } catch (binError) {
       console.error(`❌ Failed to process bin ${binId}:`, binError);
       // Mark all items in this bin as failed for now
-      binUpdates.forEach(update => {
+      binUpdates.forEach((update) => {
         allResults.push({
           stockItemId: update.stockItemId,
           binId: update.binId,
           success: false,
-          error: `Bin processing failed: ${binError}`
+          error: `Bin processing failed: ${binError}`,
         });
         totalFailed++;
       });
@@ -209,7 +226,7 @@ async function attemptBulkTransaction(
   return {
     success: totalSuccess,
     failed: totalFailed,
-    results: allResults
+    results: allResults,
   };
 }
 
@@ -218,10 +235,10 @@ async function attemptBulkTransaction(
  */
 async function processBinBulkTransaction(
   updates: any[],
-  binId: string
+  binId: string,
 ): Promise<any> {
   // STEP 1: Get ALL existing snapshots for this bin in ONE query
-  const itemIds = updates.map(u => u.stockItemId);
+  const itemIds = updates.map((u) => u.stockItemId);
 
   const existingSnapshots = await client.fetch(
     groq`*[_type == "stockSnapshot" && 
@@ -231,7 +248,7 @@ async function processBinBulkTransaction(
       "itemId": stockItem._ref,
       quantity
     }`,
-    { itemIds, binId }
+    { itemIds, binId },
   );
 
   // Create lookup map
@@ -247,14 +264,14 @@ async function processBinBulkTransaction(
   const cacheUpdates: Array<{ key: string; quantity: number }> = [];
   const results: any[] = [];
 
-  updates.forEach(update => {
+  updates.forEach((update) => {
     try {
       const existing = snapshotMap.get(update.stockItemId);
       const currentQty = existing?.quantity || 0;
 
       // Calculate new quantity based on transaction type
       let newQuantity: number;
-      if (update.isAbsolute || update.transactionType === 'inventoryCount') {
+      if (update.isAbsolute || update.transactionType === "inventoryCount") {
         // SET absolute value (inventory counts)
         newQuantity = update.quantity;
       } else {
@@ -262,31 +279,33 @@ async function processBinBulkTransaction(
         newQuantity = currentQty + update.quantity;
 
         // For safety: don't go below 0 for dispatches unless explicitly allowed
-        if (update.transactionType === 'dispatch' && newQuantity < 0) {
-          console.warn(`⚠️ Dispatch would make stock negative: ${update.stockItemId} in ${binId}`);
+        if (update.transactionType === "dispatch" && newQuantity < 0) {
+          console.warn(
+            `⚠️ Dispatch would make stock negative: ${update.stockItemId} in ${binId}`,
+          );
           // Decide what to do: set to 0 or allow negative?
           newQuantity = 0; // or newQuantity = currentQty + update.quantity to allow negative
         }
       }
 
       const snapshotData: any = {
-        _type: 'stockSnapshot',
+        _type: "stockSnapshot",
         stockItem: {
-          _type: 'reference',
+          _type: "reference",
           _ref: update.stockItemId,
         },
         bin: {
-          _type: 'reference',
+          _type: "reference",
           _ref: binId,
         },
         quantity: newQuantity,
-        lastUpdated: now
+        lastUpdated: now,
       };
 
       if (existing) {
         // Update existing
         transactionBuilder = transactionBuilder.patch(existing._id, {
-          set: snapshotData
+          set: snapshotData,
         });
       } else {
         // Create new
@@ -303,40 +322,44 @@ async function processBinBulkTransaction(
         binId,
         success: true,
         previousQuantity: currentQty,
-        newQuantity
+        newQuantity,
       });
-
     } catch (itemError) {
-      console.error(`❌ Failed to prepare update for ${update.stockItemId}:`, itemError);
+      console.error(
+        `❌ Failed to prepare update for ${update.stockItemId}:`,
+        itemError,
+      );
       results.push({
         stockItemId: update.stockItemId,
         binId,
         success: false,
-        error: itemError
+        error: itemError,
       });
     }
   });
 
   // STEP 3: Execute transaction (ONE API call for all items in this bin)
-  if (results.some(r => r.success)) {
-    console.log(`🚀 Executing transaction for bin ${binId}: ${results.filter(r => r.success).length} operations`);
+  if (results.some((r) => r.success)) {
+    console.log(
+      `🚀 Executing transaction for bin ${binId}: ${results.filter((r) => r.success).length} operations`,
+    );
     await transactionBuilder.commit();
 
     // Update caches after successful commit
     cacheUpdates.forEach(({ key, quantity }) => {
       snapshotCache.set(key, quantity, {
-        confidence: 'high',
-        transactionType: updates[0]?.transactionType
+        confidence: "high",
+        transactionType: updates[0]?.transactionType,
       });
-      invalidateStockCache(key.split('-')[0]); // itemId
-      invalidateStockCache(key.split('-')[1]); // binId
+      invalidateStockCache(key.split("-")[0]); // itemId
+      invalidateStockCache(key.split("-")[1]); // binId
     });
   }
 
   return {
-    success: results.filter(r => r.success).length,
-    failed: results.filter(r => !r.success).length,
-    results
+    success: results.filter((r) => r.success).length,
+    failed: results.filter((r) => !r.success).length,
+    results,
   };
 }
 
@@ -348,7 +371,7 @@ export const migrateToStockRegistry = async (): Promise<{
   errors: number;
   registryId?: string;
 }> => {
-  console.log('🚚 Starting migration to stock registry...');
+  console.log("🚚 Starting migration to stock registry...");
 
   try {
     // 1. Get all existing stock snapshots
@@ -365,7 +388,7 @@ export const migrateToStockRegistry = async (): Promise<{
     console.log(`📊 Found ${oldSnapshots.length} old snapshots to migrate`);
 
     if (oldSnapshots.length === 0) {
-      console.log('✅ No snapshots to migrate');
+      console.log("✅ No snapshots to migrate");
       return { migrated: 0, errors: 0 };
     }
 
@@ -373,7 +396,14 @@ export const migrateToStockRegistry = async (): Promise<{
     const itemsMap = new Map<string, any>();
 
     oldSnapshots.forEach((snapshot: any) => {
-      const { stockItemId, binId, quantity, lastUpdated, lastTransaction, lastTransactionType } = snapshot;
+      const {
+        stockItemId,
+        binId,
+        quantity,
+        lastUpdated,
+        lastTransaction,
+        lastTransactionType,
+      } = snapshot;
 
       if (!itemsMap.has(stockItemId)) {
         itemsMap.set(stockItemId, {
@@ -394,8 +424,8 @@ export const migrateToStockRegistry = async (): Promise<{
 
     // 3. Create registry data
     const registryData = {
-      _type: 'stockRegistry',
-      title: 'Stock Registry v1',
+      _type: "stockRegistry",
+      title: "Stock Registry v1",
       stockData: {
         items: Array.from(itemsMap.values()),
       },
@@ -404,16 +434,15 @@ export const migrateToStockRegistry = async (): Promise<{
     };
 
     // 4. Check if registry already exists
-    const existingRegistry = await client.fetch(groq`*[_type == "stockRegistry"][0] { _id }`);
+    const existingRegistry = await client.fetch(
+      groq`*[_type == "stockRegistry"][0] { _id }`,
+    );
 
     let registryId: string;
 
     if (existingRegistry) {
       // Update existing
-      await writeClient
-        .patch(existingRegistry._id)
-        .set(registryData)
-        .commit();
+      await writeClient.patch(existingRegistry._id).set(registryData).commit();
       registryId = existingRegistry._id;
       console.log(`✅ Updated existing registry with ${itemsMap.size} items`);
     } else {
@@ -426,16 +455,17 @@ export const migrateToStockRegistry = async (): Promise<{
     // 5. Count how many old snapshots were migrated
     const migrated = oldSnapshots.length;
 
-    console.log(`🎉 Migration complete! Migrated ${migrated} snapshots to single registry`);
+    console.log(
+      `🎉 Migration complete! Migrated ${migrated} snapshots to single registry`,
+    );
 
     return {
       migrated,
       errors: 0,
       registryId,
     };
-
   } catch (error) {
-    console.error('❌ Migration failed:', error);
+    console.error("❌ Migration failed:", error);
     return {
       migrated: 0,
       errors: 1,
@@ -449,7 +479,7 @@ export const migrateToStockRegistry = async (): Promise<{
 async function attemptBatchedUpdates(
   updates: any[],
   maxRetries: number,
-  options?: { onProgress?: (progress: any) => void }
+  options?: { onProgress?: (progress: any) => void },
 ): Promise<any> {
   console.log(`🔄 Starting batched fallback for ${updates.length} items`);
 
@@ -464,7 +494,9 @@ async function attemptBatchedUpdates(
     const batchNumber = Math.floor(i / BATCH_SIZE) + 1;
     const totalBatches = Math.ceil(updates.length / BATCH_SIZE);
 
-    console.log(`📦 Processing batch ${batchNumber}/${totalBatches} (${batch.length} items)`);
+    console.log(
+      `📦 Processing batch ${batchNumber}/${totalBatches} (${batch.length} items)`,
+    );
 
     let retryCount = 0;
     let batchCompleted = false;
@@ -474,26 +506,31 @@ async function attemptBatchedUpdates(
       try {
         // Process batch with individual updates
         batchResults = await Promise.all(
-          batch.map(update => processSingleItemUpdate(update, retryCount))
+          batch.map((update) => processSingleItemUpdate(update, retryCount)),
         );
 
         batchCompleted = true;
-
       } catch (batchError) {
         console.error(`❌ Batch ${batchNumber} failed:`, batchError);
         retryCount++;
 
         if (retryCount <= maxRetries) {
-          console.log(`  🔄 Retrying batch (attempt ${retryCount}/${maxRetries})`);
-          await new Promise(resolve => setTimeout(resolve, 1000 * retryCount)); // Exponential backoff
+          console.log(
+            `  🔄 Retrying batch (attempt ${retryCount}/${maxRetries})`,
+          );
+          await new Promise((resolve) =>
+            setTimeout(resolve, 1000 * retryCount),
+          ); // Exponential backoff
         } else {
-          console.error(`❌ Batch ${batchNumber} failed after ${maxRetries} retries`);
+          console.error(
+            `❌ Batch ${batchNumber} failed after ${maxRetries} retries`,
+          );
           // Mark all as failed
-          batchResults = batch.map(update => ({
+          batchResults = batch.map((update) => ({
             stockItemId: update.stockItemId,
             binId: update.binId,
             success: false,
-            error: `Failed after ${maxRetries} retries`
+            error: `Failed after ${maxRetries} retries`,
           }));
           batchCompleted = true;
         }
@@ -507,24 +544,26 @@ async function attemptBatchedUpdates(
     options?.onProgress?.({
       processed: totalProcessed,
       total: updates.length,
-      batch: batchNumber
+      batch: batchNumber,
     });
 
     // Delay between batches
     if (i + BATCH_SIZE < updates.length) {
-      await new Promise(resolve => setTimeout(resolve, BASE_DELAY));
+      await new Promise((resolve) => setTimeout(resolve, BASE_DELAY));
     }
   }
 
-  const success = allResults.filter(r => r.success).length;
-  const failed = allResults.filter(r => !r.success).length;
+  const success = allResults.filter((r) => r.success).length;
+  const failed = allResults.filter((r) => !r.success).length;
 
-  console.log(`✅ Batched fallback complete: ${success} succeeded, ${failed} failed`);
+  console.log(
+    `✅ Batched fallback complete: ${success} succeeded, ${failed} failed`,
+  );
 
   return {
     success,
     failed,
-    results: allResults
+    results: allResults,
   };
 }
 
@@ -533,7 +572,7 @@ async function attemptBatchedUpdates(
  */
 async function processSingleItemUpdate(
   update: any,
-  retryCount: number
+  retryCount: number,
 ): Promise<any> {
   const lockKey = `${update.stockItemId}-${update.binId}`;
   const mutex = getMutexForKey(lockKey);
@@ -545,45 +584,44 @@ async function processSingleItemUpdate(
         groq`*[_type == "stockSnapshot" && 
               stockItem._ref == $itemId && 
               bin._ref == $binId][0]`,
-        { itemId: update.stockItemId, binId: update.binId }
+        { itemId: update.stockItemId, binId: update.binId },
       );
 
       const currentQty = currentSnapshot?.quantity || 0;
 
       // Calculate new quantity
       let newQuantity: number;
-      if (update.isAbsolute || update.transactionType === 'inventoryCount') {
+      if (update.isAbsolute || update.transactionType === "inventoryCount") {
         newQuantity = update.quantity;
       } else {
         newQuantity = currentQty + update.quantity;
 
         // Safety check for dispatches
-        if (update.transactionType === 'dispatch' && newQuantity < 0) {
-          console.warn(`⚠️ Dispatch makes stock negative: ${update.stockItemId} in ${update.binId}`);
+        if (update.transactionType === "dispatch" && newQuantity < 0) {
+          console.warn(
+            `⚠️ Dispatch makes stock negative: ${update.stockItemId} in ${update.binId}`,
+          );
           newQuantity = 0; // or handle differently
         }
       }
 
       const now = new Date().toISOString();
       const snapshotData: any = {
-        _type: 'stockSnapshot',
+        _type: "stockSnapshot",
         stockItem: {
-          _type: 'reference',
+          _type: "reference",
           _ref: update.stockItemId,
         },
         bin: {
-          _type: 'reference',
+          _type: "reference",
           _ref: update.binId,
         },
         quantity: newQuantity,
-        lastUpdated: now
+        lastUpdated: now,
       };
 
       if (currentSnapshot) {
-        await writeClient
-          .patch(currentSnapshot._id)
-          .set(snapshotData)
-          .commit();
+        await writeClient.patch(currentSnapshot._id).set(snapshotData).commit();
       } else {
         await writeClient.create(snapshotData);
       }
@@ -591,9 +629,9 @@ async function processSingleItemUpdate(
       // Update cache
       const cacheKey = `${update.stockItemId}-${update.binId}`;
       snapshotCache.set(cacheKey, newQuantity, {
-        confidence: 'high',
+        confidence: "high",
         fallback: true,
-        retryCount
+        retryCount,
       });
       invalidateStockCache(update.stockItemId);
       invalidateStockCache(update.binId);
@@ -604,17 +642,19 @@ async function processSingleItemUpdate(
         success: true,
         previousQuantity: currentQty,
         newQuantity,
-        retryCount
+        retryCount,
       };
-
     } catch (error) {
-      console.error(`❌ Failed to update ${update.stockItemId}-${update.binId}:`, error);
+      console.error(
+        `❌ Failed to update ${update.stockItemId}-${update.binId}:`,
+        error,
+      );
       return {
         stockItemId: update.stockItemId,
         binId: update.binId,
         success: false,
         error: error,
-        retryCount
+        retryCount,
       };
     }
   });
@@ -626,7 +666,7 @@ async function processSingleItemUpdate(
 function groupUpdatesByBin(updates: any[]): Map<string, any[]> {
   const map = new Map<string, any[]>();
 
-  updates.forEach(update => {
+  updates.forEach((update) => {
     if (!map.has(update.binId)) {
       map.set(update.binId, []);
     }
@@ -637,7 +677,9 @@ function groupUpdatesByBin(updates: any[]): Map<string, any[]> {
 }
 
 // Validation function for dispatch items
-export const validateDispatchItems = async (dispatchId: string): Promise<{
+export const validateDispatchItems = async (
+  dispatchId: string,
+): Promise<{
   valid: boolean;
   items: Array<{
     stockItemId: string;
@@ -665,7 +707,7 @@ export const validateDispatchItems = async (dispatchId: string): Promise<{
       return {
         valid: false,
         items: [],
-        missingBins: ['Dispatch not found']
+        missingBins: ["Dispatch not found"],
       };
     }
 
@@ -674,25 +716,27 @@ export const validateDispatchItems = async (dispatchId: string): Promise<{
       binId: item.sourceBinId,
       quantity: item.dispatchedQuantity || 0,
       itemName: item.stockItemName,
-      binName: item.sourceBinName
+      binName: item.sourceBinName,
     }));
 
     const missingBins = items
-      .filter((item: { binId: any; }) => !item.binId)
-      .map((item: { itemName: any; }) => `Item "${item.itemName}" missing source bin`);
+      .filter((item: { binId: any }) => !item.binId)
+      .map(
+        (item: { itemName: any }) =>
+          `Item "${item.itemName}" missing source bin`,
+      );
 
     return {
       valid: missingBins.length === 0,
       items,
-      missingBins
+      missingBins,
     };
-
   } catch (error) {
-    console.error('Error validating dispatch items:', error);
+    console.error("Error validating dispatch items:", error);
     return {
       valid: false,
       items: [],
-      missingBins: [`Validation error: ${error}`]
+      missingBins: [`Validation error: ${error}`],
     };
   }
 };
@@ -714,7 +758,7 @@ export const debugDispatchStock = async (dispatchId: string): Promise<void> => {
               "sourceBinName": sourceBin->name
           }
       }`,
-    { id: dispatchId }
+    { id: dispatchId },
   );
 
   if (!dispatch) {
@@ -722,22 +766,29 @@ export const debugDispatchStock = async (dispatchId: string): Promise<void> => {
     return;
   }
 
-  console.log(`📋 Dispatch ${dispatch.dispatchNumber} (${dispatch.evidenceStatus}, ${dispatch.status})`);
+  console.log(
+    `📋 Dispatch ${dispatch.dispatchNumber} (${dispatch.evidenceStatus}, ${dispatch.status})`,
+  );
   console.log(`📦 ${dispatch.dispatchedItems?.length || 0} items to process:`);
 
   // Check each item
   for (const item of dispatch.dispatchedItems || []) {
     console.log(`  └─ ${item.stockItemName}:`, {
       quantity: item.dispatchedQuantity,
-      bin: item.sourceBinName || 'NO BIN!',
-      binId: item.sourceBinId || 'MISSING'
+      bin: item.sourceBinName || "NO BIN!",
+      binId: item.sourceBinId || "MISSING",
     });
 
     if (item.sourceBinId) {
       // Check current stock
-      const currentStock = await calculateStock(item.stockItemId, item.sourceBinId);
+      const currentStock = await calculateStock(
+        item.stockItemId,
+        item.sourceBinId,
+      );
       console.log(`     Current stock: ${currentStock.quantity}`);
-      console.log(`     After dispatch: ${currentStock.quantity - item.dispatchedQuantity}`);
+      console.log(
+        `     After dispatch: ${currentStock.quantity - item.dispatchedQuantity}`,
+      );
     }
   }
 };
@@ -749,7 +800,7 @@ class StockCalculationManager {
   private activeTimers = new Map<string, number>();
   private calculationQueue = new Map<string, Array<() => void>>();
 
-  private constructor() { }
+  private constructor() {}
 
   static getInstance(): StockCalculationManager {
     if (!StockCalculationManager.instance) {
@@ -864,14 +915,18 @@ const trackMetric = (metric: CalculationMetrics) => {
 export const getPerformanceStats = () => {
   if (recentMetrics.length === 0) return null;
 
-  const avgDuration = recentMetrics.reduce((sum, m) => sum + m.duration, 0) / recentMetrics.length;
-  const cacheHitRate = (recentMetrics.filter(m => m.cacheHit).length / recentMetrics.length) * 100;
+  const avgDuration =
+    recentMetrics.reduce((sum, m) => sum + m.duration, 0) /
+    recentMetrics.length;
+  const cacheHitRate =
+    (recentMetrics.filter((m) => m.cacheHit).length / recentMetrics.length) *
+    100;
 
   return {
     avgDuration: Math.round(avgDuration),
     cacheHitRate: Math.round(cacheHitRate),
     totalCalculations: recentMetrics.length,
-    lastCalculation: recentMetrics[0]?.timestamp || null
+    lastCalculation: recentMetrics[0]?.timestamp || null,
   };
 };
 
@@ -879,14 +934,17 @@ export const getPerformanceStats = () => {
 
 // Replace the existing snapshotCache with a better implementation
 class OptimizedSnapshotCache {
-  private cache = new Map<string, {
-    quantity: number;
-    timestamp: number;
-    metadata?: {
-      confidence?: 'high' | 'medium' | 'low';
-      transactionCount?: number;
-    };
-  }>();
+  private cache = new Map<
+    string,
+    {
+      quantity: number;
+      timestamp: number;
+      metadata?: {
+        confidence?: "high" | "medium" | "low";
+        transactionCount?: number;
+      };
+    }
+  >();
   private readonly MAX_SIZE = 1000;
   private readonly TTL = 30000; // 30 seconds
   private cleanupInterval: NodeJS.Timeout;
@@ -914,7 +972,9 @@ class OptimizedSnapshotCache {
     }
   }
 
-  get(key: string): { quantity: number; timestamp: number; metadata?: any } | undefined {
+  get(
+    key: string,
+  ): { quantity: number; timestamp: number; metadata?: any } | undefined {
     const cached = this.cache.get(key);
     if (!cached) return undefined;
 
@@ -939,7 +999,7 @@ class OptimizedSnapshotCache {
     this.cache.set(key, {
       quantity,
       timestamp: Date.now(),
-      metadata
+      metadata,
     });
   }
 
@@ -973,7 +1033,10 @@ setInterval(cleanupSnapshotCache, 60000);
 
 // Get or create stock snapshot with enhanced caching
 // Get or create stock snapshot with enhanced caching - NEW SINGLE DOCUMENT VERSION
-const getStockSnapshot = async (stockItemId: string, binId: string): Promise<number> => {
+const getStockSnapshot = async (
+  stockItemId: string,
+  binId: string,
+): Promise<number> => {
   const cacheKey = `${stockItemId}-${binId}`;
 
   // 1. Check cache first
@@ -993,41 +1056,50 @@ const getStockSnapshot = async (stockItemId: string, binId: string): Promise<num
     if (registry?.stockData?.items) {
       // Find the item
       const itemEntry = registry.stockData.items.find(
-        (item: any) => item.stockItemId === stockItemId
+        (item: any) => item.stockItemId === stockItemId,
       );
 
       if (itemEntry?.binQuantities?.bins) {
         // Find the bin
         const binEntry = itemEntry.binQuantities.bins.find(
-          (bin: any) => bin.binId === binId
+          (bin: any) => bin.binId === binId,
         );
 
         if (binEntry) {
           const quantity = binEntry.quantity || 0;
-          snapshotCache.set(cacheKey, quantity, { confidence: 'high' });
+          snapshotCache.set(cacheKey, quantity, { confidence: "high" });
           return quantity;
         }
       }
     }
 
     // 3. No entry found - calculate and create
-    console.log(`🔍 No registry entry for ${stockItemId}-${binId}, calculating...`);
-    const calculatedStock = await calculateStockExactLogic(stockItemId, binId, true);
+    console.log(
+      `🔍 No registry entry for ${stockItemId}-${binId}, calculating...`,
+    );
+    const calculatedStock = await calculateStockExactLogic(
+      stockItemId,
+      binId,
+      true,
+    );
 
     // 4. Update registry
-    await updateStockRegistry(stockItemId, binId, calculatedStock, 'auto_init', null);
+    await updateStockRegistry(
+      stockItemId,
+      binId,
+      calculatedStock,
+      "auto_init",
+      null,
+    );
 
     // 5. Cache and return
-    snapshotCache.set(cacheKey, calculatedStock, { confidence: 'high' });
+    snapshotCache.set(cacheKey, calculatedStock, { confidence: "high" });
     return calculatedStock;
-
   } catch (error) {
-    console.error('Error getting stock from registry:', error);
+    console.error("Error getting stock from registry:", error);
     return 0;
   }
 };
-
-
 
 // Update single stock registry document
 const updateStockRegistry = async (
@@ -1035,7 +1107,7 @@ const updateStockRegistry = async (
   binId: string,
   quantity: number,
   transactionType: string,
-  transactionId: string | null
+  transactionId: string | null,
 ): Promise<void> => {
   const startTime = Date.now();
 
@@ -1062,7 +1134,7 @@ const updateStockRegistry = async (
 
     // 3. Find or create item entry
     let itemIndex = registryData.items.findIndex(
-      (item: any) => item.stockItemId === stockItemId
+      (item: any) => item.stockItemId === stockItemId,
     );
 
     if (itemIndex === -1) {
@@ -1077,7 +1149,7 @@ const updateStockRegistry = async (
     // 4. Find or create bin entry
     const itemEntry = registryData.items[itemIndex];
     let binIndex = itemEntry.binQuantities.bins.findIndex(
-      (bin: any) => bin.binId === binId
+      (bin: any) => bin.binId === binId,
     );
 
     if (binIndex === -1) {
@@ -1112,8 +1184,8 @@ const updateStockRegistry = async (
         .commit();
     } else {
       await writeClient.create({
-        _type: 'stockRegistry',
-        title: 'Stock Registry v1',
+        _type: "stockRegistry",
+        title: "Stock Registry v1",
         stockData: registryData,
         lastUpdated: now,
         version: 1,
@@ -1122,19 +1194,19 @@ const updateStockRegistry = async (
 
     // 6. Update cache
     const cacheKey = `${stockItemId}-${binId}`;
-    snapshotCache.set(cacheKey, quantity, { confidence: 'high' });
+    snapshotCache.set(cacheKey, quantity, { confidence: "high" });
     invalidateStockCache(stockItemId);
     invalidateStockCache(binId);
 
     const duration = Date.now() - startTime;
-    console.log(`📝 Updated registry for ${stockItemId}-${binId}: ${quantity} (${duration}ms)`);
-
+    console.log(
+      `📝 Updated registry for ${stockItemId}-${binId}: ${quantity} (${duration}ms)`,
+    );
   } catch (error) {
-    console.error('Error updating stock registry:', error);
+    console.error("Error updating stock registry:", error);
     throw error;
   }
 };
-
 
 /**
  * Create a new stock entry in registry (doesn't update existing)
@@ -1142,10 +1214,10 @@ const updateStockRegistry = async (
 const createStockSnapshot = async (
   stockItemId: string,
   binId: string,
-  quantity: number
+  quantity: number,
 ): Promise<void> => {
   // Use registry system
-  return updateStockRegistry(stockItemId, binId, quantity, 'initial', null);
+  return updateStockRegistry(stockItemId, binId, quantity, "initial", null);
 };
 
 // Calculate stock from transactions (for initial snapshot or validation)
@@ -1158,17 +1230,21 @@ const calculateStockFromTransactions = async (
   stockItemId: string,
   binId: string,
   verbose: boolean = true,
-  asOfDate?: Date
+  asOfDate?: Date,
 ): Promise<number> => {
   const startTime = Date.now();
 
   if (verbose) {
-    const dateStr = asOfDate ? ` as of ${asOfDate.toISOString().split('T')[0]}` : '';
-    console.log(`🧮 Calculating stock for ${stockItemId} in ${binId}${dateStr} from transactions`);
+    const dateStr = asOfDate
+      ? ` as of ${asOfDate.toISOString().split("T")[0]}`
+      : "";
+    console.log(
+      `🧮 Calculating stock for ${stockItemId} in ${binId}${dateStr} from transactions`,
+    );
   }
 
   try {
-    const dateFilter = asOfDate ? `&& date <= $asOfDate` : '';
+    const dateFilter = asOfDate ? `&& date <= $asOfDate` : "";
     const asOfDateStr = asOfDate?.toISOString();
 
     const query = groq`{
@@ -1205,14 +1281,14 @@ const calculateStockFromTransactions = async (
     const data = await client.fetch(query, {
       binId,
       stockItemId,
-      asOfDate: asOfDateStr
+      asOfDate: asOfDateStr,
     });
 
     console.log(`📊 Found ${data.allEvents?.length || 0} events`);
 
     // Log each goods receipt to check for duplicates
     data.allEvents?.forEach((event: any, index: number) => {
-      if (event._type === 'GoodsReceipt') {
+      if (event._type === "GoodsReceipt") {
         console.log(`📝 Goods Receipt ${index}: ${event._id}`);
         event.receivedItems?.forEach((item: any) => {
           if (item.itemId === stockItemId) {
@@ -1229,28 +1305,48 @@ const calculateStockFromTransactions = async (
     try {
       const archived = await getArchivedTransactionsForItem(stockItemId, binId);
       if (!data.allEvents) data.allEvents = [];
-      
-      archived.forEach(tx => {
-        const mappedTx: any = { _type: '', date: tx.date };
-        if (tx.type === 'receipt') {
-          mappedTx._type = 'GoodsReceipt';
-          mappedTx.receivedItems = [{ itemId: stockItemId, quantity: tx.quantity }];
-        } else if (tx.type === 'dispatch') {
-          mappedTx._type = 'DispatchLog';
-          mappedTx.dispatchedItems = [{ itemId: stockItemId, quantity: Math.abs(tx.quantity) }];
-        } else if (tx.type === 'transferOut') {
-          mappedTx._type = 'InternalTransfer';
-          mappedTx.transferredItems = [{ itemId: stockItemId, quantity: Math.abs(tx.quantity), fromBinId: binId, toBinId: '' }];
-        } else if (tx.type === 'transferIn') {
-          mappedTx._type = 'InternalTransfer';
-          mappedTx.transferredItems = [{ itemId: stockItemId, quantity: tx.quantity, fromBinId: '', toBinId: binId }];
-        } else if (tx.type === 'count') {
-          mappedTx._type = 'InventoryCount';
-          mappedTx.countedItems = [{ itemId: stockItemId, quantity: tx.quantity }];
+
+      archived.forEach((tx) => {
+        const mappedTx: any = { _type: "", date: tx.date };
+        if (tx.type === "receipt") {
+          mappedTx._type = "GoodsReceipt";
+          mappedTx.receivedItems = [
+            { itemId: stockItemId, quantity: tx.quantity },
+          ];
+        } else if (tx.type === "dispatch") {
+          mappedTx._type = "DispatchLog";
+          mappedTx.dispatchedItems = [
+            { itemId: stockItemId, quantity: Math.abs(tx.quantity) },
+          ];
+        } else if (tx.type === "transferOut") {
+          mappedTx._type = "InternalTransfer";
+          mappedTx.transferredItems = [
+            {
+              itemId: stockItemId,
+              quantity: Math.abs(tx.quantity),
+              fromBinId: binId,
+              toBinId: "",
+            },
+          ];
+        } else if (tx.type === "transferIn") {
+          mappedTx._type = "InternalTransfer";
+          mappedTx.transferredItems = [
+            {
+              itemId: stockItemId,
+              quantity: tx.quantity,
+              fromBinId: "",
+              toBinId: binId,
+            },
+          ];
+        } else if (tx.type === "count") {
+          mappedTx._type = "InventoryCount";
+          mappedTx.countedItems = [
+            { itemId: stockItemId, quantity: tx.quantity },
+          ];
         }
         data.allEvents.push(mappedTx);
       });
-      
+
       // Re-sort to include archived transactions
       data.allEvents.sort((a: any, b: any) => {
         const dateA = a.date ? new Date(a.date).getTime() : 0;
@@ -1258,7 +1354,7 @@ const calculateStockFromTransactions = async (
         return dateA - dateB;
       });
     } catch (e) {
-      console.warn('⚠️ Could not fetch archived transactions:', e);
+      console.warn("⚠️ Could not fetch archived transactions:", e);
     }
 
     // Process events in chronological order
@@ -1287,7 +1383,9 @@ const calculateStockFromTransactions = async (
           } else {
             // If dispatch quantity is more than available stock, set to 0
             // This should be logged as an issue
-            console.warn(`⚠️ Dispatch would cause negative stock for ${stockItemId} in ${binId}. Available: ${stock.toNumber()}, Dispatch: ${dispatchQty.toNumber()}`);
+            console.warn(
+              `⚠️ Dispatch would cause negative stock for ${stockItemId} in ${binId}. Available: ${stock.toNumber()}, Dispatch: ${dispatchQty.toNumber()}`,
+            );
             stock = new Decimal(0);
           }
         }
@@ -1302,7 +1400,9 @@ const calculateStockFromTransactions = async (
             if (stock.greaterThanOrEqualTo(transferQty)) {
               stock = stock.minus(transferQty);
             } else {
-              console.warn(`⚠️ Transfer out would cause negative stock for ${stockItemId} in ${binId}. Available: ${stock.toNumber()}, Transfer: ${transferQty.toNumber()}`);
+              console.warn(
+                `⚠️ Transfer out would cause negative stock for ${stockItemId} in ${binId}. Available: ${stock.toNumber()}, Transfer: ${transferQty.toNumber()}`,
+              );
               stock = new Decimal(0);
             }
           }
@@ -1327,20 +1427,23 @@ const calculateStockFromTransactions = async (
     const duration = Date.now() - startTime;
 
     if (verbose) {
-      console.log(`✅ Calculated stock for ${stockItemId} in ${binId}: ${stock.toNumber()} (${duration}ms)`);
+      console.log(
+        `✅ Calculated stock for ${stockItemId} in ${binId}: ${stock.toNumber()} (${duration}ms)`,
+      );
 
       if (lastCountDate !== null && lastCountDate !== undefined) {
         const date: Date = lastCountDate;
         if (!isNaN(date.getTime())) {
-          console.log(`   📅 Last inventory count: ${date.toISOString().split('T')[0]}`);
+          console.log(
+            `   📅 Last inventory count: ${date.toISOString().split("T")[0]}`,
+          );
         }
       }
     }
 
     return stock.toNumber();
-
   } catch (error) {
-    console.error('Error calculating stock from transactions:', error);
+    console.error("Error calculating stock from transactions:", error);
     return 0;
   }
 };
@@ -1352,10 +1455,16 @@ const updateStockSnapshot = async (
   binId: string,
   quantity: number,
   transactionType: string,
-  transactionId: string | null
+  transactionId: string | null,
 ): Promise<void> => {
   // Use new registry system
-  return updateStockRegistry(stockItemId, binId, quantity, transactionType, transactionId);
+  return updateStockRegistry(
+    stockItemId,
+    binId,
+    quantity,
+    transactionType,
+    transactionId,
+  );
 };
 
 // Helper function to calculate stock for multiple items in one bin
@@ -1363,7 +1472,7 @@ const updateStockSnapshot = async (
 const calculateStockForBin = async (
   binId: string,
   itemIds: string[],
-  onProgress?: (progress: number) => void
+  onProgress?: (progress: number) => void,
 ): Promise<{ [key: string]: number }> => {
   const startTime = Date.now();
 
@@ -1459,7 +1568,7 @@ const calculateStockForBin = async (
       itemMap.set(item._id, item.name || item.sku || item._id);
     });
 
-    itemIds.forEach(itemId => {
+    itemIds.forEach((itemId) => {
       results[`${itemId}-${binId}`] = new Decimal(0);
     });
 
@@ -1477,7 +1586,9 @@ const calculateStockForBin = async (
     const updateProgress = () => {
       processedItems++;
       if (onProgress && totalItems > 0) {
-        onProgress(Math.min(100, Math.round((processedItems / totalItems) * 100)));
+        onProgress(
+          Math.min(100, Math.round((processedItems / totalItems) * 100)),
+        );
       }
     };
 
@@ -1524,13 +1635,13 @@ const calculateStockForBin = async (
     // This ensures inventory counts work correctly AND items not in counts keep their value
 
     // **FIXED: Process ALL transactions chronologically with proper inventory count logic**
-    itemIds.forEach(itemId => {
+    itemIds.forEach((itemId) => {
       const key = `${itemId}-${binId}`;
 
       // Collect ALL transactions for this item
       const itemTransactions: Array<{
         date: Date;
-        type: 'receipt' | 'dispatch' | 'transferOut' | 'transferIn' | 'count';
+        type: "receipt" | "dispatch" | "transferOut" | "transferIn" | "count";
         quantity: Decimal;
       }> = [];
 
@@ -1540,8 +1651,8 @@ const calculateStockForBin = async (
           if (item.itemId === itemId) {
             itemTransactions.push({
               date: new Date(receipt.receiptDate),
-              type: 'receipt',
-              quantity: new Decimal(item.receivedQuantity || 0)
+              type: "receipt",
+              quantity: new Decimal(item.receivedQuantity || 0),
             });
           }
         });
@@ -1553,8 +1664,8 @@ const calculateStockForBin = async (
           if (item.itemId === itemId) {
             itemTransactions.push({
               date: new Date(dispatch.dispatchDate),
-              type: 'dispatch',
-              quantity: new Decimal(item.dispatchedQuantity || 0)
+              type: "dispatch",
+              quantity: new Decimal(item.dispatchedQuantity || 0),
             });
           }
         });
@@ -1566,8 +1677,8 @@ const calculateStockForBin = async (
           if (item.itemId === itemId) {
             itemTransactions.push({
               date: new Date(transfer.transferDate),
-              type: 'transferOut',
-              quantity: new Decimal(item.transferredQuantity || 0)
+              type: "transferOut",
+              quantity: new Decimal(item.transferredQuantity || 0),
             });
           }
         });
@@ -1579,8 +1690,8 @@ const calculateStockForBin = async (
           if (item.itemId === itemId) {
             itemTransactions.push({
               date: new Date(transfer.transferDate),
-              type: 'transferIn',
-              quantity: new Decimal(item.transferredQuantity || 0)
+              type: "transferIn",
+              quantity: new Decimal(item.transferredQuantity || 0),
             });
           }
         });
@@ -1592,8 +1703,8 @@ const calculateStockForBin = async (
           if (item.itemId === itemId) {
             itemTransactions.push({
               date: new Date(count.countDate),
-              type: 'count',
-              quantity: new Decimal(item.countedQuantity || 0)
+              type: "count",
+              quantity: new Decimal(item.countedQuantity || 0),
             });
           }
         });
@@ -1607,14 +1718,14 @@ const calculateStockForBin = async (
       const countTimeline: Array<{ date: Date; quantity: Decimal }> = [];
 
       // First pass: collect all inventory counts
-      itemTransactions.forEach(tx => {
-        if (tx.type === 'count') {
+      itemTransactions.forEach((tx) => {
+        if (tx.type === "count") {
           countTimeline.push({ date: tx.date, quantity: tx.quantity });
         }
       });
 
       // Find the most recent count before each transaction
-      itemTransactions.forEach(tx => {
+      itemTransactions.forEach((tx) => {
         // Find the most recent count that happened ON or BEFORE this transaction
         let applicableCount: Decimal | null = null;
         let applicableCountDate: Date | null = null;
@@ -1628,18 +1739,21 @@ const calculateStockForBin = async (
         }
 
         // If this transaction is a count, it becomes the new baseline
-        if (tx.type === 'count') {
+        if (tx.type === "count") {
           currentStock = tx.quantity;
         }
         // Only process regular transactions if they happen AFTER the most recent count
-        else if (applicableCountDate === null || tx.date > applicableCountDate) {
+        else if (
+          applicableCountDate === null ||
+          tx.date > applicableCountDate
+        ) {
           switch (tx.type) {
-            case 'receipt':
-            case 'transferIn':
+            case "receipt":
+            case "transferIn":
               currentStock = currentStock.plus(tx.quantity);
               break;
-            case 'dispatch':
-            case 'transferOut':
+            case "dispatch":
+            case "transferOut":
               currentStock = currentStock.minus(tx.quantity); // ALLOW NEGATIVE
               break;
           }
@@ -1661,19 +1775,21 @@ const calculateStockForBin = async (
       finalResults[key] = quantity;
 
       // Cache individual results for faster single-item lookups
-      const [itemId, binId] = key.split('-');
+      const [itemId, binId] = key.split("-");
       setCachedStockItem(`single-${itemId}-${binId}`, key, quantity);
     });
 
     const duration = Date.now() - startTime;
-    console.log(`✅ Calculated ${itemIds.length} items for bin ${binId} in ${duration}ms`);
+    console.log(
+      `✅ Calculated ${itemIds.length} items for bin ${binId} in ${duration}ms`,
+    );
 
     return finalResults;
   } catch (error) {
     console.error(`❌ Error calculating stock for bin ${binId}:`, error);
     // Return zeros but track the error
     const results: { [key: string]: number } = {};
-    itemIds.forEach(itemId => {
+    itemIds.forEach((itemId) => {
       results[`${itemId}-${binId}`] = 0;
     });
     return results;
@@ -1685,7 +1801,7 @@ const calculateStockForBin = async (
 // Original method as fallback
 const calculateBulkStockOriginal = async (
   stockItemIds: string[],
-  binIds: string[]
+  binIds: string[],
 ): Promise<{ [key: string]: number }> => {
   const results: { [key: string]: number } = {};
 
@@ -1703,19 +1819,89 @@ const calculateBulkStockOriginal = async (
 
 // Input validation helper
 const validateStockInput = (stockItemId: string, binId: string): void => {
-  if (!stockItemId || typeof stockItemId !== 'string') {
-    throw new Error('Invalid stockItemId: must be a non-empty string');
+  if (!stockItemId || typeof stockItemId !== "string") {
+    throw new Error("Invalid stockItemId: must be a non-empty string");
   }
-  if (!binId || typeof binId !== 'string') {
-    throw new Error('Invalid binId: must be a non-empty string');
+  if (!binId || typeof binId !== "string") {
+    throw new Error("Invalid binId: must be a non-empty string");
   }
 };
+
+type StockRegistryBulkUpdate = {
+  stockItemId: string;
+  binId: string;
+  quantity: number;
+  transactionType:
+    | "procurement"
+    | "dispatch"
+    | "transfer"
+    | "inventoryCount"
+    | "adjustment";
+  transactionId: string;
+  isAbsolute?: boolean;
+};
+
+const validBulkRegistryTransactionTypes = new Set([
+  "procurement",
+  "dispatch",
+  "transfer",
+  "inventoryCount",
+  "adjustment",
+]);
+
+const validateBulkStockRegistryUpdate = (
+  update: any,
+): update is StockRegistryBulkUpdate => {
+  if (!update || typeof update !== "object") {
+    return false;
+  }
+
+  if (!update.stockItemId || typeof update.stockItemId !== "string") {
+    return false;
+  }
+
+  if (!update.binId || typeof update.binId !== "string") {
+    return false;
+  }
+
+  if (typeof update.quantity !== "number" || Number.isNaN(update.quantity)) {
+    return false;
+  }
+
+  if (!validBulkRegistryTransactionTypes.has(update.transactionType)) {
+    return false;
+  }
+
+  if (!update.transactionId || typeof update.transactionId !== "string") {
+    return false;
+  }
+
+  if (
+    update.isAbsolute !== undefined &&
+    typeof update.isAbsolute !== "boolean"
+  ) {
+    return false;
+  }
+
+  return true;
+};
+
+const normalizeBulkStockRegistryUpdate = (
+  update: StockRegistryBulkUpdate,
+): StockRegistryBulkUpdate => ({
+  stockItemId: update.stockItemId,
+  binId: update.binId,
+  quantity: update.quantity,
+  transactionType: update.transactionType,
+  transactionId: update.transactionId,
+  isAbsolute: update.isAbsolute ?? update.transactionType === "inventoryCount",
+});
 
 // 1. Single item calculation with detailed error reporting
 // Then in the calculateStock function, add validation at the beginning:
 export const calculateStock = async (
   stockItemId: string,
-  binId: string
+  binId: string,
 ): Promise<{ quantity: number; metadata?: any; error?: string }> => {
   const startTime = Date.now();
 
@@ -1723,7 +1909,7 @@ export const calculateStock = async (
     validateStockInput(stockItemId, binId); // Add this line
 
     if (!stockItemId || !binId) {
-      throw new Error('Missing itemId or binId');
+      throw new Error("Missing itemId or binId");
     }
 
     const results = await calculateBulkStock([stockItemId], [binId]);
@@ -1738,15 +1924,15 @@ export const calculateStock = async (
       cacheHit: false, // Will be tracked in calculateBulkStock
       itemsProcessed: 1,
       fromCache: 0,
-      calculated: 1
+      calculated: 1,
     });
 
     return {
       quantity,
       metadata: {
         calculationTime: duration,
-        cached: false
-      }
+        cached: false,
+      },
     };
   } catch (error) {
     const duration = Date.now() - startTime;
@@ -1758,12 +1944,13 @@ export const calculateStock = async (
       itemsProcessed: 1,
       fromCache: 0,
       calculated: 0,
-      error: error instanceof Error ? error.message : 'Unknown error'
+      error: error instanceof Error ? error.message : "Unknown error",
     });
 
     return {
       quantity: 0,
-      error: error instanceof Error ? error.message : 'Failed to calculate stock'
+      error:
+        error instanceof Error ? error.message : "Failed to calculate stock",
     };
   }
 };
@@ -1772,7 +1959,7 @@ export const calculateStock = async (
 export const calculateBulkStock = async (
   stockItemIds: string[],
   binIds: string[],
-  onProgress?: (progress: { stage: string; percentage: number }) => void
+  onProgress?: (progress: { stage: string; percentage: number }) => void,
 ): Promise<{ [key: string]: number }> => {
   const startTime = Date.now();
   const cacheKey = `bulk-${JSON.stringify(stockItemIds.sort())}-${JSON.stringify(binIds.sort())}`;
@@ -1782,12 +1969,14 @@ export const calculateBulkStock = async (
   const releaseLock = await calculationManager.acquireCalculationLock(lockKey);
 
   try {
-    onProgress?.({ stage: 'Starting calculation...', percentage: 0 });
+    onProgress?.({ stage: "Starting calculation...", percentage: 0 });
 
     // Check cache first
-    const cached = getCachedStock(cacheKey) as { [key: string]: number } | undefined;
+    const cached = getCachedStock(cacheKey) as
+      | { [key: string]: number }
+      | undefined;
     if (cached && Object.keys(cached).length > 0) {
-      console.log('📦 Using cached stock data');
+      console.log("📦 Using cached stock data");
 
       trackMetric({
         timestamp: Date.now(),
@@ -1795,10 +1984,10 @@ export const calculateBulkStock = async (
         cacheHit: true,
         itemsProcessed: stockItemIds.length * binIds.length,
         fromCache: stockItemIds.length * binIds.length,
-        calculated: 0
+        calculated: 0,
       });
 
-      onProgress?.({ stage: 'Loaded from cache', percentage: 100 });
+      onProgress?.({ stage: "Loaded from cache", percentage: 100 });
       return cached;
     }
 
@@ -1806,17 +1995,17 @@ export const calculateBulkStock = async (
       return {};
     }
 
-    onProgress?.({ stage: 'Fetching snapshots...', percentage: 10 });
+    onProgress?.({ stage: "Fetching snapshots...", percentage: 10 });
 
     // Fetch ALL snapshots in ONE query
-    onProgress?.({ stage: 'Fetching from registry...', percentage: 10 });
+    onProgress?.({ stage: "Fetching from registry...", percentage: 10 });
 
     // Fetch from single registry document
     const registryQuery = groq`*[_type == "stockRegistry"][0] {
       stockData
     }`;
 
-    const snapshotTimerKey = '🔍 Fetching from registry';
+    const snapshotTimerKey = "🔍 Fetching from registry";
     if (!calculationManager.hasActiveTimer(snapshotTimerKey)) {
       calculationManager.startTimer(snapshotTimerKey);
     }
@@ -1824,14 +2013,17 @@ export const calculateBulkStock = async (
     const registry = await client.fetch(registryQuery);
 
     calculationManager.endTimer(snapshotTimerKey);
-    onProgress?.({ stage: 'Processing registry data...', percentage: 30 });
+    onProgress?.({ stage: "Processing registry data...", percentage: 30 });
 
     // Create a map for O(1) lookup
     const snapshotMap: { [key: string]: number } = {};
 
     if (registry?.stockData?.items) {
       registry.stockData.items.forEach((item: any) => {
-        if (stockItemIds.includes(item.stockItemId) && item.binQuantities?.bins) {
+        if (
+          stockItemIds.includes(item.stockItemId) &&
+          item.binQuantities?.bins
+        ) {
           item.binQuantities.bins.forEach((bin: any) => {
             if (binIds.includes(bin.binId)) {
               const key = `${item.stockItemId}-${bin.binId}`;
@@ -1859,14 +2051,16 @@ export const calculateBulkStock = async (
       }
     }
 
-    onProgress?.({ stage: 'Calculating missing data...', percentage: 50 });
+    onProgress?.({ stage: "Calculating missing data...", percentage: 50 });
 
     // Calculate missing snapshots in BULK
     // Create zero snapshots for ALL missing combinations first
     // In calculateBulkStock function, replace the section that creates zero snapshots:
 
     if (itemsWithoutSnapshots.length > 0) {
-      console.log(`🔍 Calculating ${itemsWithoutSnapshots.length} missing snapshots in BULK...`);
+      console.log(
+        `🔍 Calculating ${itemsWithoutSnapshots.length} missing snapshots in BULK...`,
+      );
 
       // Prepare bulk updates for ALL missing items
       const bulkUpdates = itemsWithoutSnapshots.map(({ itemId, binId }) => {
@@ -1875,35 +2069,46 @@ export const calculateBulkStock = async (
           stockItemId: itemId,
           binId: binId,
           quantity: 0, // Placeholder - will be set after calculation
-          transactionType: 'inventoryCount' as const,
-          transactionId: 'bulk-calculation',
-          isAbsolute: true
+          transactionType: "inventoryCount" as const,
+          transactionId: "bulk-calculation",
+          isAbsolute: true,
         };
       });
 
       // Calculate stock for all missing items in parallel
-      const calculationPromises = itemsWithoutSnapshots.map(async ({ itemId, binId }) => {
-        try {
-          const calculatedStock = await calculateStockExactLogic(itemId, binId, false);
-          return { itemId, binId, calculatedStock, success: true };
-        } catch (error) {
-          console.error(`❌ Failed to calculate for ${itemId}-${binId}:`, error);
-          return { itemId, binId, calculatedStock: 0, success: false };
-        }
-      });
+      const calculationPromises = itemsWithoutSnapshots.map(
+        async ({ itemId, binId }) => {
+          try {
+            const calculatedStock = await calculateStockExactLogic(
+              itemId,
+              binId,
+              false,
+            );
+            return { itemId, binId, calculatedStock, success: true };
+          } catch (error) {
+            console.error(
+              `❌ Failed to calculate for ${itemId}-${binId}:`,
+              error,
+            );
+            return { itemId, binId, calculatedStock: 0, success: false };
+          }
+        },
+      );
 
       const calculationResults = await Promise.all(calculationPromises);
 
       // Update bulk updates with calculated values
-      const validUpdates = bulkUpdates.map(update => {
-        const result = calculationResults.find(r =>
-          r.itemId === update.stockItemId && r.binId === update.binId
-        );
-        if (result?.success) {
-          update.quantity = result.calculatedStock;
-        }
-        return update;
-      }).filter(update => update.quantity !== undefined);
+      const validUpdates = bulkUpdates
+        .map((update) => {
+          const result = calculationResults.find(
+            (r) => r.itemId === update.stockItemId && r.binId === update.binId,
+          );
+          if (result?.success) {
+            update.quantity = result.calculatedStock;
+          }
+          return update;
+        })
+        .filter((update) => update.quantity !== undefined);
 
       // Use BULK update for all missing snapshots
       if (validUpdates.length > 0) {
@@ -1911,32 +2116,40 @@ export const calculateBulkStock = async (
 
         const bulkResult = await bulkUpdateStockSnapshots(validUpdates, {
           onProgress: (progress) => {
-            if (progress.processed % 10 === 0 || progress.processed === progress.total) {
-              console.log(`📈 Bulk progress: ${progress.processed}/${progress.total} items`);
+            if (
+              progress.processed % 10 === 0 ||
+              progress.processed === progress.total
+            ) {
+              console.log(
+                `📈 Bulk progress: ${progress.processed}/${progress.total} items`,
+              );
             }
           },
-          maxRetries: 2
+          maxRetries: 2,
         });
 
         // Update results with calculated values
-        calculationResults.forEach(result => {
+        calculationResults.forEach((result) => {
           if (result.success) {
             const key = `${result.itemId}-${result.binId}`;
             results[key] = result.calculatedStock;
           }
         });
 
-        console.log(`✅ Bulk created ${bulkResult.success} snapshots, ${bulkResult.failed} failed`);
+        console.log(
+          `✅ Bulk created ${bulkResult.success} snapshots, ${bulkResult.failed} failed`,
+        );
       }
     }
 
-    onProgress?.({ stage: 'Finalizing results...', percentage: 95 });
+    onProgress?.({ stage: "Finalizing results...", percentage: 95 });
 
     // Cache the results
     setCachedStock(cacheKey, results as StockDataCache);
 
     const duration = Date.now() - startTime;
-    const fromCache = Object.keys(results).length - itemsWithoutSnapshots.length;
+    const fromCache =
+      Object.keys(results).length - itemsWithoutSnapshots.length;
 
     trackMetric({
       timestamp: Date.now(),
@@ -1944,23 +2157,23 @@ export const calculateBulkStock = async (
       cacheHit: false,
       itemsProcessed: stockItemIds.length * binIds.length,
       fromCache,
-      calculated: itemsWithoutSnapshots.length
+      calculated: itemsWithoutSnapshots.length,
     });
 
-    console.log('✅ OPTIMIZED calculateBulkStock complete');
-    console.log('📈 Results summary:', {
+    console.log("✅ OPTIMIZED calculateBulkStock complete");
+    console.log("📈 Results summary:", {
       totalCombinations: Object.keys(results).length,
       fromSnapshots: fromCache,
       calculated: itemsWithoutSnapshots.length,
-      nonZeroResults: Object.values(results).filter(v => v > 0).length,
-      duration: `${duration}ms`
+      nonZeroResults: Object.values(results).filter((v) => v > 0).length,
+      duration: `${duration}ms`,
     });
 
-    onProgress?.({ stage: 'Complete', percentage: 100 });
+    onProgress?.({ stage: "Complete", percentage: 100 });
 
     return results;
   } catch (error) {
-    console.error('❌ Error in optimized calculateBulkStock:', error);
+    console.error("❌ Error in optimized calculateBulkStock:", error);
 
     trackMetric({
       timestamp: Date.now(),
@@ -1969,24 +2182,24 @@ export const calculateBulkStock = async (
       itemsProcessed: stockItemIds.length * binIds.length,
       fromCache: 0,
       calculated: 0,
-      error: error instanceof Error ? error.message : 'Unknown error'
+      error: error instanceof Error ? error.message : "Unknown error",
     });
 
-    onProgress?.({ stage: 'Error occurred', percentage: 100 });
+    onProgress?.({ stage: "Error occurred", percentage: 100 });
 
     // Create registry if it doesn't exist
-    console.log('🔄 No registry found, creating new one...');
+    console.log("🔄 No registry found, creating new one...");
     try {
       const newRegistry = await writeClient.create({
-        _type: 'stockRegistry',
-        title: 'Stock Registry v1',
+        _type: "stockRegistry",
+        title: "Stock Registry v1",
         stockData: { items: [] },
         lastUpdated: new Date().toISOString(),
-        version: 1
+        version: 1,
       });
-      console.log('✅ Created new registry:', newRegistry._id);
+      console.log("✅ Created new registry:", newRegistry._id);
     } catch (createError) {
-      console.error('❌ Failed to create registry:', createError);
+      console.error("❌ Failed to create registry:", createError);
     }
 
     // Return zeros for now (next load will have registry)
@@ -2005,15 +2218,17 @@ export const calculateBulkStock = async (
 // 3. Enhanced getBinStock with metadata
 export const getBinStock = async (
   stockItemIds: string[],
-  binId: string
+  binId: string,
 ): Promise<{
   [key: string]: {
     quantity: number;
     lastUpdated?: string;
-    confidence?: 'high' | 'medium' | 'low';
-  }
+    confidence?: "high" | "medium" | "low";
+  };
 }> => {
-  console.log(`📊 Getting bin stock for ${stockItemIds.length} items in bin ${binId}`);
+  console.log(
+    `📊 Getting bin stock for ${stockItemIds.length} items in bin ${binId}`,
+  );
 
   if (!binId || stockItemIds.length === 0) {
     return {};
@@ -2040,8 +2255,10 @@ export const getBinStock = async (
 
     enhancedResults[itemId] = {
       quantity,
-      lastUpdated: cached?.timestamp ? new Date(cached.timestamp).toISOString() : undefined,
-      confidence: cached?.metadata?.confidence
+      lastUpdated: cached?.timestamp
+        ? new Date(cached.timestamp).toISOString()
+        : undefined,
+      confidence: cached?.metadata?.confidence,
     };
   }
 
@@ -2052,9 +2269,9 @@ export const getBinStock = async (
 // 4. Transaction-based calculation (for validation)
 export const calculateBulkStockFromTransactions = async (
   stockItemIds: string[],
-  binIds: string[]
+  binIds: string[],
 ): Promise<{ [key: string]: number }> => {
-  console.log('🧮 Starting calculateBulkStockFromTransactions...');
+  console.log("🧮 Starting calculateBulkStockFromTransactions...");
 
   if (stockItemIds.length === 0 || binIds.length === 0) {
     return {};
@@ -2126,16 +2343,16 @@ export const calculateBulkStockFromTransactions = async (
 
     const data = await client.fetch(query, { binIds, stockItemIds });
 
-    console.log('📊 Transaction data counts:');
-    console.log('- Goods Receipts:', data.goodsReceipts?.length || 0);
-    console.log('- Dispatches:', data.dispatches?.length || 0);
-    console.log('- Transfers:', data.transfers?.length || 0);
-    console.log('- Inventory Counts:', data.allCounts?.length || 0);
+    console.log("📊 Transaction data counts:");
+    console.log("- Goods Receipts:", data.goodsReceipts?.length || 0);
+    console.log("- Dispatches:", data.dispatches?.length || 0);
+    console.log("- Transfers:", data.transfers?.length || 0);
+    console.log("- Inventory Counts:", data.allCounts?.length || 0);
 
     // Initialize with 0
     const results: { [key: string]: Decimal } = {};
-    binIds.forEach(binId => {
-      stockItemIds.forEach(itemId => {
+    binIds.forEach((binId) => {
+      stockItemIds.forEach((itemId) => {
         const key = `${itemId}-${binId}`;
         results[key] = new Decimal(0);
       });
@@ -2143,7 +2360,12 @@ export const calculateBulkStockFromTransactions = async (
 
     // Build transaction timeline
     const allTransactions: Array<{
-      type: 'goodsReceipt' | 'dispatch' | 'transferOut' | 'transferIn' | 'inventoryCount';
+      type:
+        | "goodsReceipt"
+        | "dispatch"
+        | "transferOut"
+        | "transferIn"
+        | "inventoryCount";
       date: string;
       binId: string;
       itemId: string;
@@ -2155,11 +2377,11 @@ export const calculateBulkStockFromTransactions = async (
       receipt.receivedItems?.forEach((item: any) => {
         if (item.itemId && stockItemIds.includes(item.itemId)) {
           allTransactions.push({
-            type: 'goodsReceipt',
+            type: "goodsReceipt",
             date: receipt.receiptDate,
             binId: receipt.binId,
             itemId: item.itemId,
-            quantity: item.receivedQuantity || 0
+            quantity: item.receivedQuantity || 0,
           });
         }
       });
@@ -2170,11 +2392,11 @@ export const calculateBulkStockFromTransactions = async (
       dispatch.dispatchedItems?.forEach((item: any) => {
         if (item.itemId && stockItemIds.includes(item.itemId)) {
           allTransactions.push({
-            type: 'dispatch',
+            type: "dispatch",
             date: dispatch.dispatchDate,
             binId: dispatch.binId,
             itemId: item.itemId,
-            quantity: item.dispatchedQuantity || 0
+            quantity: item.dispatchedQuantity || 0,
           });
         }
       });
@@ -2193,21 +2415,21 @@ export const calculateBulkStockFromTransactions = async (
             // For EACH bin, add ONE transaction
             if (transfer.fromBinId && binIds.includes(transfer.fromBinId)) {
               allTransactions.push({
-                type: 'transferOut',
+                type: "transferOut",
                 date: transfer.transferDate,
                 binId: transfer.fromBinId,
                 itemId: item.itemId,
-                quantity: quantity
+                quantity: quantity,
               });
             }
 
             if (transfer.toBinId && binIds.includes(transfer.toBinId)) {
               allTransactions.push({
-                type: 'transferIn',
+                type: "transferIn",
                 date: transfer.transferDate,
                 binId: transfer.toBinId,
                 itemId: item.itemId,
-                quantity: quantity
+                quantity: quantity,
               });
             }
           }
@@ -2220,18 +2442,20 @@ export const calculateBulkStockFromTransactions = async (
       count.countedItems?.forEach((item: any) => {
         if (item.itemId && stockItemIds.includes(item.itemId)) {
           allTransactions.push({
-            type: 'inventoryCount',
+            type: "inventoryCount",
             date: count.countDate,
             binId: count.binId,
             itemId: item.itemId,
-            quantity: item.countedQuantity || 0
+            quantity: item.countedQuantity || 0,
           });
         }
       });
     });
 
     // Sort by date
-    allTransactions.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    allTransactions.sort(
+      (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
+    );
 
     // In calculateBulkStockFromTransactions function, replace the processing logic:
     console.log(`📊 Processing ${allTransactions.length} transactions...`);
@@ -2250,15 +2474,15 @@ export const calculateBulkStockFromTransactions = async (
       }
 
       switch (tx.type) {
-        case 'goodsReceipt':
-        case 'transferIn':
+        case "goodsReceipt":
+        case "transferIn":
           results[key] = results[key].plus(tx.quantity);
           break;
-        case 'dispatch':
-        case 'transferOut':
+        case "dispatch":
+        case "transferOut":
           results[key] = results[key].minus(tx.quantity); // ALLOW NEGATIVE
           break;
-        case 'inventoryCount':
+        case "inventoryCount":
           // Inventory count SETS the absolute value
           results[key] = new Decimal(tx.quantity);
           lastCountMap[key] = new Date(tx.date); // Update last count date
@@ -2272,11 +2496,10 @@ export const calculateBulkStockFromTransactions = async (
       finalResults[key] = results[key].toNumber();
     }
 
-    console.log('✅ calculateBulkStockFromTransactions complete');
+    console.log("✅ calculateBulkStockFromTransactions complete");
     return finalResults;
-
   } catch (error) {
-    console.error('❌ Error in calculateBulkStockFromTransactions:', error);
+    console.error("❌ Error in calculateBulkStockFromTransactions:", error);
     return {};
   }
 };
@@ -2284,9 +2507,11 @@ export const calculateBulkStockFromTransactions = async (
 async function fallbackToIndividualUpdates(
   countedItems: any[],
   transaction: any,
-  transactionId: string
+  transactionId: string,
 ): Promise<void> {
-  console.log(`🔄 Falling back to batched individual updates for ${countedItems.length} items`);
+  console.log(
+    `🔄 Falling back to batched individual updates for ${countedItems.length} items`,
+  );
 
   const BATCH_SIZE = 5;
   const MAX_RETRIES = 2;
@@ -2295,7 +2520,9 @@ async function fallbackToIndividualUpdates(
     const batch = countedItems.slice(i, i + BATCH_SIZE);
     const batchNumber = Math.floor(i / BATCH_SIZE) + 1;
 
-    console.log(`📦 Processing fallback batch ${batchNumber} (${batch.length} items)`);
+    console.log(
+      `📦 Processing fallback batch ${batchNumber} (${batch.length} items)`,
+    );
 
     let retryCount = 0;
     let batchCompleted = false;
@@ -2310,35 +2537,35 @@ async function fallbackToIndividualUpdates(
             groq`*[_type == "stockSnapshot" && 
                             stockItem._ref == $itemId && 
                             bin._ref == $binId][0]`,
-            { itemId: item.stockItemId, binId: transaction.bin }
+            { itemId: item.stockItemId, binId: transaction.bin },
           );
 
           const snapshotData: any = {
-            _type: 'stockSnapshot',
+            _type: "stockSnapshot",
             stockItem: {
-              _type: 'reference',
+              _type: "reference",
               _ref: item.stockItemId,
             },
             bin: {
-              _type: 'reference',
+              _type: "reference",
               _ref: transaction.bin,
             },
             quantity: countedQty,
-            lastUpdated: new Date().toISOString()
+            lastUpdated: new Date().toISOString(),
           };
 
           if (existing) {
-            await writeClient
-              .patch(existing._id)
-              .set(snapshotData)
-              .commit();
+            await writeClient.patch(existing._id).set(snapshotData).commit();
           } else {
             await writeClient.create(snapshotData);
           }
 
           // Update cache
           const cacheKey = `${item.stockItemId}-${transaction.bin}`;
-          snapshotCache.set(cacheKey, countedQty, { confidence: 'high', fallback: true });
+          snapshotCache.set(cacheKey, countedQty, {
+            confidence: "high",
+            fallback: true,
+          });
           invalidateStockCache(item.stockItemId);
 
           return { success: true, itemId: item.stockItemId };
@@ -2347,16 +2574,21 @@ async function fallbackToIndividualUpdates(
         await Promise.all(batchPromises);
         console.log(`  ✅ Fallback batch ${batchNumber} completed`);
         batchCompleted = true;
-
       } catch (batchError) {
         console.error(`❌ Fallback batch ${batchNumber} failed:`, batchError);
         retryCount++;
 
         if (retryCount <= MAX_RETRIES) {
-          console.log(`  🔄 Retrying batch (attempt ${retryCount}/${MAX_RETRIES})`);
-          await new Promise(resolve => setTimeout(resolve, 1000 * retryCount));
+          console.log(
+            `  🔄 Retrying batch (attempt ${retryCount}/${MAX_RETRIES})`,
+          );
+          await new Promise((resolve) =>
+            setTimeout(resolve, 1000 * retryCount),
+          );
         } else {
-          console.error(`❌ Fallback batch ${batchNumber} failed after ${MAX_RETRIES} retries`);
+          console.error(
+            `❌ Fallback batch ${batchNumber} failed after ${MAX_RETRIES} retries`,
+          );
           batchCompleted = true;
         }
       }
@@ -2364,7 +2596,7 @@ async function fallbackToIndividualUpdates(
 
     // Small delay between batches
     if (i + BATCH_SIZE < countedItems.length) {
-      await new Promise(resolve => setTimeout(resolve, 200));
+      await new Promise((resolve) => setTimeout(resolve, 200));
     }
   }
 
@@ -2380,14 +2612,19 @@ export async function bulkUpdateStockRegistry(
     stockItemId: string;
     binId: string;
     quantity: number; // Can be positive (add), negative (deduct), or absolute (set)
-    transactionType: 'procurement' | 'dispatch' | 'transfer' | 'inventoryCount' | 'adjustment';
+    transactionType:
+      | "procurement"
+      | "dispatch"
+      | "transfer"
+      | "inventoryCount"
+      | "adjustment";
     transactionId: string;
     isAbsolute?: boolean; // true for inventoryCount (SET value), false for others (ADJUST value)
   }>,
   options?: {
     onProgress?: (progress: { processed: number; total: number }) => void;
     maxRetries?: number;
-  }
+  },
 ): Promise<{
   success: number;
   failed: number;
@@ -2396,20 +2633,41 @@ export async function bulkUpdateStockRegistry(
   const maxRetries = options?.maxRetries || 3;
 
   if (!updates || updates.length === 0) {
-    console.log('📭 No updates to process');
+    console.log("📭 No updates to process");
     return { success: 0, failed: 0 };
   }
 
-  console.log(`🚀 Starting bulk registry update for ${updates.length} items (${updates[0]?.transactionType})`);
-
-  // Remove duplicates (same item-bin combination)
-  const uniqueUpdates = Array.from(
-    new Map(
-      updates.map(update => [`${update.stockItemId}-${update.binId}`, update])
-    ).values()
+  console.log(
+    `🚀 Starting bulk registry update for ${updates.length} items (${updates[0]?.transactionType})`,
   );
 
-  console.log(`📊 Unique items to update: ${uniqueUpdates.length} (from ${updates.length} total)`);
+  const validUpdates: StockRegistryBulkUpdate[] = [];
+  const validationResults: { success: number; failed: number } = {
+    success: 0,
+    failed: 0,
+  };
+
+  updates.forEach((update, index) => {
+    if (!validateBulkStockRegistryUpdate(update)) {
+      console.warn(
+        `⚠️ Invalid stock registry update at index ${index}:`,
+        update,
+      );
+      validationResults.failed += 1;
+      return;
+    }
+
+    validUpdates.push(normalizeBulkStockRegistryUpdate(update));
+  });
+
+  if (validUpdates.length === 0) {
+    console.log("⚠️ No valid registry updates after validation");
+    return validationResults;
+  }
+
+  console.log(
+    `📊 Valid updates to apply: ${validUpdates.length} (failed validation: ${validationResults.failed})`,
+  );
 
   let retryCount = 0;
 
@@ -2437,13 +2695,23 @@ export async function bulkUpdateStockRegistry(
       });
 
       // 3. Apply all updates
-      const results: { success: number; failed: number } = { success: 0, failed: 0 };
+      const results: { success: number; failed: number } = {
+        success: 0,
+        failed: 0,
+      };
 
-      for (let i = 0; i < uniqueUpdates.length; i++) {
-        const update = uniqueUpdates[i];
+      for (let i = 0; i < validUpdates.length; i++) {
+        const update = validUpdates[i];
 
         try {
-          const { stockItemId, binId, quantity, transactionType, transactionId, isAbsolute } = update;
+          const {
+            stockItemId,
+            binId,
+            quantity,
+            transactionType,
+            transactionId,
+            isAbsolute,
+          } = update;
 
           // Find or create item entry
           let itemEntry = itemMap.get(stockItemId);
@@ -2461,13 +2729,15 @@ export async function bulkUpdateStockRegistry(
 
           // Find or create bin entry
           const item = itemEntry.item;
-          let binEntry = item.binQuantities?.bins?.find((b: any) => b.binId === binId);
+          let binEntry = item.binQuantities?.bins?.find(
+            (b: any) => b.binId === binId,
+          );
 
           // Calculate new quantity
           let currentQty = binEntry?.quantity || 0;
           let newQuantity: number;
 
-          if (isAbsolute || transactionType === 'inventoryCount') {
+          if (isAbsolute || transactionType === "inventoryCount") {
             // SET absolute value
             newQuantity = quantity;
           } else {
@@ -2475,8 +2745,10 @@ export async function bulkUpdateStockRegistry(
             newQuantity = currentQty + quantity;
 
             // Safety check for dispatches
-            if (transactionType === 'dispatch' && newQuantity < 0) {
-              console.warn(`⚠️ Dispatch would make stock negative: ${stockItemId} in ${binId}`);
+            if (transactionType === "dispatch" && newQuantity < 0) {
+              console.warn(
+                `⚠️ Dispatch would make stock negative: ${stockItemId} in ${binId}`,
+              );
               newQuantity = 0; // or handle differently
             }
           }
@@ -2492,7 +2764,9 @@ export async function bulkUpdateStockRegistry(
 
           if (binEntry) {
             // Update existing bin
-            const binIndex = item.binQuantities.bins.findIndex((b: any) => b.binId === binId);
+            const binIndex = item.binQuantities.bins.findIndex(
+              (b: any) => b.binId === binId,
+            );
             if (binIndex !== -1) {
               item.binQuantities.bins[binIndex] = updatedBinEntry;
             }
@@ -2510,9 +2784,9 @@ export async function bulkUpdateStockRegistry(
           // Update cache
           const cacheKey = `${stockItemId}-${binId}`;
           snapshotCache.set(cacheKey, newQuantity, {
-            confidence: 'high',
+            confidence: "high",
             transactionType,
-            timestamp: Date.now()
+            timestamp: Date.now(),
           });
           invalidateStockCache(stockItemId);
           invalidateStockCache(binId);
@@ -2523,12 +2797,14 @@ export async function bulkUpdateStockRegistry(
           if (options?.onProgress && i % 10 === 0) {
             options.onProgress({
               processed: i + 1,
-              total: uniqueUpdates.length,
+              total: validUpdates.length,
             });
           }
-
         } catch (error) {
-          console.error(`❌ Failed to process update for ${update.stockItemId}-${update.binId}:`, error);
+          console.error(
+            `❌ Failed to process update for ${update.stockItemId}-${update.binId}:`,
+            error,
+          );
           results.failed++;
         }
       }
@@ -2541,54 +2817,72 @@ export async function bulkUpdateStockRegistry(
       };
 
       if (existingRegistry) {
-        await writeClient
-          .patch(existingRegistry._id)
-          .set(updateData)
-          .commit();
+        await writeClient.patch(existingRegistry._id).set(updateData).commit();
       } else {
         await writeClient.create({
-          _type: 'stockRegistry',
-          title: 'Stock Registry v1',
+          _type: "stockRegistry",
+          title: "Stock Registry v1",
           ...updateData,
         });
       }
 
       const duration = Date.now() - startTime;
-      console.log(`✅ Registry bulk update: ${results.success} succeeded, ${results.failed} failed in ${duration}ms`);
+      console.log(
+        `✅ Registry bulk update: ${results.success} succeeded, ${results.failed} failed in ${duration}ms`,
+      );
 
-      return results;
-
+      const finalResults = {
+        success: results.success,
+        failed: results.failed + validationResults.failed,
+      };
+      return finalResults;
     } catch (error) {
-      console.error(`❌ Registry bulk update failed (attempt ${retryCount + 1}/${maxRetries + 1}):`, error);
+      console.error(
+        `❌ Registry bulk update failed (attempt ${retryCount + 1}/${maxRetries + 1}):`,
+        error,
+      );
       retryCount++;
 
       if (retryCount <= maxRetries) {
         console.log(`🔄 Retrying in ${1000 * retryCount}ms...`);
-        await new Promise(resolve => setTimeout(resolve, 1000 * retryCount));
+        await new Promise((resolve) => setTimeout(resolve, 1000 * retryCount));
       } else {
         throw error;
       }
     }
   }
 
-  return { success: 0, failed: uniqueUpdates.length };
+  return { success: 0, failed: validUpdates.length + validationResults.failed };
 }
 
 // 5. Hook to update snapshots when transactions occur
 // 5. Hook to update snapshots when transactions occur
 export async function updateStockForTransaction(
-  transactionType: 'dispatch' | 'transfer' | 'inventoryCount' | 'procurement' | 'adjustment',
-  transactionId: string
+  transactionType:
+    | "dispatch"
+    | "transfer"
+    | "inventoryCount"
+    | "procurement"
+    | "adjustment",
+  transactionId: string,
 ) {
   try {
-    console.log(`📊 Updating stock snapshots for ${transactionType}:`, transactionId);
+    console.log(
+      `📊 Updating stock snapshots for ${transactionType}:`,
+      transactionId,
+    );
 
     let transaction: any;
     let bulkUpdates: Array<{
       stockItemId: string;
       binId: string;
       quantity: number;
-      transactionType: 'dispatch' | 'transfer' | 'inventoryCount' | 'procurement' | 'adjustment'; // ← SPECIFIC
+      transactionType:
+        | "dispatch"
+        | "transfer"
+        | "inventoryCount"
+        | "procurement"
+        | "adjustment"; // ← SPECIFIC
       transactionId: string;
       isAbsolute?: boolean;
     }> = [];
@@ -2596,7 +2890,7 @@ export async function updateStockForTransaction(
     // ========== FETCH TRANSACTION DATA BASED ON TYPE ==========
     switch (transactionType) {
       // ========== PROCUREMENT (Goods Receipt) ==========
-      case 'procurement':
+      case "procurement":
         transaction = await client.fetch(
           groq`*[_type == "GoodsReceipt" && _id == $id][0] {
             _id,
@@ -2608,7 +2902,7 @@ export async function updateStockForTransaction(
                 "binId": receivingBin._ref
             }
           }`,
-          { id: transactionId }
+          { id: transactionId },
         );
 
         if (!transaction) {
@@ -2616,21 +2910,27 @@ export async function updateStockForTransaction(
           return;
         }
 
-        if (!transaction.receivedItems || transaction.receivedItems.length === 0) {
-          console.error(`❌ Goods receipt ${transaction.receiptNumber} has no received items`);
+        if (
+          !transaction.receivedItems ||
+          transaction.receivedItems.length === 0
+        ) {
+          console.error(
+            `❌ Goods receipt ${transaction.receiptNumber} has no received items`,
+          );
           return;
         }
 
         // Prepare bulk updates - POSITIVE quantities (adding stock)
         bulkUpdates = transaction.receivedItems
           .filter((item: any) => {
-            const isValid = item.stockItemId && item.binId && item.receivedQuantity > 0;
+            const isValid =
+              item.stockItemId && item.binId && item.receivedQuantity > 0;
             if (!isValid) {
-              console.warn('⚠️ Skipping invalid procurement item:', {
+              console.warn("⚠️ Skipping invalid procurement item:", {
                 stockItemId: item.stockItemId,
                 binId: item.binId,
                 quantity: item.receivedQuantity,
-                receiptNumber: transaction.receiptNumber
+                receiptNumber: transaction.receiptNumber,
               });
             }
             return isValid;
@@ -2639,16 +2939,18 @@ export async function updateStockForTransaction(
             stockItemId: item.stockItemId,
             binId: item.binId,
             quantity: item.receivedQuantity || 0, // POSITIVE (adding stock)
-            transactionType: 'procurement',
+            transactionType: "procurement",
             transactionId,
-            isAbsolute: false // ADJUSTMENT: add to current stock
+            isAbsolute: false, // ADJUSTMENT: add to current stock
           }));
 
-        console.log(`📋 Processing ${bulkUpdates.length} procurement items for receipt ${transaction.receiptNumber}`);
+        console.log(
+          `📋 Processing ${bulkUpdates.length} procurement items for receipt ${transaction.receiptNumber}`,
+        );
         break;
 
       // ========== DISPATCH ==========
-      case 'dispatch':
+      case "dispatch":
         transaction = await client.fetch(
           groq`*[_type == "DispatchLog" && _id == $id][0] {
             _id,
@@ -2661,7 +2963,7 @@ export async function updateStockForTransaction(
                 "sourceBinId": sourceBin._ref
             }
           }`,
-          { id: transactionId }
+          { id: transactionId },
         );
 
         if (!transaction) {
@@ -2672,13 +2974,16 @@ export async function updateStockForTransaction(
         // Prepare bulk updates - NEGATIVE quantities (removing stock)
         bulkUpdates = transaction.dispatchedItems
           .filter((item: any) => {
-            const isValid = item.stockItemId && item.sourceBinId && item.dispatchedQuantity > 0;
+            const isValid =
+              item.stockItemId &&
+              item.sourceBinId &&
+              item.dispatchedQuantity > 0;
             if (!isValid) {
-              console.warn('⚠️ Skipping invalid dispatch item:', {
+              console.warn("⚠️ Skipping invalid dispatch item:", {
                 stockItemId: item.stockItemId,
                 sourceBinId: item.sourceBinId,
                 quantity: item.dispatchedQuantity,
-                dispatchNumber: transaction.dispatchNumber
+                dispatchNumber: transaction.dispatchNumber,
               });
             }
             return isValid;
@@ -2687,16 +2992,18 @@ export async function updateStockForTransaction(
             stockItemId: item.stockItemId,
             binId: item.sourceBinId,
             quantity: -(item.dispatchedQuantity || 0), // NEGATIVE (removing stock)
-            transactionType: 'dispatch',
+            transactionType: "dispatch",
             transactionId,
-            isAbsolute: false // ADJUSTMENT: subtract from current stock
+            isAbsolute: false, // ADJUSTMENT: subtract from current stock
           }));
 
-        console.log(`📋 Processing ${bulkUpdates.length} dispatch items for ${transaction.dispatchNumber}`);
+        console.log(
+          `📋 Processing ${bulkUpdates.length} dispatch items for ${transaction.dispatchNumber}`,
+        );
         break;
 
       // ========== TRANSFER ==========
-      case 'transfer':
+      case "transfer":
         transaction = await client.fetch(
           groq`*[_type == "InternalTransfer" && _id == $id][0] {
             _id,
@@ -2709,7 +3016,7 @@ export async function updateStockForTransaction(
               transferredQuantity
             }
           }`,
-          { id: transactionId }
+          { id: transactionId },
         );
 
         if (!transaction) {
@@ -2718,18 +3025,20 @@ export async function updateStockForTransaction(
         }
 
         // Make sure the transfer has status 'completed'
-        if (transaction.status !== 'completed') {
-          console.warn(`⚠️ Transfer ${transactionId} is not completed (status: ${transaction.status}). Stock won't be updated.`);
+        if (transaction.status !== "completed") {
+          console.warn(
+            `⚠️ Transfer ${transactionId} is not completed (status: ${transaction.status}). Stock won't be updated.`,
+          );
           return;
         }
 
         // Debug log
-        console.log('🔍 TRANSFER DEBUG:', {
+        console.log("🔍 TRANSFER DEBUG:", {
           transactionId,
           fromBin: transaction.fromBin,
           toBin: transaction.toBin,
           transferredItems: transaction.transferredItems,
-          status: transaction.status
+          status: transaction.status,
         });
 
         // Prepare bulk updates for BOTH source and destination bins
@@ -2743,9 +3052,9 @@ export async function updateStockForTransaction(
                 stockItemId: item.stockItemId,
                 binId: transaction.fromBin,
                 quantity: -(item.transferredQuantity || 0), // NEGATIVE
-                transactionType: 'transfer',
+                transactionType: "transfer",
                 transactionId,
-                isAbsolute: false
+                isAbsolute: false,
               });
             }
 
@@ -2755,16 +3064,16 @@ export async function updateStockForTransaction(
                 stockItemId: item.stockItemId,
                 binId: transaction.toBin,
                 quantity: item.transferredQuantity || 0, // POSITIVE
-                transactionType: 'transfer',
+                transactionType: "transfer",
                 transactionId,
-                isAbsolute: false
+                isAbsolute: false,
               });
             }
           } else {
-            console.warn('⚠️ Skipping invalid transfer item:', {
+            console.warn("⚠️ Skipping invalid transfer item:", {
               stockItemId: item.stockItemId,
               transferredQuantity: item.transferredQuantity,
-              transferNumber: transaction.transferNumber
+              transferNumber: transaction.transferNumber,
             });
           }
         });
@@ -2773,20 +3082,22 @@ export async function updateStockForTransaction(
         bulkUpdates = bulkUpdates.filter((item: any) => {
           const isValid = item.stockItemId && item.binId;
           if (!isValid) {
-            console.warn('⚠️ Skipping transfer item with missing IDs:', {
+            console.warn("⚠️ Skipping transfer item with missing IDs:", {
               stockItemId: item.stockItemId,
               binId: item.binId,
-              quantity: item.quantity
+              quantity: item.quantity,
             });
           }
           return isValid;
         });
 
-        console.log(`📋 Processing ${bulkUpdates.length} transfer items for ${transaction.transferNumber}`);
+        console.log(
+          `📋 Processing ${bulkUpdates.length} transfer items for ${transaction.transferNumber}`,
+        );
         break;
 
       // ========== INVENTORY COUNT ==========
-      case 'inventoryCount':
+      case "inventoryCount":
         transaction = await client.fetch(
           groq`*[_type == "InventoryCount" && _id == $id][0] {
             _id,
@@ -2798,7 +3109,7 @@ export async function updateStockForTransaction(
               countedQuantity
             }
           }`,
-          { id: transactionId }
+          { id: transactionId },
         );
 
         if (!transaction) {
@@ -2807,8 +3118,10 @@ export async function updateStockForTransaction(
         }
 
         // Only update stock if count is completed
-        if (transaction.status !== 'completed') {
-          console.log(`⚠️ Inventory count ${transactionId} is not completed (status: ${transaction.status}). Stock won't be updated.`);
+        if (transaction.status !== "completed") {
+          console.log(
+            `⚠️ Inventory count ${transactionId} is not completed (status: ${transaction.status}). Stock won't be updated.`,
+          );
           return;
         }
 
@@ -2817,10 +3130,10 @@ export async function updateStockForTransaction(
           .filter((item: any) => {
             const isValid = item.stockItemId && item.countedQuantity >= 0;
             if (!isValid) {
-              console.warn('⚠️ Skipping invalid inventory count item:', {
+              console.warn("⚠️ Skipping invalid inventory count item:", {
                 stockItemId: item.stockItemId,
                 countedQuantity: item.countedQuantity,
-                countNumber: transaction.countNumber
+                countNumber: transaction.countNumber,
               });
             }
             return isValid;
@@ -2829,12 +3142,14 @@ export async function updateStockForTransaction(
             stockItemId: item.stockItemId,
             binId: transaction.bin,
             quantity: item.countedQuantity || 0,
-            transactionType: 'inventoryCount',
+            transactionType: "inventoryCount",
             transactionId,
-            isAbsolute: true // SET absolute value (not adjustment)
+            isAbsolute: true, // SET absolute value (not adjustment)
           }));
 
-        console.log(`📋 Processing ${bulkUpdates.length} inventory count items for ${transaction.countNumber}`);
+        console.log(
+          `📋 Processing ${bulkUpdates.length} inventory count items for ${transaction.countNumber}`,
+        );
         break;
 
       default:
@@ -2844,42 +3159,56 @@ export async function updateStockForTransaction(
 
     // ========== EXECUTE BULK UPDATE ==========
     if (bulkUpdates.length === 0) {
-      console.log(`⚠️ No valid items to update for ${transactionType} ${transactionId}`);
+      console.log(
+        `⚠️ No valid items to update for ${transactionType} ${transactionId}`,
+      );
       return;
     }
 
-    console.log(`🚀 Processing ${bulkUpdates.length} items for ${transactionType} ${transactionId}`);
+    console.log(
+      `🚀 Processing ${bulkUpdates.length} items for ${transactionType} ${transactionId}`,
+    );
 
     // Use the bulk update function
     // Use the new registry-based bulk update
     const result = await bulkUpdateStockRegistry(bulkUpdates, {
       onProgress: (progress) => {
         // Optional: Could emit event for UI progress bar here
-        if (progress.processed % 10 === 0 || progress.processed === progress.total) {
-          console.log(`📈 Progress: ${progress.processed}/${progress.total} items processed`);
+        if (
+          progress.processed % 10 === 0 ||
+          progress.processed === progress.total
+        ) {
+          console.log(
+            `📈 Progress: ${progress.processed}/${progress.total} items processed`,
+          );
         }
       },
-      maxRetries: 3
+      maxRetries: 3,
     });
 
     // Log final results
-    const successRate = (result.success / bulkUpdates.length * 100).toFixed(1);
+    const successRate = ((result.success / bulkUpdates.length) * 100).toFixed(
+      1,
+    );
 
-    console.log(`🎉 ${transactionType.toUpperCase()} ${transactionId} PROCESSING COMPLETE:`, {
-      totalItems: bulkUpdates.length,
-      successful: result.success,
-      failed: result.failed,
-      successRate: `${successRate}%`,
-      transactionType,
-      transactionId
-    });
+    console.log(
+      `🎉 ${transactionType.toUpperCase()} ${transactionId} PROCESSING COMPLETE:`,
+      {
+        totalItems: bulkUpdates.length,
+        successful: result.success,
+        failed: result.failed,
+        successRate: `${successRate}%`,
+        transactionType,
+        transactionId,
+      },
+    );
 
     // Report failed items if any
     if (result.failed > 0) {
       console.warn(`⚠️ ${result.failed} items failed to update:`, {
         failedItems: result,
         transactionType,
-        transactionId
+        transactionId,
       });
 
       // Optionally send notification/alert to admins
@@ -2887,13 +3216,15 @@ export async function updateStockForTransaction(
     }
 
     // Invalidate all related caches for immediate UI updates
-    bulkUpdates.forEach(update => {
+    bulkUpdates.forEach((update) => {
       invalidateStockCache(update.stockItemId);
       invalidateStockCache(update.binId);
     });
-
   } catch (error) {
-    console.error(`❌ CRITICAL ERROR: Failed to update stock for ${transactionType} ${transactionId}:`, error);
+    console.error(
+      `❌ CRITICAL ERROR: Failed to update stock for ${transactionType} ${transactionId}:`,
+      error,
+    );
 
     // Re-throw to let calling code handle the error (e.g., show toast to user)
     throw new Error(`Failed to update stock for ${transactionType}: ${error}`);
@@ -2902,12 +3233,12 @@ export async function updateStockForTransaction(
 
 // 6. Initialize all stock snapshots (run once)
 export const initializeAllStockSnapshots = async (): Promise<void> => {
-  console.log('🏁 Initializing all stock snapshots...');
+  console.log("🏁 Initializing all stock snapshots...");
 
   // Get all stock items and bins
   const [stockItems, bins] = await Promise.all([
     client.fetch(groq`*[_type == "StockItem"] { _id, name }`),
-    client.fetch(groq`*[_type == "Bin"] { _id, name }`)
+    client.fetch(groq`*[_type == "Bin"] { _id, name }`),
   ]);
 
   const stockItemIds = stockItems.map((item: any) => item._id);
@@ -2922,16 +3253,25 @@ export const initializeAllStockSnapshots = async (): Promise<void> => {
   for (const binId of binIds) {
     for (const itemId of stockItemIds) {
       try {
-        const stock = await calculateStockFromTransactions(itemId, binId, false);
-        await updateStockSnapshot(itemId, binId, stock, 'inventoryCount', null);
+        const stock = await calculateStockFromTransactions(
+          itemId,
+          binId,
+          false,
+        );
+        await updateStockSnapshot(itemId, binId, stock, "inventoryCount", null);
         count++;
 
         if (count % 100 === 0 || count === total) {
           const percentage = Math.round((count / total) * 100);
-          console.log(`  📈 Created ${count}/${total} snapshots (${percentage}%)...`);
+          console.log(
+            `  📈 Created ${count}/${total} snapshots (${percentage}%)...`,
+          );
         }
       } catch (error) {
-        console.error(`❌ Failed to initialize snapshot for ${itemId}-${binId}:`, error);
+        console.error(
+          `❌ Failed to initialize snapshot for ${itemId}-${binId}:`,
+          error,
+        );
       }
     }
   }
@@ -2942,7 +3282,7 @@ export const initializeAllStockSnapshots = async (): Promise<void> => {
 // 7. Validate stock consistency (debugging tool)
 export const validateStockConsistency = async (
   stockItemIds: string[],
-  binIds: string[]
+  binIds: string[],
 ): Promise<{
   valid: boolean;
   issues: Array<{
@@ -2953,14 +3293,17 @@ export const validateStockConsistency = async (
     difference: number;
   }>;
 }> => {
-  console.log('🔍 Validating stock consistency...');
+  console.log("🔍 Validating stock consistency...");
 
   try {
     // Get stock from snapshots
     const snapshotResults = await calculateBulkStock(stockItemIds, binIds);
 
     // Calculate stock from transactions
-    const calculatedResults = await calculateBulkStockFromTransactions(stockItemIds, binIds);
+    const calculatedResults = await calculateBulkStockFromTransactions(
+      stockItemIds,
+      binIds,
+    );
 
     const issues: Array<{
       itemId: string;
@@ -2976,29 +3319,32 @@ export const validateStockConsistency = async (
       const calculatedStock = calculatedResults[key] || 0;
       const difference = Math.abs(snapshotStock - calculatedStock);
 
-      if (difference > 0.01) { // Allow for floating-point precision
-        const [itemId, binId] = key.split('-');
+      if (difference > 0.01) {
+        // Allow for floating-point precision
+        const [itemId, binId] = key.split("-");
         issues.push({
           itemId,
           binId,
           snapshotStock,
           calculatedStock,
-          difference
+          difference,
         });
       }
     }
 
-    console.log(`✅ Stock consistency check complete. Issues: ${issues.length}`);
+    console.log(
+      `✅ Stock consistency check complete. Issues: ${issues.length}`,
+    );
 
     return {
       valid: issues.length === 0,
-      issues
+      issues,
     };
   } catch (error) {
-    console.error('❌ Error validating stock consistency:', error);
+    console.error("❌ Error validating stock consistency:", error);
     return {
       valid: false,
-      issues: []
+      issues: [],
     };
   }
 };
@@ -3007,9 +3353,11 @@ export const validateStockConsistency = async (
 export const getStockAsOfDate = async (
   stockItemIds: string[],
   binIds: string[],
-  asOfDate: Date
+  asOfDate: Date,
 ): Promise<{ [key: string]: number }> => {
-  console.log(`📅 Getting stock as of ${asOfDate.toISOString().split('T')[0]}...`);
+  console.log(
+    `📅 Getting stock as of ${asOfDate.toISOString().split("T")[0]}...`,
+  );
 
   if (stockItemIds.length === 0 || binIds.length === 0) {
     return {};
@@ -3020,8 +3368,8 @@ export const getStockAsOfDate = async (
     const results: { [key: string]: number } = {};
 
     // Initialize all combinations with 0
-    binIds.forEach(binId => {
-      stockItemIds.forEach(itemId => {
+    binIds.forEach((binId) => {
+      stockItemIds.forEach((itemId) => {
         results[`${itemId}-${binId}`] = 0;
       });
     });
@@ -3098,10 +3446,14 @@ export const getStockAsOfDate = async (
         }
       }`;
 
-      const data = await client.fetch(binQuery, { binId, dateString, stockItemIds });
+      const data = await client.fetch(binQuery, {
+        binId,
+        dateString,
+        stockItemIds,
+      });
 
       // Process each item in the bin
-      stockItemIds.forEach(itemId => {
+      stockItemIds.forEach((itemId) => {
         const key = `${itemId}-${binId}`;
         let stock = 0;
         let lastCountDate: Date | null = null;
@@ -3159,8 +3511,9 @@ export const getStockAsOfDate = async (
         });
 
         // Process inventory counts (in chronological order)
-        const sortedCounts = (data.allCounts || []).sort((a: any, b: any) =>
-          new Date(a.countDate).getTime() - new Date(b.countDate).getTime()
+        const sortedCounts = (data.allCounts || []).sort(
+          (a: any, b: any) =>
+            new Date(a.countDate).getTime() - new Date(b.countDate).getTime(),
         );
 
         sortedCounts.forEach((count: any) => {
@@ -3180,34 +3533,47 @@ export const getStockAsOfDate = async (
       console.timeEnd(`📥 Processing bin ${binId}`);
     }
 
-    console.log('✅ Historical stock calculation complete');
+    console.log("✅ Historical stock calculation complete");
     return results;
-
   } catch (error) {
-    console.error('❌ Error in getStockAsOfDate:', error);
+    console.error("❌ Error in getStockAsOfDate:", error);
     return {};
   }
 };
 
 // 9. Force refresh stock snapshot for specific item-bin
-export const refreshStockSnapshot = async (stockItemId: string, binId: string): Promise<number> => {
+export const refreshStockSnapshot = async (
+  stockItemId: string,
+  binId: string,
+): Promise<number> => {
   console.log(`🔄 Refreshing stock snapshot for ${stockItemId} in ${binId}`);
 
-  const calculatedStock = await calculateStockFromTransactions(stockItemId, binId);
-  await updateStockSnapshot(stockItemId, binId, calculatedStock, 'refresh', null);
+  const calculatedStock = await calculateStockFromTransactions(
+    stockItemId,
+    binId,
+  );
+  await updateStockSnapshot(
+    stockItemId,
+    binId,
+    calculatedStock,
+    "refresh",
+    null,
+  );
 
   console.log(`✅ Snapshot refreshed: ${calculatedStock}`);
   return calculatedStock;
 };
 
 // 10. Get all stock snapshots (admin/debugging)
-export const getAllStockSnapshots = async (): Promise<Array<{
-  _id: string;
-  stockItem: { _ref: string };
-  bin: { _ref: string };
-  quantity: number;
-  lastUpdated: string;
-}>> => {
+export const getAllStockSnapshots = async (): Promise<
+  Array<{
+    _id: string;
+    stockItem: { _ref: string };
+    bin: { _ref: string };
+    quantity: number;
+    lastUpdated: string;
+  }>
+> => {
   const query = groq`*[_type == "stockSnapshot"] {
     _id,
     stockItem->{ _id, name },
@@ -3222,10 +3588,10 @@ export const getAllStockSnapshots = async (): Promise<Array<{
 // 11. Get stock with freshness indicator
 export const getStockWithFreshness = async (
   stockItemId: string,
-  binId: string
+  binId: string,
 ): Promise<{
   quantity: number;
-  freshness: 'fresh' | 'stale' | 'calculating';
+  freshness: "fresh" | "stale" | "calculating";
   lastUpdated?: string;
   cached: boolean;
 }> => {
@@ -3234,13 +3600,14 @@ export const getStockWithFreshness = async (
 
   if (cached) {
     const age = Date.now() - cached.timestamp;
-    const freshness = age < 10000 ? 'fresh' : age < 30000 ? 'stale' : 'calculating';
+    const freshness =
+      age < 10000 ? "fresh" : age < 30000 ? "stale" : "calculating";
 
     return {
       quantity: cached.quantity,
       freshness,
       lastUpdated: new Date(cached.timestamp).toISOString(),
-      cached: true
+      cached: true,
     };
   }
 
@@ -3249,8 +3616,8 @@ export const getStockWithFreshness = async (
 
   return {
     quantity: result.quantity,
-    freshness: 'fresh',
-    cached: false
+    freshness: "fresh",
+    cached: false,
   };
 };
 
@@ -3262,14 +3629,14 @@ export const batchUpdateStock = async (
     quantity: number;
     transactionType: string;
     transactionId: string;
-  }>
+  }>,
 ): Promise<void> => {
   console.log(`🔄 Batch updating ${updates.length} stock items`);
 
   // Group by transaction to optimize database operations
   const updatesByTransaction = new Map<string, typeof updates>();
 
-  updates.forEach(update => {
+  updates.forEach((update) => {
     if (!updatesByTransaction.has(update.transactionId)) {
       updatesByTransaction.set(update.transactionId, []);
     }
@@ -3280,29 +3647,35 @@ export const batchUpdateStock = async (
   for (const [transactionId, transactionUpdates] of updatesByTransaction) {
     try {
       // Optimistic cache updates
-      transactionUpdates.forEach(update => {
+      transactionUpdates.forEach((update) => {
         const cacheKey = `${update.stockItemId}-${update.binId}`;
-        snapshotCache.set(cacheKey, update.quantity, { confidence: 'high' });
+        snapshotCache.set(cacheKey, update.quantity, { confidence: "high" });
       });
 
       // Batch database operations
-      const operations = transactionUpdates.map(update =>
-        writeClient.patch(`stockSnapshot-${update.stockItemId}-${update.binId}`)
+      const operations = transactionUpdates.map((update) =>
+        writeClient
+          .patch(`stockSnapshot-${update.stockItemId}-${update.binId}`)
           .set({
             quantity: update.quantity,
-            lastUpdated: new Date().toISOString()
+            lastUpdated: new Date().toISOString(),
           })
-          .commit()
+          .commit(),
       );
 
       await Promise.all(operations);
 
-      console.log(`✅ Batch updated ${transactionUpdates.length} items for transaction ${transactionId}`);
+      console.log(
+        `✅ Batch updated ${transactionUpdates.length} items for transaction ${transactionId}`,
+      );
     } catch (error) {
-      console.error(`❌ Failed to batch update for transaction ${transactionId}:`, error);
+      console.error(
+        `❌ Failed to batch update for transaction ${transactionId}:`,
+        error,
+      );
 
       // Revert optimistic updates on error
-      transactionUpdates.forEach(update => {
+      transactionUpdates.forEach((update) => {
         const cacheKey = `${update.stockItemId}-${update.binId}`;
         snapshotCache.delete(cacheKey);
       });
@@ -3316,7 +3689,7 @@ export const batchUpdateStock = async (
 export const getLowStockPredictions = async (
   stockItemIds: string[],
   binIds: string[],
-  daysAhead: number = 7
+  daysAhead: number = 7,
 ): Promise<{
   [key: string]: {
     current: number;
@@ -3324,9 +3697,11 @@ export const getLowStockPredictions = async (
     confidence: number;
     willRunOut: boolean;
     estimatedDaysUntilOut: number | null;
-  }
+  };
 }> => {
-  console.log(`🔮 Predicting low stock for ${stockItemIds.length} items over ${daysAhead} days`);
+  console.log(
+    `🔮 Predicting low stock for ${stockItemIds.length} items over ${daysAhead} days`,
+  );
 
   const results: any = {};
 
@@ -3342,15 +3717,17 @@ export const getLowStockPredictions = async (
       // TODO: Implement actual prediction algorithm based on historical data
       // For now, return placeholder predictions
       const averageDailyUsage = 5; // Placeholder
-      const predicted = Math.max(0, current - (averageDailyUsage * daysAhead));
-      const estimatedDaysUntilOut = current > 0 ? Math.floor(current / averageDailyUsage) : 0;
+      const predicted = Math.max(0, current - averageDailyUsage * daysAhead);
+      const estimatedDaysUntilOut =
+        current > 0 ? Math.floor(current / averageDailyUsage) : 0;
 
       results[key] = {
         current,
         predicted,
         confidence: 0.7, // Placeholder confidence score
         willRunOut: predicted <= 0,
-        estimatedDaysUntilOut: estimatedDaysUntilOut > 0 ? estimatedDaysUntilOut : null
+        estimatedDaysUntilOut:
+          estimatedDaysUntilOut > 0 ? estimatedDaysUntilOut : null,
       };
     }
   }
@@ -3373,9 +3750,11 @@ export const getStockHistory = async (
   stockItemId: string,
   binId: string,
   startDate: Date,
-  endDate: Date
+  endDate: Date,
 ): Promise<StockHistoryEntry[]> => {
-  console.log(`📊 Getting stock history for ${stockItemId} in ${binId} from ${startDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]}`);
+  console.log(
+    `📊 Getting stock history for ${stockItemId} in ${binId} from ${startDate.toISOString().split("T")[0]} to ${endDate.toISOString().split("T")[0]}`,
+  );
 
   try {
     const query = groq`{
@@ -3464,11 +3843,16 @@ export const getStockHistory = async (
       stockItemId,
       binId,
       startDate: startDate.toISOString(),
-      endDate: endDate.toISOString()
+      endDate: endDate.toISOString(),
     });
 
     // Build timeline of events
-    const events: Array<{ date: Date; type: string; quantity: number; description?: string }> = [];
+    const events: Array<{
+      date: Date;
+      type: string;
+      quantity: number;
+      description?: string;
+    }> = [];
 
     // Add all events to timeline
     data.goodsReceipts?.forEach((receipt: any) => {
@@ -3476,9 +3860,9 @@ export const getStockHistory = async (
         if (item.itemId === stockItemId) {
           events.push({
             date: new Date(receipt.receiptDate),
-            type: 'goodsReceipt',
+            type: "goodsReceipt",
             quantity: item.receivedQuantity || 0,
-            description: `Goods Receipt #${receipt.receiptNumber}`
+            description: `Goods Receipt #${receipt.receiptNumber}`,
           });
         }
       });
@@ -3489,9 +3873,9 @@ export const getStockHistory = async (
         if (item.itemId === stockItemId) {
           events.push({
             date: new Date(dispatch.dispatchDate),
-            type: 'dispatch',
+            type: "dispatch",
             quantity: -(item.dispatchedQuantity || 0),
-            description: `Dispatch #${dispatch.dispatchNumber}`
+            description: `Dispatch #${dispatch.dispatchNumber}`,
           });
         }
       });
@@ -3502,9 +3886,9 @@ export const getStockHistory = async (
         if (item.itemId === stockItemId) {
           events.push({
             date: new Date(transfer.transferDate),
-            type: 'transferOut',
+            type: "transferOut",
             quantity: -(item.transferredQuantity || 0),
-            description: `Transfer Out #${transfer.transferNumber}`
+            description: `Transfer Out #${transfer.transferNumber}`,
           });
         }
       });
@@ -3515,9 +3899,9 @@ export const getStockHistory = async (
         if (item.itemId === stockItemId) {
           events.push({
             date: new Date(transfer.transferDate),
-            type: 'transferIn',
+            type: "transferIn",
             quantity: item.transferredQuantity || 0,
-            description: `Transfer In #${transfer.transferNumber}`
+            description: `Transfer In #${transfer.transferNumber}`,
           });
         }
       });
@@ -3528,9 +3912,9 @@ export const getStockHistory = async (
         if (item.itemId === stockItemId) {
           events.push({
             date: new Date(count.countDate),
-            type: 'inventoryCount',
+            type: "inventoryCount",
             quantity: item.countedQuantity || 0,
-            description: `Inventory Count #${count.countNumber}`
+            description: `Inventory Count #${count.countNumber}`,
           });
         }
       });
@@ -3545,12 +3929,16 @@ export const getStockHistory = async (
     let currentDate = new Date(startDate);
 
     // Add initial stock (get stock at start date)
-    const initialStock = await getStockAsOfDate([stockItemId], [binId], startDate);
+    const initialStock = await getStockAsOfDate(
+      [stockItemId],
+      [binId],
+      startDate,
+    );
     currentStock = initialStock[`${stockItemId}-${binId}`] || 0;
 
     history.push({
-      date: currentDate.toISOString().split('T')[0],
-      stock: currentStock
+      date: currentDate.toISOString().split("T")[0],
+      stock: currentStock,
     });
 
     // Process each day
@@ -3558,14 +3946,16 @@ export const getStockHistory = async (
     currentDate.setDate(currentDate.getDate() + 1);
 
     while (currentDate <= endDate) {
-      const dayEvents: StockHistoryEntry['events'] = [];
+      const dayEvents: StockHistoryEntry["events"] = [];
 
       // Apply any events that happened on this day
-      while (eventIndex < events.length &&
-        events[eventIndex].date.toISOString().split('T')[0] <= currentDate.toISOString().split('T')[0]) {
-
+      while (
+        eventIndex < events.length &&
+        events[eventIndex].date.toISOString().split("T")[0] <=
+          currentDate.toISOString().split("T")[0]
+      ) {
         const event = events[eventIndex];
-        if (event.type === 'inventoryCount') {
+        if (event.type === "inventoryCount") {
           currentStock = event.quantity;
         } else {
           currentStock = currentStock + event.quantity;
@@ -3574,16 +3964,16 @@ export const getStockHistory = async (
         dayEvents.push({
           type: event.type,
           quantity: event.quantity,
-          description: event.description
+          description: event.description,
         });
 
         eventIndex++;
       }
 
       history.push({
-        date: currentDate.toISOString().split('T')[0],
+        date: currentDate.toISOString().split("T")[0],
         stock: currentStock,
-        events: dayEvents.length > 0 ? dayEvents : undefined
+        events: dayEvents.length > 0 ? dayEvents : undefined,
       });
 
       currentDate.setDate(currentDate.getDate() + 1);
@@ -3591,9 +3981,8 @@ export const getStockHistory = async (
 
     console.log(`✅ Generated ${history.length} days of stock history`);
     return history;
-
   } catch (error) {
-    console.error('❌ Error in getStockHistory:', error);
+    console.error("❌ Error in getStockHistory:", error);
     return [];
   }
 };
@@ -3677,7 +4066,7 @@ export async function revertPreviousStockChanges(transactionId: string) {
 // 16. Utility function to clear all active timers (debugging)
 export const clearAllTimers = (): void => {
   calculationManager.clearAllTimers();
-  console.log('🧹 Cleared all active timers');
+  console.log("🧹 Cleared all active timers");
 };
 
 // 17. Utility function to get active calculation status (debugging)
@@ -3686,19 +4075,21 @@ export const getActiveCalculations = (): string[] => {
 };
 
 // Atomic cache update to prevent race conditions
-const atomicCacheUpdate = async (key: string, quantity: number, metadata?: any): Promise<void> => {
+const atomicCacheUpdate = async (
+  key: string,
+  quantity: number,
+  metadata?: any,
+): Promise<void> => {
   const mutex = getMutexForKey(`cache-${key}`);
   return mutex.runExclusive(() => {
     snapshotCache.set(key, quantity, metadata);
   });
 };
 
-
-
 // Emergency verification and fix function
 export const verifyAndFixStock = async (
   stockItemId: string,
-  binId: string
+  binId: string,
 ): Promise<{ before: number; after: number; fixed: boolean }> => {
   console.log(`🔍 Verifying ${stockItemId} in ${binId}...`);
 
@@ -3711,32 +4102,34 @@ export const verifyAndFixStock = async (
   const fixedStock = await calculateStockFromTransactionsFixed(
     stockItemId,
     binId,
-    true
+    true,
   );
 
   // If different, fix it
   if (Math.abs(currentStock - fixedStock) > 0.001) {
-    console.log(`⚠️ Fixing ${stockItemId} in ${binId}: ${currentStock} → ${fixedStock}`);
+    console.log(
+      `⚠️ Fixing ${stockItemId} in ${binId}: ${currentStock} → ${fixedStock}`,
+    );
 
     await updateStockSnapshot(
       stockItemId,
       binId,
       fixedStock,
-      'verification_fix',
-      null
+      "verification_fix",
+      null,
     );
 
     return {
       before: currentStock,
       after: fixedStock,
-      fixed: true
+      fixed: true,
     };
   }
 
   return {
     before: currentStock,
     after: fixedStock,
-    fixed: false
+    fixed: false,
   };
 };
 
@@ -3744,7 +4137,7 @@ export const verifyAndFixStock = async (
 const calculateStockFromTransactionsFixed = async (
   stockItemId: string,
   binId: string,
-  verbose: boolean = true
+  verbose: boolean = true,
 ): Promise<number> => {
   if (verbose) {
     console.log(`🧮 Fixed calculation for ${stockItemId} in ${binId}`);
@@ -3832,9 +4225,13 @@ const calculateStockFromTransactionsFixed = async (
 
       // Log specific receipts for debugging
       data.goodsReceipts?.forEach((receipt: any, index: number) => {
-        const item = receipt.receivedItems?.find((i: any) => i.itemId === stockItemId);
+        const item = receipt.receivedItems?.find(
+          (i: any) => i.itemId === stockItemId,
+        );
         if (item) {
-          console.log(`  Receipt ${index}: ${receipt.receiptNumber} - ${item.quantity} units (${receipt.status})`);
+          console.log(
+            `  Receipt ${index}: ${receipt.receiptNumber} - ${item.quantity} units (${receipt.status})`,
+          );
         }
       });
     }
@@ -3842,7 +4239,12 @@ const calculateStockFromTransactionsFixed = async (
     // Combine all events into one timeline
     const allEvents: Array<{
       _id: string;
-      type: 'goodsReceipt' | 'dispatch' | 'transferOut' | 'transferIn' | 'inventoryCount';
+      type:
+        | "goodsReceipt"
+        | "dispatch"
+        | "transferOut"
+        | "transferIn"
+        | "inventoryCount";
       date: Date;
       documentNumber: string;
       status: string;
@@ -3857,11 +4259,11 @@ const calculateStockFromTransactionsFixed = async (
         if (item.itemId === stockItemId && item.quantity > 0) {
           allEvents.push({
             _id: receipt._id,
-            type: 'goodsReceipt',
+            type: "goodsReceipt",
             date: new Date(receipt.receiptDate),
             documentNumber: receipt.receiptNumber,
             status: receipt.status,
-            itemQuantity: item.quantity || 0
+            itemQuantity: item.quantity || 0,
           });
         }
       });
@@ -3873,11 +4275,11 @@ const calculateStockFromTransactionsFixed = async (
         if (item.itemId === stockItemId && item.quantity > 0) {
           allEvents.push({
             _id: dispatch._id,
-            type: 'dispatch',
+            type: "dispatch",
             date: new Date(dispatch.dispatchDate),
             documentNumber: dispatch.dispatchNumber,
             status: dispatch.evidenceStatus || dispatch.status,
-            itemQuantity: -(item.quantity || 0) // Negative for outbound
+            itemQuantity: -(item.quantity || 0), // Negative for outbound
           });
         }
       });
@@ -3891,13 +4293,13 @@ const calculateStockFromTransactionsFixed = async (
           if (transfer.fromBinId === binId) {
             allEvents.push({
               _id: transfer._id,
-              type: 'transferOut',
+              type: "transferOut",
               date: new Date(transfer.transferDate),
               documentNumber: transfer.transferNumber,
               status: transfer.status,
               itemQuantity: -(item.quantity || 0), // Negative for outbound
               fromBinId: transfer.fromBinId,
-              toBinId: transfer.toBinId
+              toBinId: transfer.toBinId,
             });
           }
 
@@ -3905,13 +4307,13 @@ const calculateStockFromTransactionsFixed = async (
           if (transfer.toBinId === binId) {
             allEvents.push({
               _id: transfer._id,
-              type: 'transferIn',
+              type: "transferIn",
               date: new Date(transfer.transferDate),
               documentNumber: transfer.transferNumber,
               status: transfer.status,
               itemQuantity: item.quantity || 0, // Positive for inbound
               fromBinId: transfer.fromBinId,
-              toBinId: transfer.toBinId
+              toBinId: transfer.toBinId,
             });
           }
         }
@@ -3924,11 +4326,11 @@ const calculateStockFromTransactionsFixed = async (
         if (item.itemId === stockItemId) {
           allEvents.push({
             _id: count._id,
-            type: 'inventoryCount',
+            type: "inventoryCount",
             date: new Date(count.countDate),
             documentNumber: count.countNumber,
             status: count.status,
-            itemQuantity: item.quantity || 0
+            itemQuantity: item.quantity || 0,
           });
         }
       });
@@ -3940,8 +4342,10 @@ const calculateStockFromTransactionsFixed = async (
     if (verbose && allEvents.length > 0) {
       console.log(`📅 Timeline of ${allEvents.length} events:`);
       allEvents.forEach((event, index) => {
-        const dateStr = event.date.toISOString().split('T')[0];
-        console.log(`  ${index + 1}. ${dateStr} - ${event.type} ${event.documentNumber}: ${event.itemQuantity > 0 ? '+' : ''}${event.itemQuantity}`);
+        const dateStr = event.date.toISOString().split("T")[0];
+        console.log(
+          `  ${index + 1}. ${dateStr} - ${event.type} ${event.documentNumber}: ${event.itemQuantity > 0 ? "+" : ""}${event.itemQuantity}`,
+        );
       });
     }
 
@@ -3957,7 +4361,9 @@ const calculateStockFromTransactionsFixed = async (
       // Skip if we've already processed this event
       if (processedEventIds.has(event._id)) {
         if (verbose) {
-          console.log(`⚠️ Skipping duplicate event: ${event.type} ${event.documentNumber} (${event._id})`);
+          console.log(
+            `⚠️ Skipping duplicate event: ${event.type} ${event.documentNumber} (${event._id})`,
+          );
         }
         continue;
       }
@@ -3965,9 +4371,15 @@ const calculateStockFromTransactionsFixed = async (
       processedEventIds.add(event._id);
 
       // Skip if before last inventory count (unless it's another count)
-      if (lastCountDate && event.date < lastCountDate && event.type !== 'inventoryCount') {
+      if (
+        lastCountDate &&
+        event.date < lastCountDate &&
+        event.type !== "inventoryCount"
+      ) {
         if (verbose) {
-          console.log(`⏭️ Skipping event before last count: ${event.type} ${event.documentNumber} (${event.date.toISOString().split('T')[0]}) < ${lastCountDate.toISOString().split('T')[0]}`);
+          console.log(
+            `⏭️ Skipping event before last count: ${event.type} ${event.documentNumber} (${event.date.toISOString().split("T")[0]}) < ${lastCountDate.toISOString().split("T")[0]}`,
+          );
         }
         continue;
       }
@@ -3975,39 +4387,47 @@ const calculateStockFromTransactionsFixed = async (
       const stockBefore = stock.toNumber();
 
       switch (event.type) {
-        case 'goodsReceipt':
-        case 'transferIn':
+        case "goodsReceipt":
+        case "transferIn":
           stock = stock.plus(event.itemQuantity);
           if (verbose) {
-            console.log(`📥 ${event.type} ${event.documentNumber}: +${event.itemQuantity} units (${stockBefore} → ${stock.toNumber()})`);
+            console.log(
+              `📥 ${event.type} ${event.documentNumber}: +${event.itemQuantity} units (${stockBefore} → ${stock.toNumber()})`,
+            );
           }
           break;
 
-        case 'dispatch':
-        case 'transferOut':
+        case "dispatch":
+        case "transferOut":
           const dispatchQty = new Decimal(Math.abs(event.itemQuantity));
           if (stock.greaterThanOrEqualTo(dispatchQty)) {
             stock = stock.minus(dispatchQty);
           } else {
             if (verbose) {
-              console.warn(`⚠️ ${event.type} would cause negative stock. Available: ${stock.toNumber()}, ${event.type}: ${dispatchQty.toNumber()}`);
+              console.warn(
+                `⚠️ ${event.type} would cause negative stock. Available: ${stock.toNumber()}, ${event.type}: ${dispatchQty.toNumber()}`,
+              );
             }
             stock = new Decimal(0);
           }
 
           if (verbose) {
-            console.log(`📤 ${event.type} ${event.documentNumber}: ${event.itemQuantity} units (${stockBefore} → ${stock.toNumber()})`);
+            console.log(
+              `📤 ${event.type} ${event.documentNumber}: ${event.itemQuantity} units (${stockBefore} → ${stock.toNumber()})`,
+            );
           }
           break;
 
-        case 'inventoryCount':
+        case "inventoryCount":
           // Count SETS the absolute stock
           stock = new Decimal(event.itemQuantity);
           lastCountDate = event.date;
           lastCountStock = event.itemQuantity;
 
           if (verbose) {
-            console.log(`📋 Inventory Count ${event.documentNumber}: SET to ${event.itemQuantity} units (was ${stockBefore})`);
+            console.log(
+              `📋 Inventory Count ${event.documentNumber}: SET to ${event.itemQuantity} units (was ${stockBefore})`,
+            );
           }
           break;
       }
@@ -4022,7 +4442,9 @@ const calculateStockFromTransactionsFixed = async (
 
         // Check if it's a valid date before calling toISOString
         if (!isNaN(date.getTime())) {
-          console.log(`   📅 Last inventory count: ${date.toISOString().split('T')[0]} (stock: ${lastCountStock})`);
+          console.log(
+            `   📅 Last inventory count: ${date.toISOString().split("T")[0]} (stock: ${lastCountStock})`,
+          );
         } else {
           console.log(`   📅 Last inventory count: Invalid date`);
         }
@@ -4036,13 +4458,11 @@ const calculateStockFromTransactionsFixed = async (
     }
 
     return finalStock;
-
   } catch (error) {
-    console.error('Error in fixed calculation:', error);
+    console.error("Error in fixed calculation:", error);
     return 0;
   }
 };
-
 
 /**
  * 🎯 EXACT CALCULATION LOGIC AS SPECIFIED
@@ -4057,7 +4477,7 @@ const calculateStockFromTransactionsFixed = async (
 export const calculateStockExactLogic = async (
   stockItemId: string,
   binId: string,
-  verbose: boolean = false
+  verbose: boolean = false,
 ): Promise<number> => {
   const startTime = Date.now();
 
@@ -4089,7 +4509,7 @@ export const calculateStockExactLogic = async (
     // Find if this specific item was counted
     for (const count of counts) {
       const countedItem = count.countedItems?.find(
-        (item: any) => item.itemId === stockItemId
+        (item: any) => item.itemId === stockItemId,
       );
 
       if (countedItem) {
@@ -4097,7 +4517,9 @@ export const calculateStockExactLogic = async (
         lastCountDate = new Date(count.countDate);
 
         if (verbose) {
-          console.log(`📋 Found inventory count: ${count.countNumber} on ${count.countDate}`);
+          console.log(
+            `📋 Found inventory count: ${count.countNumber} on ${count.countDate}`,
+          );
           console.log(`   Starting stock: ${startingStock}`);
         }
         break;
@@ -4105,13 +4527,13 @@ export const calculateStockExactLogic = async (
     }
 
     if (verbose && !lastCountDate) {
-      console.log(`📋 No inventory count found for ${stockItemId} in ${binId}, starting from 0`);
+      console.log(
+        `📋 No inventory count found for ${stockItemId} in ${binId}, starting from 0`,
+      );
     }
 
     // STEP 2: Get all transactions AFTER the last count (or all if no count)
-    const dateFilter = lastCountDate
-      ? `&& date > $lastCountDate`
-      : '';
+    const dateFilter = lastCountDate ? `&& date > $lastCountDate` : "";
 
     const transactionsQuery = groq`{
       // Goods receipts INTO this bin
@@ -4182,25 +4604,25 @@ export const calculateStockExactLogic = async (
     // STEP 3: Process ALL transactions in chronological order
     const allTransactions: Array<{
       date: Date;
-      type: 'receipt' | 'dispatch' | 'transferIn' | 'transferOut' | 'count';
+      type: "receipt" | "dispatch" | "transferIn" | "transferOut" | "count";
       quantity: number;
     }> = [];
 
     // --- Add Archived Transactions ---
     try {
       const archived = await getArchivedTransactionsForItem(stockItemId, binId);
-      archived.forEach(tx => {
+      archived.forEach((tx) => {
         if (lastCountDate && new Date(tx.date) <= lastCountDate) return;
-        if (tx.type === 'count') return; // Handled as starting point in count logic
-        
+        if (tx.type === "count") return; // Handled as starting point in count logic
+
         allTransactions.push({
           date: new Date(tx.date),
           type: tx.type as any,
-          quantity: tx.quantity
+          quantity: tx.quantity,
         });
       });
     } catch (e) {
-      console.warn('⚠️ Could not fetch archived transactions:', e);
+      console.warn("⚠️ Could not fetch archived transactions:", e);
     }
 
     // Add receipts
@@ -4209,8 +4631,8 @@ export const calculateStockExactLogic = async (
         if (item.itemId === stockItemId && item.receivedQuantity > 0) {
           allTransactions.push({
             date: new Date(receipt.receiptDate),
-            type: 'receipt',
-            quantity: item.receivedQuantity
+            type: "receipt",
+            quantity: item.receivedQuantity,
           });
         }
       });
@@ -4222,8 +4644,8 @@ export const calculateStockExactLogic = async (
         if (item.itemId === stockItemId && item.dispatchedQuantity > 0) {
           allTransactions.push({
             date: new Date(dispatch.dispatchDate),
-            type: 'dispatch',
-            quantity: -item.dispatchedQuantity // Negative for deduction
+            type: "dispatch",
+            quantity: -item.dispatchedQuantity, // Negative for deduction
           });
         }
       });
@@ -4235,8 +4657,8 @@ export const calculateStockExactLogic = async (
         if (item.itemId === stockItemId && item.transferredQuantity > 0) {
           allTransactions.push({
             date: new Date(transfer.transferDate),
-            type: 'transferIn',
-            quantity: item.transferredQuantity
+            type: "transferIn",
+            quantity: item.transferredQuantity,
           });
         }
       });
@@ -4248,8 +4670,8 @@ export const calculateStockExactLogic = async (
         if (item.itemId === stockItemId && item.transferredQuantity > 0) {
           allTransactions.push({
             date: new Date(transfer.transferDate),
-            type: 'transferOut',
-            quantity: -item.transferredQuantity // Negative for deduction
+            type: "transferOut",
+            quantity: -item.transferredQuantity, // Negative for deduction
           });
         }
       });
@@ -4264,7 +4686,9 @@ export const calculateStockExactLogic = async (
       currentStock = currentStock.plus(tx.quantity);
 
       if (verbose) {
-        console.log(`  ${index + 1}. ${tx.date.toISOString().split('T')[0]} ${tx.type}: ${tx.quantity > 0 ? '+' : ''}${tx.quantity} (${stockBefore} → ${currentStock.toNumber()})`);
+        console.log(
+          `  ${index + 1}. ${tx.date.toISOString().split("T")[0]} ${tx.type}: ${tx.quantity > 0 ? "+" : ""}${tx.quantity} (${stockBefore} → ${currentStock.toNumber()})`,
+        );
       }
     });
 
@@ -4272,19 +4696,24 @@ export const calculateStockExactLogic = async (
 
     if (verbose) {
       const duration = Date.now() - startTime;
-      console.log(`✅ Final stock: ${finalStock} (calculated in ${duration}ms)`);
+      console.log(
+        `✅ Final stock: ${finalStock} (calculated in ${duration}ms)`,
+      );
       console.log(`   Transactions processed: ${allTransactions.length}`);
-      console.log(`   Starting point: ${startingStock} ${lastCountDate ? `(from count on ${lastCountDate.toISOString().split('T')[0]})` : '(no count)'}`);
+      console.log(
+        `   Starting point: ${startingStock} ${lastCountDate ? `(from count on ${lastCountDate.toISOString().split("T")[0]})` : "(no count)"}`,
+      );
     }
 
     return finalStock;
-
   } catch (error) {
-    console.error(`❌ Error in exact calculation for ${stockItemId}-${binId}:`, error);
+    console.error(
+      `❌ Error in exact calculation for ${stockItemId}-${binId}:`,
+      error,
+    );
     return 0;
   }
 };
-
 
 /**
  * 🎯 CORRECT STOCK CALCULATION LOGIC:
@@ -4295,12 +4724,12 @@ export const calculateStockExactLogic = async (
  */
 export const calculateStockWithHistory = async (
   stockItemId: string,
-  binId: string
+  binId: string,
 ): Promise<{
   currentStock: number;
   transactions: Array<{
     date: string;
-    type: 'receipt' | 'dispatch' | 'transferIn' | 'transferOut' | 'count';
+    type: "receipt" | "dispatch" | "transferIn" | "transferOut" | "count";
     documentNumber: string;
     quantity: number;
     runningTotal: number;
@@ -4337,13 +4766,15 @@ export const calculateStockWithHistory = async (
 
     // Find if this specific item was counted
     for (const count of counts) {
-      const countedItem = count.countedItems?.find((item: any) => item.itemId === stockItemId);
+      const countedItem = count.countedItems?.find(
+        (item: any) => item.itemId === stockItemId,
+      );
       if (countedItem) {
         lastCount = {
           date: count.countDate,
           quantity: countedItem.countedQuantity,
           documentNumber: count.countNumber,
-          countId: count._id
+          countId: count._id,
         };
         lastCountDate = new Date(count.countDate);
         break;
@@ -4353,9 +4784,7 @@ export const calculateStockWithHistory = async (
     // STEP 2: Get all transactions that could affect this item-bin
     // If we have a last count, only get transactions AFTER that date
     // If no count, get ALL transactions
-    const dateFilter = lastCountDate
-      ? `&& date > $lastCountDate`
-      : '';
+    const dateFilter = lastCountDate ? `&& date > $lastCountDate` : "";
 
     const transactionQuery = groq`{
       // Goods Receipts that put stock INTO this bin
@@ -4441,7 +4870,7 @@ export const calculateStockWithHistory = async (
     // STEP 3: Process all transactions in chronological order
     const allTransactions: Array<{
       date: Date;
-      type: 'receipt' | 'dispatch' | 'transferIn' | 'transferOut' | 'count';
+      type: "receipt" | "dispatch" | "transferIn" | "transferOut" | "count";
       documentId: string;
       documentNumber: string;
       quantity: number;
@@ -4450,30 +4879,30 @@ export const calculateStockWithHistory = async (
     // --- Add Archived Transactions ---
     try {
       const archived = await getArchivedTransactionsForItem(stockItemId, binId);
-      archived.forEach(tx => {
+      archived.forEach((tx) => {
         // Only include transactions after the last Sanity count if one exists
         if (lastCountDate && new Date(tx.date) <= lastCountDate) return;
-        
+
         allTransactions.push({
           date: new Date(tx.date),
           type: tx.type,
           documentId: `archived-${tx.documentNumber}`,
           documentNumber: tx.documentNumber,
-          quantity: tx.quantity
+          quantity: tx.quantity,
         });
       });
     } catch (e) {
-      console.warn('⚠️ Could not fetch archived transactions:', e);
+      console.warn("⚠️ Could not fetch archived transactions:", e);
     }
 
     // Add the last count as starting point
     if (lastCount) {
       allTransactions.push({
         date: new Date(lastCount.date),
-        type: 'count',
+        type: "count",
         documentId: lastCount.countId,
         documentNumber: `COUNT-${lastCount.documentNumber}`,
-        quantity: lastCount.quantity
+        quantity: lastCount.quantity,
       });
     }
 
@@ -4483,10 +4912,10 @@ export const calculateStockWithHistory = async (
         if (item.itemId === stockItemId && item.binId === binId) {
           allTransactions.push({
             date: new Date(receipt.receiptDate),
-            type: 'receipt',
+            type: "receipt",
             documentId: receipt._id,
             documentNumber: receipt.receiptNumber,
-            quantity: item.receivedQuantity || 0
+            quantity: item.receivedQuantity || 0,
           });
         }
       });
@@ -4498,10 +4927,10 @@ export const calculateStockWithHistory = async (
         if (item.itemId === stockItemId && item.binId === binId) {
           allTransactions.push({
             date: new Date(dispatch.dispatchDate),
-            type: 'dispatch',
+            type: "dispatch",
             documentId: dispatch._id,
             documentNumber: dispatch.dispatchNumber,
-            quantity: -(item.dispatchedQuantity || 0) // NEGATIVE for outbound
+            quantity: -(item.dispatchedQuantity || 0), // NEGATIVE for outbound
           });
         }
       });
@@ -4513,10 +4942,10 @@ export const calculateStockWithHistory = async (
         if (item.itemId === stockItemId) {
           allTransactions.push({
             date: new Date(transfer.transferDate),
-            type: 'transferIn',
+            type: "transferIn",
             documentId: transfer._id,
             documentNumber: transfer.transferNumber,
-            quantity: item.transferredQuantity || 0
+            quantity: item.transferredQuantity || 0,
           });
         }
       });
@@ -4528,10 +4957,10 @@ export const calculateStockWithHistory = async (
         if (item.itemId === stockItemId) {
           allTransactions.push({
             date: new Date(transfer.transferDate),
-            type: 'transferOut',
+            type: "transferOut",
             documentId: transfer._id,
             documentNumber: transfer.transferNumber,
-            quantity: -(item.transferredQuantity || 0) // NEGATIVE for outbound
+            quantity: -(item.transferredQuantity || 0), // NEGATIVE for outbound
           });
         }
       });
@@ -4543,7 +4972,7 @@ export const calculateStockWithHistory = async (
     // STEP 4: Apply transactions with CORRECT logic
     const transactionHistory: Array<{
       date: string;
-      type: 'receipt' | 'dispatch' | 'transferIn' | 'transferOut' | 'count';
+      type: "receipt" | "dispatch" | "transferIn" | "transferOut" | "count";
       documentNumber: string;
       quantity: number;
       runningTotal: number;
@@ -4556,36 +4985,42 @@ export const calculateStockWithHistory = async (
     if (lastCount) {
       transactionHistory.push({
         date: lastCount.date,
-        type: 'count',
+        type: "count",
         documentNumber: `COUNT-${lastCount.documentNumber}`,
         quantity: lastCount.quantity,
         runningTotal: currentStock,
-        isNegative: currentStock < 0
+        isNegative: currentStock < 0,
       });
     }
 
     // Process each transaction
     for (const tx of allTransactions) {
       // Skip the count if we already added it as starting point
-      if (tx.type === 'count' && lastCount && tx.documentId === lastCount.countId) {
+      if (
+        tx.type === "count" &&
+        lastCount &&
+        tx.documentId === lastCount.countId
+      ) {
         continue;
       }
 
       const previousStock = currentStock;
 
       // APPLY THE CORRECT LOGIC:
-      if (tx.type === 'count') {
+      if (tx.type === "count") {
         // Inventory count SETS the absolute value
         currentStock = tx.quantity;
-      } else if (tx.type === 'receipt' || tx.type === 'transferIn') {
+      } else if (tx.type === "receipt" || tx.type === "transferIn") {
         // If stock is negative, reset to 0 then add
         if (currentStock < 0) {
-          console.log(`🔄 Resetting negative stock ${currentStock} to 0, then adding ${tx.quantity}`);
+          console.log(
+            `🔄 Resetting negative stock ${currentStock} to 0, then adding ${tx.quantity}`,
+          );
           currentStock = tx.quantity; // 0 + quantity
         } else {
           currentStock += tx.quantity;
         }
-      } else if (tx.type === 'dispatch' || tx.type === 'transferOut') {
+      } else if (tx.type === "dispatch" || tx.type === "transferOut") {
         // Dispatches and transfers out can make stock negative
         currentStock += tx.quantity; // quantity is negative
       }
@@ -4597,10 +5032,12 @@ export const calculateStockWithHistory = async (
         documentNumber: tx.documentNumber,
         quantity: tx.quantity,
         runningTotal: currentStock,
-        isNegative: currentStock < 0
+        isNegative: currentStock < 0,
       });
 
-      console.log(`📝 ${tx.type} ${tx.documentNumber}: ${tx.quantity > 0 ? '+' : ''}${tx.quantity} (${previousStock} → ${currentStock})`);
+      console.log(
+        `📝 ${tx.type} ${tx.documentNumber}: ${tx.quantity > 0 ? "+" : ""}${tx.quantity} (${previousStock} → ${currentStock})`,
+      );
     }
 
     // STEP 5: Return everything
@@ -4608,34 +5045,35 @@ export const calculateStockWithHistory = async (
       currentStock,
       transactions: transactionHistory,
       summary: {
-        lastCount: lastCount ? {
-          date: lastCount.date,
-          quantity: lastCount.quantity,
-          documentNumber: lastCount.documentNumber
-        } : undefined,
+        lastCount: lastCount
+          ? {
+              date: lastCount.date,
+              quantity: lastCount.quantity,
+              documentNumber: lastCount.documentNumber,
+            }
+          : undefined,
         startingPoint: lastCount
           ? `Inventory Count ${lastCount.documentNumber} on ${new Date(lastCount.date).toLocaleDateString()}`
-          : 'Beginning of records (no inventory count found)',
-        transactionCount: transactionHistory.length
-      }
+          : "Beginning of records (no inventory count found)",
+        transactionCount: transactionHistory.length,
+      },
     };
-
   } catch (error) {
-    console.error('Error in accurate stock calculation:', error);
+    console.error("Error in accurate stock calculation:", error);
     return {
       currentStock: 0,
       transactions: [],
       summary: {
-        startingPoint: 'Error in calculation',
-        transactionCount: 0
-      }
+        startingPoint: "Error in calculation",
+        transactionCount: 0,
+      },
     };
   }
 };
 
 // Update the existing emergency function to use this fixed version
 export const emergencyRecalculateAllStock = async (): Promise<void> => {
-  console.log('🚨 Emergency recalculating ALL stock...');
+  console.log("🚨 Emergency recalculating ALL stock...");
 
   // Get all bins
   const bins = await client.fetch(groq`*[_type == "Bin"] { _id, name }`);
@@ -4654,7 +5092,7 @@ export const emergencyRecalculateAllStock = async (): Promise<void> => {
         const stock = await calculateStockFromTransactionsFixed(
           item._id,
           bin._id,
-          false
+          false,
         );
 
         // Update snapshot
@@ -4662,8 +5100,8 @@ export const emergencyRecalculateAllStock = async (): Promise<void> => {
           item._id,
           bin._id,
           stock,
-          'emergency_fix',
-          null
+          "emergency_fix",
+          null,
         );
 
         fixed++;
@@ -4671,7 +5109,6 @@ export const emergencyRecalculateAllStock = async (): Promise<void> => {
         if (fixed % 50 === 0) {
           console.log(`  Fixed ${fixed} items...`);
         }
-
       } catch (error) {
         errors++;
         console.error(`❌ Error fixing ${item.name} in ${bin.name}:`, error);
@@ -4682,12 +5119,10 @@ export const emergencyRecalculateAllStock = async (): Promise<void> => {
   console.log(`✅ Emergency fix complete: ${fixed} fixed, ${errors} errors`);
 };
 
-
-
 // 18. Diagnostic tool for stock calculation analysis
 export const auditStockCalculations = async (
   stockItemId: string,
-  binId: string
+  binId: string,
 ): Promise<{
   rawTransactions: any[];
   chronologicalCalculation: number;
@@ -4706,7 +5141,8 @@ export const auditStockCalculations = async (
   const issues: string[] = [];
 
   // 1. Get raw transaction data
-  const rawData = await client.fetch(groq`{
+  const rawData = await client.fetch(
+    groq`{
     "goodsReceipts": *[_type == "GoodsReceipt" && receivingBin._ref == $binId] | order(receiptDate asc) {
       _id,
       receiptDate,
@@ -4750,12 +5186,14 @@ export const auditStockCalculations = async (
         countedQuantity
       }
     }
-  }`, { binId, stockItemId });
+  }`,
+    { binId, stockItemId },
+  );
 
   // 2. Flatten and sort all transactions
   const allTransactions: Array<{
     date: Date;
-    type: 'receipt' | 'dispatch' | 'transferOut' | 'transferIn' | 'count';
+    type: "receipt" | "dispatch" | "transferOut" | "transferIn" | "count";
     documentId: string;
     documentNumber: string;
     quantity: number;
@@ -4768,11 +5206,11 @@ export const auditStockCalculations = async (
       if (item.itemId === stockItemId) {
         allTransactions.push({
           date: new Date(receipt.receiptDate),
-          type: 'receipt',
+          type: "receipt",
           documentId: receipt._id,
           documentNumber: receipt.receiptNumber,
           quantity: item.receivedQuantity || 0,
-          status: receipt.status
+          status: receipt.status,
         });
       }
     });
@@ -4784,11 +5222,11 @@ export const auditStockCalculations = async (
       if (item.itemId === stockItemId) {
         allTransactions.push({
           date: new Date(dispatch.dispatchDate),
-          type: 'dispatch',
+          type: "dispatch",
           documentId: dispatch._id,
           documentNumber: dispatch.dispatchNumber,
           quantity: -(item.dispatchedQuantity || 0),
-          status: dispatch.evidenceStatus || dispatch.status
+          status: dispatch.evidenceStatus || dispatch.status,
         });
       }
     });
@@ -4802,22 +5240,22 @@ export const auditStockCalculations = async (
         if (transfer.fromBinId === binId) {
           allTransactions.push({
             date: new Date(transfer.transferDate),
-            type: 'transferOut',
+            type: "transferOut",
             documentId: transfer._id,
             documentNumber: transfer.transferNumber,
             quantity: -(item.transferredQuantity || 0),
-            status: transfer.status
+            status: transfer.status,
           });
         }
         // Transfer IN to this bin
         if (transfer.toBinId === binId) {
           allTransactions.push({
             date: new Date(transfer.transferDate),
-            type: 'transferIn',
+            type: "transferIn",
             documentId: transfer._id,
             documentNumber: transfer.transferNumber,
             quantity: item.transferredQuantity || 0,
-            status: transfer.status
+            status: transfer.status,
           });
         }
       }
@@ -4830,11 +5268,11 @@ export const auditStockCalculations = async (
       if (item.itemId === stockItemId) {
         allTransactions.push({
           date: new Date(count.countDate),
-          type: 'count',
+          type: "count",
           documentId: count._id,
           documentNumber: count.countNumber,
           quantity: item.countedQuantity || 0,
-          status: count.status
+          status: count.status,
         });
       }
     });
@@ -4845,12 +5283,18 @@ export const auditStockCalculations = async (
 
   // 3. Calculate chronologically (with proper inventory count logic)
   let chronologicalStock = 0;
-  const differences: { date: string; transaction: string; impact: number; cumulative: number; notes: string | undefined; }[] = [];
+  const differences: {
+    date: string;
+    transaction: string;
+    impact: number;
+    cumulative: number;
+    notes: string | undefined;
+  }[] = [];
   const countTimeline: Array<{ date: Date; quantity: number }> = [];
 
   // First pass: collect inventory counts
-  allTransactions.forEach(tx => {
-    if (tx.type === 'count') {
+  allTransactions.forEach((tx) => {
+    if (tx.type === "count") {
       countTimeline.push({ date: tx.date, quantity: tx.quantity });
     }
   });
@@ -4871,7 +5315,7 @@ export const auditStockCalculations = async (
       }
     }
 
-    if (tx.type === 'count') {
+    if (tx.type === "count") {
       // Count sets the absolute stock
       chronologicalStock = tx.quantity;
       differences.push({
@@ -4879,7 +5323,7 @@ export const auditStockCalculations = async (
         transaction: `${tx.type} #${tx.documentNumber}`,
         impact: tx.quantity - stockBefore,
         cumulative: chronologicalStock,
-        notes: `RESET: Count sets stock to ${tx.quantity}`
+        notes: `RESET: Count sets stock to ${tx.quantity}`,
       });
     } else if (applicableCountDate === null || tx.date > applicableCountDate) {
       // Transaction happens AFTER the most recent count (or no count yet)
@@ -4889,7 +5333,7 @@ export const auditStockCalculations = async (
         transaction: `${tx.type} #${tx.documentNumber}`,
         impact: tx.quantity,
         cumulative: chronologicalStock,
-        notes: tx.quantity < 0 ? `Negative allowed for analysis` : undefined
+        notes: tx.quantity < 0 ? `Negative allowed for analysis` : undefined,
       });
     } else {
       // Transaction happened BEFORE the most recent count - should be ignored
@@ -4898,13 +5342,18 @@ export const auditStockCalculations = async (
         transaction: `${tx.type} #${tx.documentNumber}`,
         impact: tx.quantity,
         cumulative: chronologicalStock,
-        notes: `IGNORED: Happened before count on ${applicableCountDate.toISOString().split('T')[0]}`
+        notes: `IGNORED: Happened before count on ${applicableCountDate.toISOString().split("T")[0]}`,
       });
     }
 
     // Check for data quality issues
-    if (tx.status && !['completed', 'complete', 'processed'].includes(tx.status)) {
-      issues.push(`Transaction ${tx.type} #${tx.documentNumber} has status "${tx.status}" - might be excluded from calculations`);
+    if (
+      tx.status &&
+      !["completed", "complete", "processed"].includes(tx.status)
+    ) {
+      issues.push(
+        `Transaction ${tx.type} #${tx.documentNumber} has status "${tx.status}" - might be excluded from calculations`,
+      );
     }
   });
 
@@ -4913,14 +5362,18 @@ export const auditStockCalculations = async (
 
   // 5. Identify discrepancies
   if (Math.abs(chronologicalStock - snapshotResult.quantity) > 0.01) {
-    issues.push(`CALCULATION MISMATCH: Chronological=${chronologicalStock}, Snapshot=${snapshotResult.quantity}, Difference=${chronologicalStock - snapshotResult.quantity}`);
+    issues.push(
+      `CALCULATION MISMATCH: Chronological=${chronologicalStock}, Snapshot=${snapshotResult.quantity}, Difference=${chronologicalStock - snapshotResult.quantity}`,
+    );
   }
 
   // 6. Check for negative stock patterns
   if (chronologicalStock < 0) {
-    const negativeTransactions = differences.filter(d => d.cumulative < 0);
+    const negativeTransactions = differences.filter((d) => d.cumulative < 0);
     if (negativeTransactions.length > 0) {
-      issues.push(`NEGATIVE STOCK DETECTED: ${chronologicalStock} units missing. Check transactions around ${negativeTransactions[0].date}`);
+      issues.push(
+        `NEGATIVE STOCK DETECTED: ${chronologicalStock} units missing. Check transactions around ${negativeTransactions[0].date}`,
+      );
     }
   }
 
@@ -4929,33 +5382,35 @@ export const auditStockCalculations = async (
     chronologicalCalculation: chronologicalStock,
     snapshotCalculation: snapshotResult.quantity,
     differences,
-    issues
+    issues,
   };
 };
 
 export const getCurrentStockSnapshots = async (
   stockItemIds?: string[],
-  binIds?: string[]
-): Promise<Array<{
-  _id: string;
-  stockItem: {
+  binIds?: string[],
+): Promise<
+  Array<{
     _id: string;
-    name: string;
-    sku?: string;
-  };
-  bin: {
-    _id: string;
-    name: string;
-    site?: {
+    stockItem: {
       _id: string;
       name: string;
+      sku?: string;
     };
-  };
-  quantity: number;
-  lastUpdated: string;
-}>> => {
+    bin: {
+      _id: string;
+      name: string;
+      site?: {
+        _id: string;
+        name: string;
+      };
+    };
+    quantity: number;
+    lastUpdated: string;
+  }>
+> => {
   try {
-    console.log('📊 Fetching current stock from registry...');
+    console.log("📊 Fetching current stock from registry...");
 
     // Get registry data
     const registryQuery = groq`*[_type == "stockRegistry"][0] {
@@ -5025,30 +5480,30 @@ export const getCurrentStockSnapshots = async (
 
     console.log(`✅ Found ${snapshots.length} stock entries in registry`);
     return snapshots;
-
   } catch (error) {
-    console.error('❌ Error fetching from stock registry:', error);
+    console.error("❌ Error fetching from stock registry:", error);
     return [];
   }
 };
 
-
 // Add after the previous function
 export const compareSnapshotsWithCalculated = async (
   stockItemIds: string[],
-  binIds: string[]
-): Promise<Array<{
-  stockItemId: string;
-  binId: string;
-  snapshotQuantity: number;
-  calculatedQuantity: number;
-  difference: number;
-  matches: boolean;
-  stockItemName?: string;
-  binName?: string;
-}>> => {
+  binIds: string[],
+): Promise<
+  Array<{
+    stockItemId: string;
+    binId: string;
+    snapshotQuantity: number;
+    calculatedQuantity: number;
+    difference: number;
+    matches: boolean;
+    stockItemName?: string;
+    binName?: string;
+  }>
+> => {
   try {
-    console.log('🔍 Comparing snapshots with calculated stock...');
+    console.log("🔍 Comparing snapshots with calculated stock...");
 
     // Get snapshots
     const snapshots = await getCurrentStockSnapshots(stockItemIds, binIds);
@@ -5056,7 +5511,7 @@ export const compareSnapshotsWithCalculated = async (
     // Calculate from transactions
     const calculatedResults = await calculateBulkStockFromTransactions(
       stockItemIds,
-      binIds
+      binIds,
     );
 
     // Create comparison
@@ -5077,7 +5532,7 @@ export const compareSnapshotsWithCalculated = async (
         snapshotQuantity,
         calculatedQuantity,
         difference,
-        matches
+        matches,
       });
     }
 
@@ -5091,8 +5546,8 @@ export const compareSnapshotsWithCalculated = async (
 
         // If there's stock but no snapshot
         if (calculatedQuantity > 0) {
-          const hasSnapshot = snapshots.some(s =>
-            s.stockItem._id === itemId && s.bin._id === binId
+          const hasSnapshot = snapshots.some(
+            (s) => s.stockItem._id === itemId && s.bin._id === binId,
           );
 
           if (!hasSnapshot) {
@@ -5103,7 +5558,7 @@ export const compareSnapshotsWithCalculated = async (
               snapshotQuantity: 0,
               difference: calculatedQuantity,
               matches: false,
-              status: 'MISSING_SNAPSHOT'
+              status: "MISSING_SNAPSHOT",
             });
           }
         }
@@ -5112,22 +5567,20 @@ export const compareSnapshotsWithCalculated = async (
 
     const allResults = [...comparison, ...missingSnapshots];
 
-    console.log('📊 Comparison results:', {
+    console.log("📊 Comparison results:", {
       totalSnapshots: snapshots.length,
       compared: comparison.length,
       missing: missingSnapshots.length,
-      matches: allResults.filter(r => r.matches).length,
-      mismatches: allResults.filter(r => !r.matches).length
+      matches: allResults.filter((r) => r.matches).length,
+      mismatches: allResults.filter((r) => !r.matches).length,
     });
 
     return allResults;
-
   } catch (error) {
-    console.error('❌ Error comparing snapshots:', error);
+    console.error("❌ Error comparing snapshots:", error);
     return [];
   }
 };
-
 
 // Add to exports section at the bottom or near other export functions:
 export const getStockTransactionHistory = auditStockCalculations;
