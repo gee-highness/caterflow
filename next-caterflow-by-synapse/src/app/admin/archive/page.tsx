@@ -111,11 +111,14 @@ export default function ArchiveManagementPage() {
   const [logs, setLogs] = useState<ArchiveLog[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRunning, setIsRunning] = useState(false);
+  const [isResuming, setIsResuming] = useState(false);
   const [archiveInProgress, setArchiveInProgress] = useState(false);
   const [currentRun, setCurrentRun] = useState<ArchiveCurrentRun | null>(null);
   const [previousArchiveInProgress, setPreviousArchiveInProgress] =
     useState(false);
   const [staleDetected, setStaleDetected] = useState(false);
+  const [staleResolution, setStaleResolution] = useState<string | null>(null);
+  const [resumeTriggered, setResumeTriggered] = useState(false);
   const [page, setPage] = useState(1);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [showRawLog, setShowRawLog] = useState(false);
@@ -176,13 +179,15 @@ export default function ArchiveManagementPage() {
         toast({
           title: "Stale archive run cleared",
           description:
-            "A stale archive run was detected and automatically marked as failed. Review the current run logs below.",
+            data.staleResolution ||
+            "A stale archive run was detected and automatically marked as failed.",
           status: "warning",
           duration: 8000,
           isClosable: true,
         });
       }
       setStaleDetected(isStale);
+      setStaleResolution(data.staleResolution || null);
 
       return data;
     } catch (error) {
@@ -197,6 +202,7 @@ export default function ArchiveManagementPage() {
       setArchiveInProgress(false);
       setCurrentRun(null);
       setStaleDetected(false);
+      setStaleResolution(null);
       return null;
     } finally {
       setIsLoading(false);
@@ -223,12 +229,81 @@ export default function ArchiveManagementPage() {
     return false;
   }, []);
 
+  const handleRefreshStatus = useCallback(async () => {
+    await fetchLogs();
+  }, [fetchLogs]);
+
+  const handleAutoResume = useCallback(async () => {
+    if (resumeTriggered || isResuming || archiveInProgress) return;
+    if (currentRun?.status !== "incomplete") return;
+
+    setIsResuming(true);
+    toast({
+      title: "Resuming archive run",
+      description:
+        "An incomplete archive run was detected and resume has started.",
+      status: "info",
+      duration: 5000,
+      isClosable: true,
+    });
+
+    try {
+      const res = await fetch("/api/archive/resume", {
+        method: "POST",
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(
+          data.error || "Failed to resume incomplete archive run.",
+        );
+      }
+
+      setResumeTriggered(true);
+      toast({
+        title: "Archive resume triggered",
+        description: data.finished
+          ? "The incomplete archive run has been resumed and is now progressing."
+          : "Resume started. The archive will continue on the next available cycle.",
+        status: data.finished ? "success" : "info",
+        duration: 7000,
+        isClosable: true,
+      });
+      await fetchLogs();
+    } catch (error: any) {
+      console.error("Failed to resume archive run:", error);
+      toast({
+        title: "Resume failed",
+        description:
+          error.message || "Could not resume incomplete archive run.",
+        status: "error",
+        duration: 8000,
+        isClosable: true,
+      });
+    } finally {
+      setIsResuming(false);
+    }
+  }, [
+    archiveInProgress,
+    currentRun,
+    fetchLogs,
+    isResuming,
+    resumeTriggered,
+    toast,
+  ]);
+
   useEffect(() => {
     if (!isAuthenticated || !isAdmin || !archiveInProgress) return;
 
     const intervalId = window.setInterval(fetchLogs, 15000);
     return () => window.clearInterval(intervalId);
   }, [archiveInProgress, fetchLogs, isAuthenticated, isAdmin]);
+
+  useEffect(() => {
+    if (!isAuthenticated || !isAdmin) return;
+    if (currentRun?.status === "incomplete") {
+      void handleAutoResume();
+    }
+  }, [currentRun, handleAutoResume, isAuthenticated, isAdmin]);
 
   useEffect(() => {
     if (previousArchiveInProgress && !archiveInProgress) {
@@ -260,6 +335,16 @@ export default function ArchiveManagementPage() {
 
     setPreviousArchiveInProgress(archiveInProgress);
   }, [archiveInProgress, previousArchiveInProgress, logs, toast, fetchLogs]);
+
+  useEffect(() => {
+    if (
+      staleDetected &&
+      !archiveInProgress &&
+      currentRun?.status === "failed"
+    ) {
+      setPreviousArchiveInProgress(false);
+    }
+  }, [archiveInProgress, currentRun, staleDetected]);
 
   useEffect(() => {
     if (sessionStatus === "loading") return;
@@ -471,7 +556,7 @@ export default function ArchiveManagementPage() {
             download backups.
           </Text>
         </Box>
-        <HStack spacing={4}>
+        <HStack spacing={4} alignItems="center">
           <Button
             leftIcon={<FiDownload />}
             colorScheme="gray"
@@ -479,6 +564,15 @@ export default function ArchiveManagementPage() {
             onClick={handleDownloadBackup}
           >
             Download Backup
+          </Button>
+          <Button
+            leftIcon={<FiRefreshCw />}
+            colorScheme="gray"
+            variant="ghost"
+            onClick={handleRefreshStatus}
+            isLoading={isLoading}
+          >
+            Refresh Status
           </Button>
           <Button
             leftIcon={<FiPlay />}
@@ -501,6 +595,16 @@ export default function ArchiveManagementPage() {
           </Button>
         </HStack>
       </Flex>
+
+      {staleDetected && staleResolution ? (
+        <Alert status="warning" borderRadius="lg" mb={6}>
+          <AlertIcon />
+          <Box>
+            <AlertTitle>Stale archive run cleared</AlertTitle>
+            <AlertDescription>{staleResolution}</AlertDescription>
+          </Box>
+        </Alert>
+      ) : null}
 
       {currentRun ? (
         <Card bg={cardBgColor} borderRadius="lg" boxShadow="sm" mb={8}>

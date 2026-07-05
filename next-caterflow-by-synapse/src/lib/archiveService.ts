@@ -141,28 +141,60 @@ function buildArchiveProgressMessage(
   return `${action.charAt(0).toUpperCase() + action.slice(1)} ${type} ${label}`;
 }
 
+function isDuplicateKeyError(err: any): boolean {
+  return (
+    err?.code === 11000 ||
+    (typeof err?.message === "string" &&
+      err.message.toLowerCase().includes("duplicate key error"))
+  );
+}
+
+function getAlternateUniqueQuery(payload: any): Record<string, any> | null {
+  const uniqueKeys = [
+    "dispatchNumber",
+    "poNumber",
+    "receiptNumber",
+    "transferNumber",
+    "adjustmentNumber",
+    "countNumber",
+  ];
+  for (const key of uniqueKeys) {
+    if (payload[key]) {
+      return { [key]: payload[key] };
+    }
+  }
+  return null;
+}
+
+async function resolveDuplicateKeyConflict(
+  collection: any,
+  payload: any,
+  progress?: (message: string) => void,
+): Promise<boolean> {
+  const altQuery = getAlternateUniqueQuery(payload);
+  if (!altQuery) return false;
+
+  const existingByAlt = await collection.findOne(altQuery);
+  if (!existingByAlt) return false;
+
+  await collection.replaceOne(
+    { _id: existingByAlt._id },
+    {
+      ...payload,
+      _archivedAt: new Date().toISOString(),
+      _lastSyncedAt: new Date().toISOString(),
+    },
+    { upsert: true },
+  );
+  progress?.(buildArchiveProgressMessage(payload, "updated"));
+  return true;
+}
+
 /**
  * Sync Sanity documents into Mongo using _sanityId as the identity key.
  * New documents are inserted, existing documents with changed content are updated,
  * and unchanged documents are skipped.
  */
-function getCollectionUniqueField(
-  collectionName: string,
-): string | null {
-  switch (collectionName) {
-    case COLLECTIONS.DISPATCH_LOGS:
-      return "dispatchNumber";
-    case COLLECTIONS.PURCHASE_ORDERS:
-      return "poNumber";
-    case COLLECTIONS.GOODS_RECEIPTS:
-      return "receiptNumber";
-    case COLLECTIONS.INTERNAL_TRANSFERS:
-      return "transferNumber";
-    default:
-      return null;
-  }
-}
-
 async function insertIfNotExists(
   db: Db,
   collectionName: string,
@@ -173,69 +205,7 @@ async function insertIfNotExists(
   if (!docs.length) return { inserted: 0, skipped: 0 };
 
   const collection = db.collection(collectionName);
-  const uniqueField = getCollectionUniqueField(collectionName);
-  let payloads = docs.map(buildArchivedDocumentPayload);
-
-  if (uniqueField) {
-    const seen = new Map<string, any>();
-    const filtered: any[] = [];
-
-    for (const payload of payloads) {
-      const uniqueValue = payload[uniqueField];
-      if (uniqueValue == null) {
-        filtered.push(payload);
-        continue;
-      }
-
-      if (seen.has(uniqueValue)) {
-        const message = `Skipped duplicate ${collectionName} with ${uniqueField} ${uniqueValue} in the same archive batch.`;
-        errors.push(message);
-        progress?.(message);
-        continue;
-      }
-
-      seen.set(uniqueValue, payload);
-      filtered.push(payload);
-    }
-
-    payloads = filtered;
-
-    if (payloads.length && seen.size) {
-      const uniqueValues = Array.from(seen.keys());
-      const existingByUnique = new Map<string, any>();
-      const existingMatches = await collection
-        .find({ [uniqueField]: { $in: uniqueValues } })
-        .toArray();
-
-      for (const existing of existingMatches) {
-        if (existing[uniqueField]) {
-          existingByUnique.set(existing[uniqueField], existing);
-        }
-      }
-
-      const filteredConflict: any[] = [];
-      for (const payload of payloads) {
-        const uniqueValue = payload[uniqueField];
-        if (!uniqueValue) {
-          filteredConflict.push(payload);
-          continue;
-        }
-
-        const existing = existingByUnique.get(uniqueValue);
-        if (existing && existing._sanityId !== payload._sanityId) {
-          const message = `Skipped ${collectionName} ${uniqueField} ${uniqueValue} because an archive record already exists with a different _sanityId.`;
-          errors.push(message);
-          progress?.(message);
-          continue;
-        }
-
-        filteredConflict.push(payload);
-      }
-
-      payloads = filteredConflict;
-    }
-  }
-
+  const payloads = docs.map(buildArchivedDocumentPayload);
   const sanityIds = payloads
     .map((payload) => payload._sanityId)
     .filter(Boolean);
@@ -316,7 +286,8 @@ async function insertIfNotExists(
       // Fallback to single-document writes for robustness.
       inserted = 0;
       skipped = 0;
-      for (const payload of payloads) {
+      for (const doc of docs) {
+        const payload = buildArchivedDocumentPayload(doc);
         const existing = await collection.findOne({
           _sanityId: payload._sanityId,
         });
@@ -330,15 +301,15 @@ async function insertIfNotExists(
             inserted += 1;
             progress?.(buildArchiveProgressMessage(payload, "inserted"));
             continue;
-          } catch (insertErr: any) {
-            if (insertErr?.code === 11000) {
-              const message = `Skipped ${collectionName} insert due to duplicate key: ${insertErr?.message || insertErr}`;
-              errors.push(message);
-              progress?.(message);
-              skipped += 1;
+          } catch (err: any) {
+            if (
+              isDuplicateKeyError(err) &&
+              (await resolveDuplicateKeyConflict(collection, payload, progress))
+            ) {
+              inserted += 1;
               continue;
             }
-            throw insertErr;
+            throw err;
           }
         }
 
@@ -371,15 +342,15 @@ async function insertIfNotExists(
           );
           inserted += 1;
           progress?.(buildArchiveProgressMessage(payload, "updated"));
-        } catch (replaceErr: any) {
-          if (replaceErr?.code === 11000) {
-            const message = `Skipped ${collectionName} update due to duplicate key: ${replaceErr?.message || replaceErr}`;
-            errors.push(message);
-            progress?.(message);
-            skipped += 1;
+        } catch (err: any) {
+          if (
+            isDuplicateKeyError(err) &&
+            (await resolveDuplicateKeyConflict(collection, payload, progress))
+          ) {
+            inserted += 1;
             continue;
           }
-          throw replaceErr;
+          throw err;
         }
       }
     }

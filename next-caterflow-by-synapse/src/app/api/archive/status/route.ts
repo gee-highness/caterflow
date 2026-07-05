@@ -74,6 +74,9 @@ export async function GET(request: Request) {
       archiveInProgress: inProgress,
       currentRun: progress.currentRun,
       staleDetected: progress.staleDetected === true,
+      staleResolution: progress.staleDetected
+        ? "Detected stale active archive progress and automatically marked the run as failed."
+        : "No stale archive action taken.",
     });
   } catch (error: any) {
     console.error("Failed to fetch archive status:", error);
