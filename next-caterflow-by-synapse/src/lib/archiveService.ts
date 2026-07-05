@@ -1175,13 +1175,71 @@ export interface ArchiveCurrentRunStatus {
   logs: string[];
 }
 
+const ARCHIVE_PROGRESS_STALE_MS = 5 * 60 * 1000;
+
+async function markStaleArchiveProgressFailed(
+  progressCollection: any,
+  progressId: string,
+  progressDoc: any,
+) {
+  const staleMessage =
+    "Archive progress has been stale for more than 5 minutes and has been marked failed.";
+  await progressCollection.updateOne(
+    { _id: progressId } as any,
+    {
+      $set: {
+        status: "failed",
+        completedAt: new Date().toISOString(),
+        currentStep: null,
+        currentStepIndex: progressDoc?.currentStepIndex || 0,
+        completedSteps: progressDoc?.completedSteps || [],
+        pendingSteps: progressDoc?.pendingSteps || [],
+        errors: [...(progressDoc?.errors || []), staleMessage],
+        progressPercent: progressDoc?.progressPercent || 0,
+        lastUpdatedAt: new Date().toISOString(),
+      },
+      $push: {
+        progressMessages: staleMessage,
+      },
+    } as any,
+  );
+}
+
+function buildArchiveCurrentRunStatus(
+  progressDoc: any,
+): ArchiveCurrentRunStatus {
+  return {
+    runId: progressDoc.owner || progressDoc.runId || "archive-progress",
+    status: progressDoc.status || "failed",
+    startedAt:
+      progressDoc.startedAt ||
+      progressDoc.acquiredAt ||
+      new Date().toISOString(),
+    currentStep: progressDoc.currentStep || null,
+    currentStepIndex: progressDoc.currentStepIndex || 0,
+    totalSteps: progressDoc.totalSteps || 0,
+    completedSteps: progressDoc.completedSteps || [],
+    pendingSteps: progressDoc.pendingSteps || [],
+    errors: progressDoc.errors || [],
+    progressPercent: progressDoc.progressPercent || 0,
+    lastUpdatedAt:
+      progressDoc.lastUpdatedAt ||
+      progressDoc.acquiredAt ||
+      progressDoc.startedAt ||
+      new Date().toISOString(),
+    logs: progressDoc.progressMessages || [],
+  };
+}
+
 export async function getArchiveProgress(): Promise<{
   inProgress: boolean;
   currentRun: ArchiveCurrentRunStatus | null;
+  staleDetected?: boolean;
 }> {
   const db = await getArchiveDb();
   const progressId = "archive-progress";
-  const progressDoc = await db.collection(COLLECTIONS.ARCHIVE_RUNS).findOne({
+  const progressCollection = db.collection(COLLECTIONS.ARCHIVE_RUNS);
+  const progressDoc = await progressCollection.findOne({
     _id: progressId,
     kind: "progress",
   } as any);
@@ -1190,36 +1248,43 @@ export async function getArchiveProgress(): Promise<{
     return { inProgress: false, currentRun: null };
   }
 
+  const lastUpdatedAt =
+    progressDoc.lastUpdatedAt || progressDoc.startedAt || null;
+  const lastUpdatedTs = lastUpdatedAt
+    ? new Date(lastUpdatedAt).getTime()
+    : null;
+  const isStale =
+    lastUpdatedTs && Date.now() - lastUpdatedTs > ARCHIVE_PROGRESS_STALE_MS;
+
   const inProgress = ["queued", "running", "incomplete"].includes(
     progressDoc.status,
   );
+  if (inProgress && isStale) {
+    await markStaleArchiveProgressFailed(
+      progressCollection,
+      progressId,
+      progressDoc,
+    );
+
+    const updatedDoc = await progressCollection.findOne({
+      _id: progressId,
+      kind: "progress",
+    } as any);
+
+    return {
+      inProgress: false,
+      staleDetected: true,
+      currentRun: updatedDoc ? buildArchiveCurrentRunStatus(updatedDoc) : null,
+    };
+  }
+
   if (!inProgress) {
     return { inProgress: false, currentRun: null };
   }
 
   return {
     inProgress,
-    currentRun: {
-      runId: progressDoc.owner || progressDoc.runId || progressId,
-      status: progressDoc.status || "running",
-      startedAt:
-        progressDoc.startedAt ||
-        progressDoc.acquiredAt ||
-        new Date().toISOString(),
-      currentStep: progressDoc.currentStep || null,
-      currentStepIndex: progressDoc.currentStepIndex || 0,
-      totalSteps: progressDoc.totalSteps || 0,
-      completedSteps: progressDoc.completedSteps || [],
-      pendingSteps: progressDoc.pendingSteps || [],
-      errors: progressDoc.errors || [],
-      progressPercent: progressDoc.progressPercent || 0,
-      lastUpdatedAt:
-        progressDoc.lastUpdatedAt ||
-        progressDoc.acquiredAt ||
-        progressDoc.startedAt ||
-        new Date().toISOString(),
-      logs: progressDoc.progressMessages || [],
-    },
+    currentRun: buildArchiveCurrentRunStatus(progressDoc),
   };
 }
 

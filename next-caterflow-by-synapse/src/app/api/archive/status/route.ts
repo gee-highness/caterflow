@@ -73,6 +73,7 @@ export async function GET(request: Request) {
       count: serialized.length,
       archiveInProgress: inProgress,
       currentRun: progress.currentRun,
+      staleDetected: progress.staleDetected === true,
     });
   } catch (error: any) {
     console.error("Failed to fetch archive status:", error);

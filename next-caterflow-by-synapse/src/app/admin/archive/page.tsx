@@ -115,6 +115,7 @@ export default function ArchiveManagementPage() {
   const [currentRun, setCurrentRun] = useState<ArchiveCurrentRun | null>(null);
   const [previousArchiveInProgress, setPreviousArchiveInProgress] =
     useState(false);
+  const [staleDetected, setStaleDetected] = useState(false);
   const [page, setPage] = useState(1);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [showRawLog, setShowRawLog] = useState(false);
@@ -169,6 +170,20 @@ export default function ArchiveManagementPage() {
       setLogs(data.recentRuns || data.runs || []);
       setArchiveInProgress(data.archiveInProgress === true);
       setCurrentRun(data.currentRun || null);
+
+      const isStale = data.staleDetected === true;
+      if (isStale && !staleDetected) {
+        toast({
+          title: "Stale archive run cleared",
+          description:
+            "A stale archive run was detected and automatically marked as failed. Review the current run logs below.",
+          status: "warning",
+          duration: 8000,
+          isClosable: true,
+        });
+      }
+      setStaleDetected(isStale);
+
       return data;
     } catch (error) {
       console.error("Failed to fetch archive logs:", error);
@@ -181,11 +196,12 @@ export default function ArchiveManagementPage() {
       });
       setArchiveInProgress(false);
       setCurrentRun(null);
+      setStaleDetected(false);
       return null;
     } finally {
       setIsLoading(false);
     }
-  }, [toast]);
+  }, [toast, staleDetected]);
 
   const pollArchiveStart = useCallback(async () => {
     for (let attempt = 0; attempt < 4; attempt += 1) {

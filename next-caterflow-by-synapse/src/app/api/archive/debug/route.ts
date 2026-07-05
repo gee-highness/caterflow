@@ -50,6 +50,10 @@ export async function GET(request: Request) {
         isStale,
         isActiveStatus,
         staleActiveState,
+        staleDetected: progress.staleDetected === true,
+        staleResolution: progress.staleDetected
+          ? "Detected stale active archive progress and automatically marked the run as failed."
+          : "No stale archive action taken.",
         now: new Date().toISOString(),
       },
     });
