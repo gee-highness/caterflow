@@ -171,6 +171,11 @@ async function resolveDuplicateKeyConflict(
   payload: any,
   progress?: (message: string) => void,
 ): Promise<boolean> {
+  if (!payload._sanityId) {
+    progress?.(buildArchiveProgressMessage(payload, "skipped"));
+    return true;
+  }
+
   const altQuery = getAlternateUniqueQuery(payload);
   if (!altQuery) return false;
 
@@ -205,7 +210,18 @@ async function insertIfNotExists(
   if (!docs.length) return { inserted: 0, skipped: 0 };
 
   const collection = db.collection(collectionName);
-  const payloads = docs.map(buildArchivedDocumentPayload);
+  const payloads = docs
+    .map(buildArchivedDocumentPayload)
+    .filter((p) => p._sanityId);
+  const skippedNoId = docs.length - payloads.length;
+  if (skippedNoId > 0) {
+    console.warn(
+      `⚠️  Skipping ${skippedNoId} documents without valid Sanity IDs in ${collectionName}`,
+    );
+  }
+
+  if (!payloads.length) return { inserted: 0, skipped: skippedNoId };
+
   const sanityIds = payloads
     .map((payload) => payload._sanityId)
     .filter(Boolean);
