@@ -44,6 +44,10 @@ import {
   Spinner,
 } from "@chakra-ui/react";
 import {
+  getRecentUnitPricesForItemsInBin,
+  resolveUnitPrice,
+} from "@/lib/unitPriceResolver";
+import {
   FiPlus,
   FiTrash2,
   FiSearch,
@@ -233,42 +237,45 @@ export default function BinCountModal({
     }
   };
 
-  const fetchBulkCurrentStock = async (
-    itemIds: string[],
-    binId: string,
-  ): Promise<Record<string, number>> => {
-    if (itemIds.length === 0 || !binId) return {};
+  const fetchBulkCurrentStock = useCallback(
+    async (
+      itemIds: string[],
+      binId: string,
+    ): Promise<Record<string, number>> => {
+      if (itemIds.length === 0 || !binId) return {};
 
-    try {
-      const response = await fetch("/api/stock/bulk-current", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          stockItems: itemIds,
-          binId,
-        }),
-      });
+      try {
+        const response = await fetch("/api/stock/bulk-current", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            stockItems: itemIds,
+            binId,
+          }),
+        });
 
-      if (!response.ok) {
-        throw new Error(`API responded with status ${response.status}`);
+        if (!response.ok) {
+          throw new Error(`API responded with status ${response.status}`);
+        }
+
+        const data = await response.json();
+
+        if (data.success && data.results) {
+          console.log(
+            `✅ Batch fetch successful: ${Object.keys(data.results).length} items`,
+          );
+          return data.results;
+        } else {
+          console.warn("Bulk fetch returned unsuccessful:", data);
+          throw new Error(data.error || "Bulk fetch failed");
+        }
+      } catch (error) {
+        console.error("❌ Error in bulk current stock fetch:", error);
+        return await fetchIndividualCurrentStock(itemIds, binId);
       }
-
-      const data = await response.json();
-
-      if (data.success && data.results) {
-        console.log(
-          `✅ Batch fetch successful: ${Object.keys(data.results).length} items`,
-        );
-        return data.results;
-      } else {
-        console.warn("Bulk fetch returned unsuccessful:", data);
-        throw new Error(data.error || "Bulk fetch failed");
-      }
-    } catch (error) {
-      console.error("❌ Error in bulk current stock fetch:", error);
-      return await fetchIndividualCurrentStock(itemIds, binId);
-    }
-  };
+    },
+    [],
+  );
 
   const fetchIndividualCurrentStock = async (
     itemIds: string[],
@@ -441,7 +448,14 @@ export default function BinCountModal({
 
     const timer = setTimeout(fetchSystemQuantities, 100);
     return () => clearTimeout(timer);
-  }, [binCount, isViewMode, selectedBin, countedItems, toast]);
+  }, [
+    binCount,
+    isViewMode,
+    selectedBin,
+    countedItems,
+    toast,
+    fetchBulkCurrentStock,
+  ]);
 
   useEffect(() => {
     return () => {
@@ -495,14 +509,17 @@ export default function BinCountModal({
       );
 
       const itemsWithQuantities = allStockItems.map((item) => {
-        const systemQuantity = bulkResults[item._id] || 0;
+        const systemQuantity = bulkResults[item._id] ?? 0;
 
-        // Try to get price from receipts first, then from item, then 0
-        const unitPrice = pricesFromReceipts[item._id] ?? item.unitPrice ?? 0;
+        // Use consistent resolver: receipt price → item price → 0
+        const unitPrice = resolveUnitPrice(
+          pricesFromReceipts[item._id],
+          item.unitPrice,
+        );
 
         // Check if price is actually missing
         const hasMissingPrice =
-          !pricesFromReceipts[item._id] && !item.unitPrice;
+          pricesFromReceipts[item._id] == null && item.unitPrice == null;
 
         // LOG 2: Each item's unit price
         console.log(`📦 Item: ${item.name} (SKU: ${item.sku})`);
@@ -557,7 +574,7 @@ export default function BinCountModal({
     } finally {
       setLoading(false);
     }
-  }, [selectedBin, binCount, toast]);
+  }, [selectedBin, binCount, toast, fetchBulkCurrentStock]);
 
   useEffect(() => {
     if (selectedBin && !binCount && countType === "standard") {
@@ -682,39 +699,8 @@ export default function BinCountModal({
     itemIds: string[],
     binId: string,
   ): Promise<Record<string, number>> => {
-    const priceMap: Record<string, number> = {};
-
-    try {
-      const response = await fetch("/api/goods-receipts");
-      if (!response.ok) throw new Error("Failed to fetch receipts");
-
-      const receipts = await response.json();
-
-      // Find all receipts for this bin and get the latest price for each item
-      receipts.forEach((receipt: any) => {
-        if (receipt.receivedItems && Array.isArray(receipt.receivedItems)) {
-          receipt.receivedItems.forEach((receivedItem: any) => {
-            const itemId =
-              typeof receivedItem.stockItem === "string"
-                ? receivedItem.stockItem
-                : receivedItem.stockItem?._id;
-
-            if (itemIds.includes(itemId) && receivedItem.unitPrice) {
-              // Always use the latest price found (last one chronologically since sorted by date desc)
-              if (!priceMap[itemId]) {
-                priceMap[itemId] = receivedItem.unitPrice;
-              }
-            }
-          });
-        }
-      });
-
-      console.log("📊 Unit prices fetched from receipts:", priceMap);
-      return priceMap;
-    } catch (error) {
-      console.error("Failed to fetch prices from receipts:", error);
-      return {};
-    }
+    // Use shared helper for consistent pricing logic
+    return getRecentUnitPricesForItemsInBin(itemIds, binId);
   };
 
   const handleStockItemsSelect = async (items: StockItemForSelector[]) => {
@@ -767,14 +753,15 @@ export default function BinCountModal({
       );
 
       const itemsWithQuantities = newItems.map((item) => {
-        const systemQuantity = bulkResults[item._id] || 0;
+        const systemQuantity = bulkResults[item._id] ?? 0;
 
-        // Try to get price from receipts first, then from item, then 0
-        const unitPrice = pricesFromReceipts[item._id] ?? item.unitPrice ?? 0;
+        const unitPrice = resolveUnitPrice(
+          pricesFromReceipts[item._id],
+          item.unitPrice,
+        );
 
-        // Check if price is actually missing
         const hasMissingPrice =
-          !pricesFromReceipts[item._id] && !item.unitPrice;
+          pricesFromReceipts[item._id] == null && item.unitPrice == null;
 
         // LOG 5: Each manually selected item's unit price
         console.log(

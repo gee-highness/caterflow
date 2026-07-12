@@ -114,6 +114,7 @@ import {
 } from "date-fns";
 import { calculateBulkStock } from "@/lib/stockCalculations";
 import { getUserSiteInfo } from "@/lib/siteFiltering"; // Add this import
+import { resolveUnitPrice } from "@/lib/unitPriceResolver";
 
 // Removed: unused filterTransitionStyle, filterLoadingStyle, useChartReady hook
 
@@ -1058,7 +1059,8 @@ export default function ComprehensiveReportsPage() {
               item.stockItem?.isVATApplicable !== false &&
               item.stockItem?.isVATApplicable !== undefined;
             const itemTotal =
-              (item.orderedQuantity || 0) * (item.unitPrice || 0);
+              (item.orderedQuantity || 0) *
+              resolveUnitPrice(item.unitPrice, item.stockItem?.unitPrice);
             const { vatAmount, totalWithVAT: itemTotalWithVAT } =
               VAT_CONFIG.calculateVAT(itemTotal, isVATApplicable);
 
@@ -1098,7 +1100,7 @@ export default function ComprehensiveReportsPage() {
             const isVATApplicable = item.stockItem?.isVATApplicable !== false;
             const itemTotal =
               (item.receivedQuantity || 0) *
-              (item.unitPrice || item.stockItem?.unitPrice || 0);
+              resolveUnitPrice(item.unitPrice, item.stockItem?.unitPrice);
             const { vatAmount, totalWithVAT: itemTotalWithVAT } =
               VAT_CONFIG.calculateVAT(itemTotal, isVATApplicable);
 
@@ -1135,7 +1137,8 @@ export default function ComprehensiveReportsPage() {
           const isVATApplicable = item.stockItem?.isVATApplicable !== false;
           const itemTotal =
             item.totalCost ||
-            (item.dispatchedQuantity || 0) * (item.unitPrice || 0);
+            (item.dispatchedQuantity || 0) *
+              resolveUnitPrice(item.unitPrice, item.stockItem?.unitPrice);
           const { vatAmount, totalWithVAT: itemTotalWithVAT } =
             VAT_CONFIG.calculateVAT(itemTotal, isVATApplicable);
 
@@ -1176,7 +1179,8 @@ export default function ComprehensiveReportsPage() {
 
       const itemsWithVAT = stockItems.map((item) => {
         const isVATApplicable = item.isVATApplicable !== false;
-        const stockValue = (item.currentStock || 0) * (item.unitPrice || 0);
+        const stockValue =
+          (item.currentStock || 0) * resolveUnitPrice(item.unitPrice);
         const { vatAmount } = VAT_CONFIG.calculateVAT(
           stockValue,
           isVATApplicable,
@@ -1571,7 +1575,8 @@ export default function ComprehensiveReportsPage() {
               const itemId = item.stockItem?._id;
               const unitPrice =
                 item.stockItem?.unitPrice || item.unitPrice || 0;
-              const countedQty = item.countedQuantity ?? item.physicalCount ?? 0;
+              const countedQty =
+                item.countedQuantity ?? item.physicalCount ?? 0;
               // Only record the first (most recent) count found for each item
               if (itemId && !(itemId in inventoryCountsMap)) {
                 inventoryCountsMap[itemId] = countedQty * unitPrice;
@@ -2014,7 +2019,8 @@ export default function ComprehensiveReportsPage() {
           0,
         );
         // Derive totalWithVAT from excl + vat
-        const dispatchesTotalWithVAT = dispatchesTotalCost + dispatchesVATAmount;
+        const dispatchesTotalWithVAT =
+          dispatchesTotalCost + dispatchesVATAmount;
 
         const dispatchesTotalSales = periodSalesExclVAT;
 
@@ -2474,7 +2480,10 @@ export default function ComprehensiveReportsPage() {
         });
       } catch (error) {
         console.error("❌ Error fetching analytics data:", error);
-        const msg = error instanceof Error ? error.message : "Failed to load analytics data from server";
+        const msg =
+          error instanceof Error
+            ? error.message
+            : "Failed to load analytics data from server";
         setAnalyticsError(msg);
         toast({
           title: "Error Loading Data",
@@ -2496,6 +2505,7 @@ export default function ComprehensiveReportsPage() {
       calculateGoodsReceiptVAT,
       calculateDispatchVAT,
       calculateInventoryVAT,
+      processFilteredAnalyticsData,
       userSiteInfo,
       selectedFilterSite,
       availableSites,
@@ -2795,7 +2805,13 @@ export default function ComprehensiveReportsPage() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [processAnalyticsData, analyticsData, getFilteredStockValues, toast, dateRangeMemo],
+    [
+      processAnalyticsData,
+      analyticsData,
+      getFilteredStockValues,
+      toast,
+      dateRangeMemo,
+    ],
   );
 
   // Simplified function for site filtering - optimized to use cached data
@@ -4967,7 +4983,11 @@ export default function ComprehensiveReportsPage() {
                       {analyticsLoading ? (
                         <Flex justify="center" align="center" py={10}>
                           <VStack spacing={4}>
-                            <Spinner size="xl" color="brand.500" thickness="4px" />
+                            <Spinner
+                              size="xl"
+                              color="brand.500"
+                              thickness="4px"
+                            />
                             <Text color={secondaryTextColor}>
                               Loading analytics data with VAT calculations...
                             </Text>
@@ -4976,7 +4996,8 @@ export default function ComprehensiveReportsPage() {
                       ) : analyticsError ? (
                         <Alert status="error" borderRadius="md">
                           <AlertIcon />
-                          {analyticsError} &mdash; Please try refreshing the page or clicking "Update Analytics" again.
+                          {analyticsError} &mdash; Please try refreshing the
+                          page or clicking "Update Analytics" again.
                         </Alert>
                       ) : !analyticsData ? (
                         <Alert status="info" borderRadius="md">

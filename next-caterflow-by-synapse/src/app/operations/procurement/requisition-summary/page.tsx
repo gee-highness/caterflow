@@ -173,6 +173,7 @@ import { useSession } from "next-auth/react";
 import LinkNext from "next/link";
 import dynamic from "next/dynamic";
 import DatePicker from "@/components/DatePickerWrapper";
+import { resolveUnitPrice } from "@/lib/unitPriceResolver";
 import "react-datepicker/dist/react-datepicker.css";
 
 interface Site {
@@ -716,7 +717,7 @@ export default function EnhancedRequisitionSummaryPage() {
       isClosable: true,
       position: "top-right",
     });
-  }, [fetchRequisitionSummary]);
+  }, [fetchRequisitionSummary, toast]);
 
   // Clear all filters and fetch fresh data
   const clearFilters = useCallback(() => {
@@ -744,7 +745,7 @@ export default function EnhancedRequisitionSummaryPage() {
       isClosable: true,
       position: "top-right",
     });
-  }, [fetchRequisitionSummary]);
+  }, [fetchRequisitionSummary, toast]);
 
   // Export to PDF with enhanced information
   const exportToPDF = async () => {
@@ -1226,8 +1227,11 @@ export default function EnhancedRequisitionSummaryPage() {
                     ${poGroup.items
                       .map((item) => {
                         itemCounter++;
-                        const unitPrice =
-                          item.unitPrice || item.amount / item.quantity;
+                        const unitPrice = resolveUnitPrice(
+                          item.unitPrice,
+                          undefined,
+                          item.amount / item.quantity,
+                        );
 
                         return `
                         <tr>
@@ -3332,9 +3336,10 @@ export default function EnhancedRequisitionSummaryPage() {
                                   display="block"
                                 >
                                   <CurrencyIcon boxSize={2} />
-                                  {(
-                                    item.unitPrice ||
-                                    item.amount / item.quantity
+                                  {resolveUnitPrice(
+                                    item.unitPrice,
+                                    undefined,
+                                    item.amount / item.quantity,
                                   ).toFixed(2)}{" "}
                                   each
                                 </Text>

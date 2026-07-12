@@ -1,0 +1,104 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>NDJSON Chunked Uploader</title>
+    <style>
+      body {
+        font-family:
+          system-ui,
+          Segoe UI,
+          Roboto,
+          Arial;
+        margin: 20px;
+      }
+      #log {
+        white-space: pre-wrap;
+        background: #111;
+        color: #efe;
+        padding: 10px;
+        height: 60vh;
+        overflow: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <h2>Upload NDJSON (chunked processing)</h2>
+    <label>Chunk size (lines): <input id="chunkSize" value="5000" /></label>
+    <br /><br />
+    <input type="file" id="file" />
+    <button id="start">Upload</button>
+
+    <h3>Progress</h3>
+    <div id="status">idle</div>
+    <div id="log"></div>
+
+    <script>
+      function appendLog(msg) {
+        const log = document.getElementById("log");
+        log.textContent += "\n" + msg;
+        log.scrollTop = log.scrollHeight;
+      }
+
+      document.getElementById("start").addEventListener("click", async () => {
+        const f = document.getElementById("file").files[0];
+        if (!f) return alert("Choose a file");
+        const chunkSize = document.getElementById("chunkSize").value || "5000";
+        const clientId =
+          Date.now().toString(36) +
+          "-" +
+          Math.random().toString(36).slice(2, 8);
+
+        const es = new EventSource(
+          "/events?clientId=" + encodeURIComponent(clientId),
+        );
+        es.onmessage = (e) => {
+          try {
+            const data = JSON.parse(e.data);
+            if (data.type === "batch") {
+              appendLog(
+                `Batch ${data.batchIndex}: parsed=${data.parsed} errors=${data.errors} total=${data.total}`,
+              );
+              document.getElementById("status").textContent =
+                `Processing chunk ${data.batchIndex}`;
+            } else if (data.type === "done") {
+              appendLog(
+                `Done: lines=${data.totalLines} parsed=${data.totalParsed} errors=${data.totalErrors}`,
+              );
+              document.getElementById("status").textContent = "Complete";
+              es.close();
+            } else if (data.type === "error") {
+              appendLog("Error: " + data.message);
+              document.getElementById("status").textContent = "Error";
+              es.close();
+            }
+          } catch (err) {
+            appendLog("Invalid SSE payload: " + e.data);
+          }
+        };
+
+        appendLog("Uploading " + f.name + " ...");
+        document.getElementById("status").textContent = "Uploading";
+
+        const fd = new FormData();
+        fd.append("file", f);
+        fd.append("chunkSize", chunkSize);
+
+        try {
+          const resp = await fetch(
+            "/upload?chunkSize=" + encodeURIComponent(chunkSize),
+            {
+              method: "POST",
+              headers: { "x-client-id": clientId },
+              body: fd,
+            },
+          );
+          const json = await resp.json();
+          appendLog("Server response: " + JSON.stringify(json));
+        } catch (err) {
+          appendLog("Upload failed: " + err);
+        }
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,7 @@
+{
+  "items": [
+    { "id": "1", "name": "Rice", "qty": 100 },
+    { "id": "2", "name": "Beans", "qty": 50 },
+    { "id": "3", "name": "Tomatoes", "qty": 200 }
+  ]
+}
