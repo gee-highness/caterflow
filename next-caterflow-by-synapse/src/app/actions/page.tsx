@@ -61,6 +61,7 @@ interface PurchaseOrder {
       name: string;
       sku?: string;
       unitOfMeasure: string;
+      unitPrice?: number;
     };
     supplier?: { _id: string; name: string } | null;
   }>;

@@ -81,6 +81,7 @@ export interface PurchaseOrder {
     stockItem: {
       name: string;
       _id: string;
+      unitPrice?: number;
     };
     supplier: {
       name: string;
@@ -276,7 +277,7 @@ export default function PurchasesPage() {
           initialQuantities[item._key] = item.orderedQuantity;
           initialPrices[item._key] = resolveUnitPrice(
             item.unitPrice,
-            item.stockItem?.unitPrice,
+            (item.stockItem as any)?.unitPrice,
           );
         }
       });
@@ -311,7 +312,10 @@ export default function PurchasesPage() {
         _key: item._key,
         stockItem: item.stockItem?._id,
         orderedQuantity: item.orderedQuantity,
-        unitPrice: resolveUnitPrice(item.unitPrice, item.stockItem?.unitPrice),
+        unitPrice: resolveUnitPrice(
+          item.unitPrice,
+          (item.stockItem as any)?.unitPrice,
+        ),
         supplier: item.supplier?._id || null,
       }));
 
@@ -415,7 +419,7 @@ export default function PurchasesPage() {
           orderedQuantity: editedQuantities[item._key] ?? item.orderedQuantity,
           unitPrice: resolveUnitPrice(
             editedPrices[item._key] ?? item.unitPrice,
-            item.stockItem?.unitPrice,
+            (item.stockItem as any)?.unitPrice,
           ),
           stockItem: item.stockItem?._id,
           supplier: item.supplier?._id,
@@ -704,7 +708,10 @@ export default function PurchasesPage() {
         _key: item._key,
         stockItem: item.stockItem?._id,
         orderedQuantity: item.orderedQuantity,
-        unitPrice: resolveUnitPrice(item.unitPrice, item.stockItem?.unitPrice),
+        unitPrice: resolveUnitPrice(
+          item.unitPrice,
+          (item.stockItem as any)?.unitPrice,
+        ),
         supplier: item.supplier?._id || null,
       }));
 

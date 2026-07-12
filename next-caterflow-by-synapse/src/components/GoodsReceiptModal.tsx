@@ -294,6 +294,42 @@ export default function GoodsReceiptModal({
     [toast],
   );
 
+  const fetchCurrentStockItemPrices = useCallback(
+    async (items: any[], binId: string) => {
+      if (!items.length) return items;
+
+      try {
+        const itemIds = items.map((item) => item.stockItem._id).filter(Boolean);
+
+        const pricesFromReceipts = await getRecentUnitPricesForItemsInBin(
+          itemIds,
+          binId,
+        );
+
+        return items.map((item) => {
+          const unitPrice = resolveUnitPrice(
+            pricesFromReceipts[item.stockItem._id],
+            item.stockItem.unitPrice,
+          );
+
+          return {
+            ...item,
+            stockItem: {
+              ...item.stockItem,
+              unitPrice: unitPrice,
+            },
+            unitPrice: unitPrice,
+            totalPrice: item.receivedQuantity * unitPrice,
+          };
+        });
+      } catch (error) {
+        console.error("Failed to fetch current prices:", error);
+        return items;
+      }
+    },
+    [],
+  );
+
   useEffect(() => {
     const loadInitialData = async () => {
       if (!isOpen) {
@@ -1111,42 +1147,6 @@ export default function GoodsReceiptModal({
     const num = parseFloat(value);
     return isNaN(num) ? 0 : num;
   };
-
-  const fetchCurrentStockItemPrices = useCallback(
-    async (items: any[], binId: string) => {
-      if (!items.length) return items;
-
-      try {
-        const itemIds = items.map((item) => item.stockItem._id).filter(Boolean);
-
-        const pricesFromReceipts = await getRecentUnitPricesForItemsInBin(
-          itemIds,
-          binId,
-        );
-
-        return items.map((item) => {
-          const unitPrice = resolveUnitPrice(
-            pricesFromReceipts[item.stockItem._id],
-            item.stockItem.unitPrice,
-          );
-
-          return {
-            ...item,
-            stockItem: {
-              ...item.stockItem,
-              unitPrice: unitPrice,
-            },
-            unitPrice: unitPrice,
-            totalPrice: item.receivedQuantity * unitPrice,
-          };
-        });
-      } catch (error) {
-        console.error("Failed to fetch current prices:", error);
-        return items;
-      }
-    },
-    [],
-  );
 
   const handleInvoiceUploadComplete = async (attachmentIds: string[]) => {
     try {

@@ -1180,7 +1180,8 @@ export default function ComprehensiveReportsPage() {
       const itemsWithVAT = stockItems.map((item) => {
         const isVATApplicable = item.isVATApplicable !== false;
         const stockValue =
-          (item.currentStock || 0) * resolveUnitPrice(item.unitPrice);
+          (item.currentStock || 0) *
+          resolveUnitPrice(item.unitPrice, item.stockItem?.unitPrice);
         const { vatAmount } = VAT_CONFIG.calculateVAT(
           stockValue,
           isVATApplicable,
@@ -2266,254 +2267,6 @@ export default function ComprehensiveReportsPage() {
     [filterDataByDateRange, calculateOpeningStockForDate, toast],
   );
 
-  // Enhanced fetchAllData function - CLIENT-SIDE FILTERING VERSION
-  const fetchAllData = useCallback(
-    async (forceRefresh = false) => {
-      setAnalyticsLoading(true);
-      setAnalyticsError(null); // Clear any previous error immediately
-      try {
-        console.log(
-          "🔄 Starting comprehensive data fetch for analytics with VAT...",
-          {
-            forceRefresh,
-            userSiteInfo,
-            selectedFilterSite,
-          },
-        );
-
-        // Clear existing data if forcing refresh
-        if (forceRefresh) {
-          setRawData({});
-          setAnalyticsData(null);
-        }
-
-        // Check if we already have data and don't force refresh
-        if (!forceRefresh && Object.keys(rawData).length > 0 && analyticsData) {
-          console.log("📊 Using cached data, skipping fetch");
-          setAnalyticsLoading(false);
-          return;
-        }
-
-        // Build URLs WITHOUT site filtering - we'll fetch ALL data
-        const buildUrl = (endpoint: string) => {
-          const url = new URL(endpoint, window.location.origin);
-
-          // Add date range parameters if needed by APIs
-          url.searchParams.set("startDate", primaryDateRange.start);
-          url.searchParams.set("endDate", primaryDateRange.end);
-
-          // For multi-site users, we can add a parameter to get ALL data
-          // Some APIs might need this to override their own site filtering
-          if (userSiteInfo.canAccessMultipleSites) {
-            url.searchParams.set("includeAllSites", "true");
-          }
-
-          return url.toString();
-        };
-
-        // Use correct API endpoints
-        const endpoints = [
-          buildUrl("/api/purchase-orders"),
-          buildUrl("/api/goods-receipts"),
-          buildUrl("/api/dispatches"),
-          buildUrl("/api/transfers"),
-          buildUrl("/api/bin-counts"),
-          buildUrl("/api/analytics/stock-values"),
-          buildUrl("/api/low-stock"),
-          buildUrl("/api/suppliers"),
-          buildUrl("/api/users"),
-          buildUrl("/api/sites"),
-        ];
-
-        console.log(
-          "📡 Fetching from endpoints (NO site filtering - getting ALL data):",
-          endpoints.map((e) => e.split("?")[0]),
-        );
-
-        const results = await Promise.allSettled(
-          endpoints.map(async (endpoint) => {
-            console.log(`📡 Fetching from ${endpoint.split("?")[0]}...`);
-            const response = await fetch(endpoint);
-            if (!response.ok) {
-              throw new Error(
-                `Failed to fetch ${endpoint}: ${response.status}`,
-              );
-            }
-            return response.json();
-          }),
-        );
-
-        // Process results with error handling
-        const [
-          purchaseOrders,
-          goodsReceipts,
-          dispatches,
-          transfers,
-          binCounts,
-          stockValues,
-          lowStock,
-          suppliers,
-          users,
-          sites,
-        ] = results.map((result, index) => {
-          if (result.status === "fulfilled") {
-            const data = result.value;
-            console.log(
-              `✅ Successfully fetched from ${endpoints[index].split("?")[0]}:`,
-              Array.isArray(data) ? data.length : "object received",
-            );
-            return data;
-          } else {
-            console.error(
-              `❌ Failed to fetch from ${endpoints[index].split("?")[0]}:`,
-              result.reason,
-            );
-            return [];
-          }
-        });
-
-        // Apply VAT calculations to ALL data (before filtering)
-        console.log("🧮 Applying VAT calculations to all data...");
-        const purchaseOrdersWithVAT = calculatePurchaseOrderVAT(
-          purchaseOrders || [],
-        );
-        const goodsReceiptsWithVAT = calculateGoodsReceiptVAT(
-          goodsReceipts || [],
-        );
-        const dispatchesWithVAT = calculateDispatchVAT(dispatches || []);
-        const inventoryWithVAT = calculateInventoryVAT(
-          stockValues?.items || stockValues || [],
-        );
-
-        // Validate we have at least some data
-        const totalDataItems = [
-          purchaseOrders,
-          goodsReceipts,
-          dispatches,
-          transfers,
-          binCounts,
-          stockValues,
-          lowStock,
-          suppliers,
-          users,
-          sites,
-        ].reduce((sum, data) => sum + (data?.length || 0), 0);
-
-        if (totalDataItems === 0) {
-          console.warn("⚠️ No data received from any API endpoint");
-          toast({
-            title: "No Data Available",
-            description:
-              "No data was returned from the server. Please check your connection.",
-            status: "warning",
-            duration: 5000,
-            isClosable: true,
-          });
-          return;
-        }
-
-        // Store ALL raw data (unfiltered) for export
-        const newRawData = {
-          purchaseOrders: purchaseOrdersWithVAT,
-          goodsReceipts: goodsReceiptsWithVAT,
-          dispatches: dispatchesWithVAT,
-          transfers: transfers || [],
-          binCounts: binCounts || [],
-          stockItems: inventoryWithVAT.items,
-          lowStock: lowStock || [],
-          suppliers: suppliers || [],
-          users: users || [],
-          sites: sites || [],
-        };
-
-        setRawData(newRawData);
-        console.log("✅ All raw data stored with VAT calculations");
-
-        // Process analytics data WITH CLIENT-SIDE FILTERING
-        await processFilteredAnalyticsData(
-          {
-            purchaseOrders: purchaseOrdersWithVAT,
-            goodsReceipts: goodsReceiptsWithVAT,
-            dispatches: dispatchesWithVAT,
-            transfers: transfers || [],
-            binCounts: binCounts || [],
-            stockValues: {
-              items: inventoryWithVAT.items,
-              summary: {
-                totalInventoryValue: inventoryWithVAT.items.reduce(
-                  (sum: number, item: any) =>
-                    sum + (item.currentStock || 0) * (item.unitPrice || 0),
-                  0,
-                ),
-                totalVAT: inventoryWithVAT.totalVAT,
-              },
-            },
-            lowStock: lowStock || [],
-            suppliers: suppliers || [],
-            users: users || [],
-            sites: sites || [],
-          },
-          dateRangeMemo,
-          selectedFilterSite, // Pass the selected filter site
-        );
-
-        // Show success message with site context
-        let successMessage = "Data loaded successfully";
-        if (!userSiteInfo.canAccessMultipleSites && userSiteInfo.userSiteName) {
-          successMessage = `Loaded data for ${userSiteInfo.userSiteName}`;
-        } else if (selectedFilterSite) {
-          const siteName = availableSites.find(
-            (s) => s._id === selectedFilterSite,
-          )?.name;
-          successMessage = `Loaded data for ${siteName || "selected site"} (client-side filtered)`;
-        } else {
-          successMessage = "Loaded all sites data";
-        }
-
-        setAnalyticsError(null);
-        toast({
-          title: "Success",
-          description: successMessage,
-          status: "success",
-          duration: 3000,
-          isClosable: true,
-        });
-      } catch (error) {
-        console.error("❌ Error fetching analytics data:", error);
-        const msg =
-          error instanceof Error
-            ? error.message
-            : "Failed to load analytics data from server";
-        setAnalyticsError(msg);
-        toast({
-          title: "Error Loading Data",
-          description: msg,
-          status: "error",
-          duration: 5000,
-          isClosable: true,
-        });
-      } finally {
-        setAnalyticsLoading(false);
-      }
-    },
-    [
-      toast,
-      rawData,
-      analyticsData,
-      dateRangeMemo,
-      calculatePurchaseOrderVAT,
-      calculateGoodsReceiptVAT,
-      calculateDispatchVAT,
-      calculateInventoryVAT,
-      processFilteredAnalyticsData,
-      userSiteInfo,
-      selectedFilterSite,
-      availableSites,
-      primaryDateRange.start,
-      primaryDateRange.end,
-    ],
-  );
-
   // Add this helper function to get stock values filtered by site
   const getFilteredStockValues = useCallback(
     async (
@@ -2811,6 +2564,254 @@ export default function ComprehensiveReportsPage() {
       getFilteredStockValues,
       toast,
       dateRangeMemo,
+    ],
+  );
+
+  // Enhanced fetchAllData function - CLIENT-SIDE FILTERING VERSION
+  const fetchAllData = useCallback(
+    async (forceRefresh = false) => {
+      setAnalyticsLoading(true);
+      setAnalyticsError(null); // Clear any previous error immediately
+      try {
+        console.log(
+          "🔄 Starting comprehensive data fetch for analytics with VAT...",
+          {
+            forceRefresh,
+            userSiteInfo,
+            selectedFilterSite,
+          },
+        );
+
+        // Clear existing data if forcing refresh
+        if (forceRefresh) {
+          setRawData({});
+          setAnalyticsData(null);
+        }
+
+        // Check if we already have data and don't force refresh
+        if (!forceRefresh && Object.keys(rawData).length > 0 && analyticsData) {
+          console.log("📊 Using cached data, skipping fetch");
+          setAnalyticsLoading(false);
+          return;
+        }
+
+        // Build URLs WITHOUT site filtering - we'll fetch ALL data
+        const buildUrl = (endpoint: string) => {
+          const url = new URL(endpoint, window.location.origin);
+
+          // Add date range parameters if needed by APIs
+          url.searchParams.set("startDate", primaryDateRange.start);
+          url.searchParams.set("endDate", primaryDateRange.end);
+
+          // For multi-site users, we can add a parameter to get ALL data
+          // Some APIs might need this to override their own site filtering
+          if (userSiteInfo.canAccessMultipleSites) {
+            url.searchParams.set("includeAllSites", "true");
+          }
+
+          return url.toString();
+        };
+
+        // Use correct API endpoints
+        const endpoints = [
+          buildUrl("/api/purchase-orders"),
+          buildUrl("/api/goods-receipts"),
+          buildUrl("/api/dispatches"),
+          buildUrl("/api/transfers"),
+          buildUrl("/api/bin-counts"),
+          buildUrl("/api/analytics/stock-values"),
+          buildUrl("/api/low-stock"),
+          buildUrl("/api/suppliers"),
+          buildUrl("/api/users"),
+          buildUrl("/api/sites"),
+        ];
+
+        console.log(
+          "📡 Fetching from endpoints (NO site filtering - getting ALL data):",
+          endpoints.map((e) => e.split("?")[0]),
+        );
+
+        const results = await Promise.allSettled(
+          endpoints.map(async (endpoint) => {
+            console.log(`📡 Fetching from ${endpoint.split("?")[0]}...`);
+            const response = await fetch(endpoint);
+            if (!response.ok) {
+              throw new Error(
+                `Failed to fetch ${endpoint}: ${response.status}`,
+              );
+            }
+            return response.json();
+          }),
+        );
+
+        // Process results with error handling
+        const [
+          purchaseOrders,
+          goodsReceipts,
+          dispatches,
+          transfers,
+          binCounts,
+          stockValues,
+          lowStock,
+          suppliers,
+          users,
+          sites,
+        ] = results.map((result, index) => {
+          if (result.status === "fulfilled") {
+            const data = result.value;
+            console.log(
+              `✅ Successfully fetched from ${endpoints[index].split("?")[0]}:`,
+              Array.isArray(data) ? data.length : "object received",
+            );
+            return data;
+          } else {
+            console.error(
+              `❌ Failed to fetch from ${endpoints[index].split("?")[0]}:`,
+              result.reason,
+            );
+            return [];
+          }
+        });
+
+        // Apply VAT calculations to ALL data (before filtering)
+        console.log("🧮 Applying VAT calculations to all data...");
+        const purchaseOrdersWithVAT = calculatePurchaseOrderVAT(
+          purchaseOrders || [],
+        );
+        const goodsReceiptsWithVAT = calculateGoodsReceiptVAT(
+          goodsReceipts || [],
+        );
+        const dispatchesWithVAT = calculateDispatchVAT(dispatches || []);
+        const inventoryWithVAT = calculateInventoryVAT(
+          stockValues?.items || stockValues || [],
+        );
+
+        // Validate we have at least some data
+        const totalDataItems = [
+          purchaseOrders,
+          goodsReceipts,
+          dispatches,
+          transfers,
+          binCounts,
+          stockValues,
+          lowStock,
+          suppliers,
+          users,
+          sites,
+        ].reduce((sum, data) => sum + (data?.length || 0), 0);
+
+        if (totalDataItems === 0) {
+          console.warn("⚠️ No data received from any API endpoint");
+          toast({
+            title: "No Data Available",
+            description:
+              "No data was returned from the server. Please check your connection.",
+            status: "warning",
+            duration: 5000,
+            isClosable: true,
+          });
+          return;
+        }
+
+        // Store ALL raw data (unfiltered) for export
+        const newRawData = {
+          purchaseOrders: purchaseOrdersWithVAT,
+          goodsReceipts: goodsReceiptsWithVAT,
+          dispatches: dispatchesWithVAT,
+          transfers: transfers || [],
+          binCounts: binCounts || [],
+          stockItems: inventoryWithVAT.items,
+          lowStock: lowStock || [],
+          suppliers: suppliers || [],
+          users: users || [],
+          sites: sites || [],
+        };
+
+        setRawData(newRawData);
+        console.log("✅ All raw data stored with VAT calculations");
+
+        // Process analytics data WITH CLIENT-SIDE FILTERING
+        await processFilteredAnalyticsData(
+          {
+            purchaseOrders: purchaseOrdersWithVAT,
+            goodsReceipts: goodsReceiptsWithVAT,
+            dispatches: dispatchesWithVAT,
+            transfers: transfers || [],
+            binCounts: binCounts || [],
+            stockValues: {
+              items: inventoryWithVAT.items,
+              summary: {
+                totalInventoryValue: inventoryWithVAT.items.reduce(
+                  (sum: number, item: any) =>
+                    sum + (item.currentStock || 0) * (item.unitPrice || 0),
+                  0,
+                ),
+                totalVAT: inventoryWithVAT.totalVAT,
+              },
+            },
+            lowStock: lowStock || [],
+            suppliers: suppliers || [],
+            users: users || [],
+            sites: sites || [],
+          },
+          dateRangeMemo,
+          selectedFilterSite, // Pass the selected filter site
+        );
+
+        // Show success message with site context
+        let successMessage = "Data loaded successfully";
+        if (!userSiteInfo.canAccessMultipleSites && userSiteInfo.userSiteName) {
+          successMessage = `Loaded data for ${userSiteInfo.userSiteName}`;
+        } else if (selectedFilterSite) {
+          const siteName = availableSites.find(
+            (s) => s._id === selectedFilterSite,
+          )?.name;
+          successMessage = `Loaded data for ${siteName || "selected site"} (client-side filtered)`;
+        } else {
+          successMessage = "Loaded all sites data";
+        }
+
+        setAnalyticsError(null);
+        toast({
+          title: "Success",
+          description: successMessage,
+          status: "success",
+          duration: 3000,
+          isClosable: true,
+        });
+      } catch (error) {
+        console.error("❌ Error fetching analytics data:", error);
+        const msg =
+          error instanceof Error
+            ? error.message
+            : "Failed to load analytics data from server";
+        setAnalyticsError(msg);
+        toast({
+          title: "Error Loading Data",
+          description: msg,
+          status: "error",
+          duration: 5000,
+          isClosable: true,
+        });
+      } finally {
+        setAnalyticsLoading(false);
+      }
+    },
+    [
+      toast,
+      rawData,
+      analyticsData,
+      dateRangeMemo,
+      calculatePurchaseOrderVAT,
+      calculateGoodsReceiptVAT,
+      calculateDispatchVAT,
+      calculateInventoryVAT,
+      processFilteredAnalyticsData,
+      userSiteInfo,
+      selectedFilterSite,
+      availableSites,
+      primaryDateRange.start,
+      primaryDateRange.end,
     ],
   );
 

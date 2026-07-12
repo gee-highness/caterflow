@@ -87,6 +87,7 @@ interface PurchaseOrder {
       name: string;
       sku?: string;
       unitOfMeasure: string;
+      unitPrice?: number;
       primarySupplier?: { _id: string; name: string } | null;
       suppliers?: Array<{ _ref: string }>;
     };
