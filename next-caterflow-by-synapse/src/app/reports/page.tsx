@@ -1390,13 +1390,16 @@ export default function ComprehensiveReportsPage() {
           );
 
           for (const item of items) {
-            const unitPrice = item.unitPrice || item.stockItem?.unitPrice || 0;
+            const unitPrice = resolveUnitPrice(
+              item.unitPrice,
+              item.stockItem?.unitPrice,
+            );
             const quantity = item.receivedQuantity || 0;
             const val = quantity * unitPrice;
             const itemName = item.stockItem?.name || "Unknown Item";
 
             console.log(
-              `     - ${itemName}: ${quantity} × ${unitPrice} = ${val.toFixed(2)}`,
+              `     - ${itemName}: ${quantity} × ${unitPrice.toFixed(2)} = ${val.toFixed(2)}`,
             );
             receiptValue += val;
           }
@@ -1415,10 +1418,12 @@ export default function ComprehensiveReportsPage() {
           const dispatchCostField = Number(d.totalCost || 0);
           const itemCostSum = (d.dispatchedItems || []).reduce(
             (itemSum: number, item: any) => {
-              const itemCost =
-                Number(item.totalCost || 0) ||
-                Number(item.dispatchedQuantity || 0) *
-                  Number(item.unitPrice || 0);
+              const qty = Number(item.dispatchedQuantity || 0);
+              const unitPrice = resolveUnitPrice(
+                item.unitPrice,
+                item.stockItem?.unitPrice,
+              );
+              const itemCost = Number(item.totalCost || 0) || qty * unitPrice;
               return itemSum + itemCost;
             },
             0,
@@ -1443,10 +1448,14 @@ export default function ComprehensiveReportsPage() {
           (d.dispatchedItems || []).forEach((item: any) => {
             const itemName = item.stockItem?.name || "Unknown Item";
             const qty = item.dispatchedQuantity || 0;
-            const price = item.unitPrice || 0;
-            const itemCost = Number(item.totalCost || 0) || qty * price;
+            const unitPrice = resolveUnitPrice(
+              item.unitPrice,
+              item.stockItem?.unitPrice,
+            );
+            const itemCost = Number(item.totalCost || 0) || qty * unitPrice;
+            const displayPrice = qty > 0 ? itemCost / qty : unitPrice;
             console.log(
-              `     - ${itemName}: ${qty} × ${price} = ${itemCost.toFixed(2)}`,
+              `     - ${itemName}: ${qty} × ${displayPrice.toFixed(2)} = ${itemCost.toFixed(2)}`,
             );
           });
 
@@ -2456,81 +2465,13 @@ export default function ComprehensiveReportsPage() {
           console.log("📊 Using unfiltered stock values (all sites)");
         }
 
-        // If skipAnalytics is true, use fast path with cached analytics
+        // If skipAnalytics is true, we preserve the legacy flag but still
+        // run full analytics so filtered site totals remain accurate.
         if (skipAnalytics && analyticsData) {
-          console.log("⚡ Using cached analytics with updated filters");
-
-          const updatedAnalytics = {
-            ...analyticsData,
-            summary: {
-              ...analyticsData.summary,
-              totalPurchaseOrders: filteredData.purchaseOrders.length,
-              totalGoodsReceipts: filteredData.goodsReceipts.length,
-              totalDispatches: filteredData.dispatches.length,
-              totalTransfers: filteredData.transfers.length,
-              totalBinCounts: filteredData.binCounts.length,
-              totalUsers: filteredData.users.length,
-              totalInventoryValue:
-                filteredStockValues.summary.totalInventoryValue,
-              totalVATCollected: analyticsData.summary.totalVATCollected,
-              totalVATPaid: analyticsData.summary.totalVATPaid,
-              netVATLiability: analyticsData.summary.netVATLiability,
-            },
-            purchaseOrders: {
-              ...analyticsData.purchaseOrders,
-              bySite: filteredData.purchaseOrders.reduce(
-                (acc: any[], po: any) => {
-                  const siteName = po.site?.name || "Unknown";
-                  const existing = acc.find((item) => item.name === siteName);
-                  if (existing) {
-                    existing.value++;
-                  } else {
-                    acc.push({ name: siteName, value: 1 });
-                  }
-                  return acc;
-                },
-                [],
-              ),
-            },
-            inventory: {
-              ...analyticsData.inventory,
-              totalValue: filteredStockValues.summary.totalInventoryValue,
-              vatIncluded: filteredStockValues.summary.totalVAT,
-            },
-            financial: {
-              ...analyticsData.financial,
-              openingStock: filteredStockValues.summary.totalInventoryValue,
-              closingStockValue:
-                filteredStockValues.summary.totalInventoryValue,
-            },
-          };
-
-          // After filtering, add:
-          console.log("🔍 SITE FILTERING DETAILS:");
-          console.log(`  Filter Site ID: ${filterSiteId}`);
           console.log(
-            `  Raw goods receipts: ${data.goodsReceipts?.length || 0}`,
+            "⚡ Legacy skipAnalytics flag detected; recalculating filtered analytics for correctness",
           );
-          console.log(
-            `  Filtered goods receipts: ${filteredGoodsReceipts.length}`,
-          );
-          console.log(`  Raw dispatches: ${data.dispatches?.length || 0}`);
-          console.log(`  Filtered dispatches: ${filteredDispatches.length}`);
-
-          // Also log a sample of filtered dispatches
-          if (filteredDispatches.length > 0) {
-            console.log("  Sample filtered dispatch:", {
-              number: filteredDispatches[0].dispatchNumber,
-              date: filteredDispatches[0].dispatchDate,
-              items: filteredDispatches[0].dispatchedItems?.length,
-            });
-          }
-
-          setAnalyticsData(updatedAnalytics);
-          console.log(
-            "✅ Analytics updated with client-side filtering (fast path)",
-          );
-          return;
+          // Continue to full analytics processing to avoid stale metrics.
         }
 
         // Full analytics processing with filtered data
