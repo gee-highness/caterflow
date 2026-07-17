@@ -25,19 +25,10 @@ export async function POST(request: Request) {
       `📊 API: Requested ${stockItemIds.length} items, ${binIds.length} bins`,
     );
 
-    // SAFETY CHECK: Limit the number of combinations
     const totalCombinations = stockItemIds.length * binIds.length;
     if (totalCombinations > 5000) {
       console.warn(
-        `⚠️ WARNING: Too many combinations requested (${totalCombinations}), limiting`,
-      );
-      return NextResponse.json(
-        {
-          error: "Too many combinations requested",
-          maxAllowed: 5000,
-          requested: totalCombinations,
-        },
-        { status: 400 },
+        `⚠️ Large snapshot request: ${totalCombinations} combinations requested. Processing safely.`,
       );
     }
 

@@ -4,13 +4,10 @@ import React, { useState } from "react";
 import {
   Box,
   Flex,
-  Heading,
   Button,
   Stack,
   useColorMode,
   useColorModeValue,
-  IconButton,
-  Link as ChakraLink,
   Text,
   useTheme,
   Tooltip,
@@ -25,25 +22,22 @@ import {
   DrawerBody,
   useBreakpointValue,
 } from "@chakra-ui/react";
-import { MoonIcon, SunIcon, HamburgerIcon } from "@chakra-ui/icons";
+import { MoonIcon, SunIcon } from "@chakra-ui/icons";
 import NextLink from "next/link";
 import Image from "next/image";
 import { useRouter, usePathname } from "next/navigation";
 import {
   FiLogOut,
   FiBarChart2,
-  FiBox,
   FiMapPin,
   FiTruck,
   FiUsers,
   FiSettings,
   FiBell,
-  FiClock,
   FiActivity,
   FiChevronDown,
   FiChevronUp,
   FiUser,
-  FiLayers,
   FiDatabase,
   FiShoppingCart,
   FiFileText,
@@ -55,13 +49,13 @@ import {
   FiList,
   FiCheckCircle,
   FiHome,
-  FiTrendingUp,
   FiAlertCircle,
   FiBriefcase,
 } from "react-icons/fi";
 import { useSession, signOut } from "next-auth/react";
 import { useLoading } from "@/context/LoadingContext";
 import { useSidebar } from "@/context/SidebarContext";
+import { getFilteredMenuGroups } from "@/lib/navigationConfig";
 
 interface SidebarProps {
   appName?: string;
@@ -105,184 +99,11 @@ const SidebarContent = ({ onItemClick }: { onItemClick?: () => void }) => {
   );
   const hoverBg = useColorModeValue("gray.100", "gray.700");
 
-  // Define menu items with roles and groups - Improved icons for better distinction
-  const menuGroups = [
-    {
-      heading: "Overview",
-      icon: FiHome,
-      items: [
-        {
-          label: "Dashboard",
-          href: "/",
-          icon: FiBarChart2,
-          roles: [
-            "admin",
-            "siteManager",
-            "stockController",
-            "auditor",
-            "procurer",
-          ],
-        },
-        {
-          label: "Activity",
-          href: "/activity",
-          icon: FiActivity,
-          roles: ["admin", "siteManager", "stockController", "auditor"],
-        },
-        {
-          label: "Actions",
-          href: "/actions",
-          icon: FiAlertTriangle,
-          roles: ["admin", "siteManager", "stockController", "procurer"],
-        },
-      ],
-    },
-    {
-      heading: "Inventory",
-      icon: FiPackage,
-      items: [
-        {
-          label: "Current Stock",
-          href: "/current",
-          icon: FiDatabase,
-          roles: [
-            "admin",
-            "siteManager",
-            "stockController",
-            "auditor",
-            "procurer",
-          ],
-        },
-        {
-          label: "Stock Items",
-          href: "/stock-items",
-          icon: FiList,
-          roles: ["admin", "siteManager", "stockController", "procurer"],
-        },
-        {
-          label: "Low Stock",
-          href: "/low-stock",
-          icon: FiAlertCircle,
-          roles: [
-            "admin",
-            "siteManager",
-            "stockController",
-            "auditor",
-            "procurer",
-          ],
-        },
-      ],
-    },
-    {
-      heading: "Operations",
-      icon: FiSettings,
-      items: [
-        {
-          label: "Approvals",
-          href: "/approvals",
-          icon: FiCheckCircle,
-          roles: ["admin", "siteManager"],
-        },
-        {
-          label: "Purchases",
-          href: "/operations/purchases",
-          icon: FiShoppingCart,
-          roles: ["admin", "siteManager", "stockController", "auditor"],
-        },
-        {
-          label: "Receipts",
-          href: "/operations/receipts",
-          icon: FiFileText,
-          roles: ["admin", "siteManager", "stockController", "auditor"],
-        },
-        {
-          label: "Dispatches",
-          href: "/operations/dispatches",
-          icon: FiTruck,
-          roles: ["admin", "siteManager", "stockController", "auditor"],
-        },
-        {
-          label: "Counts",
-          href: "/operations/bin-counts",
-          icon: FiClipboard,
-          roles: ["admin", "siteManager", "stockController", "auditor"],
-        },
-        {
-          label: "Transfers",
-          href: "/operations/transfers",
-          icon: FiRepeat,
-          roles: [
-            "admin",
-            "siteManager",
-            "stockController",
-            "auditor",
-            "procurer",
-          ],
-        },
-        {
-          label: "Procurement",
-          href: "/operations/procurement",
-          icon: FiShoppingBag,
-          roles: ["admin", "procurer"],
-        },
-      ],
-    },
-    {
-      heading: "Administration",
-      icon: FiUsers,
-      items: [
-        { label: "Users", href: "/users", icon: FiUsers, roles: ["admin"] },
-        {
-          label: "Dispatch Types",
-          href: "/dispatch-types",
-          icon: FiTruck,
-          roles: ["admin"],
-        },
-        {
-          label: "Locations",
-          href: "/locations",
-          icon: FiMapPin,
-          roles: ["admin"],
-        },
-        {
-          label: "Suppliers",
-          href: "/suppliers",
-          icon: FiBriefcase,
-          roles: ["admin", "procurer"],
-        },
-        {
-          label: "Reports",
-          href: "/reports",
-          icon: FiClipboard,
-          roles: ["admin", "siteManager", "auditor"],
-        },
-        {
-          label: "Archive",
-          href: "/admin/archive",
-          icon: FiDatabase,
-          roles: ["admin"],
-        },
-
-        //{ label: 'Notifications', href: '/notifications', icon: FiBell, roles: ['admin'] },
-        //{ label: 'System Settings', href: '/settings', icon: FiSettings, roles: ['admin'] },
-      ],
-    },
-  ];
-
   // Get user role from session
   const userRole = session?.user?.role;
   const isAuthenticated = status === "authenticated";
-  const isAuthReady = status !== "loading";
 
-  // Filter menu items based on the user's role
-  const filteredMenuGroups = userRole
-    ? menuGroups
-        .map((group) => ({
-          ...group,
-          items: group.items.filter((item) => item.roles.includes(userRole)),
-        }))
-        .filter((group) => group.items.length > 0)
-    : [];
+  const filteredMenuGroups = getFilteredMenuGroups(userRole);
 
   const toggleGroup = (heading: string) => {
     setExpandedGroups((prev) =>

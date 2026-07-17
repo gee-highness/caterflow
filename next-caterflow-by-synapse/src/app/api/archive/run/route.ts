@@ -133,31 +133,19 @@ export async function POST(request: Request) {
           { upsert: true },
         );
 
-        const result = await runArchive(queuedRunId);
-
-        const status = result.errors?.length
-          ? result.incomplete
-            ? "incomplete"
-            : "failed"
-          : result.incomplete
-            ? "incomplete"
-            : "success";
+        // Start the archive run in the background so the HTTP request does not timeout.
+        void runArchive(queuedRunId).catch((backgroundError: any) => {
+          console.error("Background archive run failed:", backgroundError);
+        });
 
         return NextResponse.json(
           {
             success: true,
             started: true,
-            status,
+            status: "started",
             runId: queuedRunId,
-            message: result.incomplete
-              ? "Archive run is paused due to the execution time limit and will resume on the next scheduled trigger."
-              : "Archive run completed successfully.",
-            archived: result.archived,
-            errors: result.errors,
-            durationMs: result.durationMs,
-            startedAt: result.startedAt,
-            completedAt: result.completedAt,
-            incomplete: result.incomplete,
+            message:
+              "Archive run queued successfully and will continue in the background.",
           },
           { status: 200 },
         );
