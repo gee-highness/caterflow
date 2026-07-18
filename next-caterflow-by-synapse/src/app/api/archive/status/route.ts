@@ -68,9 +68,42 @@ export async function GET(request: Request) {
       };
     });
 
+    const recentRuns = [...serialized];
+    if (progress.currentRun) {
+      const currentRunId = progress.currentRun.runId;
+      const hasExistingRun = recentRuns.some(
+        (run) => (run as any).runId === currentRunId,
+      );
+
+      if (!hasExistingRun) {
+        recentRuns.unshift({
+          _id: `current-${currentRunId}`,
+          runId: currentRunId,
+          runDate: progress.currentRun.startedAt,
+          status: progress.currentRun.status,
+          documentsArchived: 0,
+          documentsDeleted: 0,
+          assetsDeleted: 0,
+          archived: {},
+          totalInserted: 0,
+          totalSkipped: 0,
+          steps: [],
+          errors: progress.currentRun.errors || [],
+          durationMs: progress.currentRun.lastUpdatedAt
+            ? Math.max(
+                0,
+                new Date(progress.currentRun.lastUpdatedAt).getTime() -
+                  new Date(progress.currentRun.startedAt).getTime(),
+              )
+            : undefined,
+          incomplete: progress.currentRun.status === "incomplete",
+        } as any);
+      }
+    }
+
     return NextResponse.json({
-      recentRuns: serialized,
-      count: serialized.length,
+      recentRuns,
+      count: recentRuns.length,
       archiveInProgress: inProgress,
       currentRun: progress.currentRun,
       staleDetected: progress.staleDetected === true,
