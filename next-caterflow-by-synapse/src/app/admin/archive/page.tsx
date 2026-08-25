@@ -142,6 +142,7 @@ export default function ArchiveManagementPage() {
     unknownTypes: number;
     message: string;
   } | null>(null);
+  const [downloadInProgress, setDownloadInProgress] = useState(false);
   const rowsPerPage = 10;
   const { isOpen, onOpen, onClose } = useDisclosure();
   const {
@@ -471,14 +472,53 @@ export default function ArchiveManagementPage() {
   };
 
   const confirmDeleteOld = async () => {
-    await handleRunArchive({ deleteOld: true });
-    onClose();
-    setDeleteOld(false);
+    try {
+      setIsRunning(true);
+      await handleRunArchive({ deleteOld: true });
+      await fetchLogs();
+    } catch (err) {
+      // handleRunArchive shows toasts on failure
+    } finally {
+      onClose();
+      setDeleteOld(false);
+      setIsRunning(false);
+    }
   };
 
   const handleDownloadBackup = () => {
-    // Just navigate to the endpoint to trigger the browser download
-    window.location.href = "/api/archive/export";
+    void (async () => {
+      try {
+        setDownloadInProgress(true);
+        const res = await fetch("/api/archive/export");
+        if (!res.ok) {
+          const text = await res.text().catch(() => "");
+          throw new Error(text || "Failed to generate export");
+        }
+        const disposition =
+          res.headers.get("Content-Disposition") ||
+          res.headers.get("content-disposition");
+        const filenameMatch = disposition
+          ? /filename="?([^";]+)"?/.exec(disposition)
+          : null;
+        const filename = filenameMatch
+          ? filenameMatch[1]
+          : `caterflow_archive_backup_${new Date().toISOString().split("T")[0]}.json.enc`;
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        toast({ title: "Download started", status: "success", duration: 4000, isClosable: true });
+      } catch (err: any) {
+        toast({ title: "Download failed", description: err?.message || String(err), status: "error", duration: 7000, isClosable: true });
+      } finally {
+        setDownloadInProgress(false);
+      }
+    })();
   };
 
   const selectedRun = selectedRunId

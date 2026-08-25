@@ -4,11 +4,21 @@
 
 import { getArchiveDb, COLLECTIONS } from '@/lib/mongoClient';
 import { CollectionName } from '@/lib/mongoClient';
+import { stableSerialize } from '@/lib/archiveService';
 import type { Db } from 'mongodb';
 
-/** Simple deep equality check for JSON objects */
+/**
+ * Deep equality check for JSON objects, order-independent on object keys.
+ * A plain `JSON.stringify(a) === JSON.stringify(b)` is key-order-dependent,
+ * so two semantically identical documents (e.g. one from Mongo, one from a
+ * re-serialized backup file) can come out with keys in a different order
+ * and falsely register as "updated". This reuses the same key-sorting
+ * comparison already used elsewhere in the archive pipeline (see
+ * normalizeForComparison / stableSerialize in archiveService.ts) so
+ * import diffs and archive-sync diffs agree on what counts as "changed".
+ */
 function isEqual(a: any, b: any): boolean {
-  return JSON.stringify(a) === JSON.stringify(b);
+  return stableSerialize(a) === stableSerialize(b);
 }
 
 /**

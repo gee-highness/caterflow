@@ -15,6 +15,13 @@ interface UserData {
   associatedSite?: string;
 }
 
+// The DELETE handler below calls createSafeDeleteHandler(), which can call
+// enforceBackupBeforeDelete() -> a full synchronous archive run when no
+// recent backup exists. Extend the timeout so that doesn't hit Vercel's
+// default function duration limit. (Applies to all methods in this file,
+// which is harmless for GET/PUT.)
+export const maxDuration = 300;
+
 // GET all users
 export async function GET(req: NextRequest) {
   try {

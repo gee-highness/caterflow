@@ -11,6 +11,12 @@ import {
   isBackupRecent,
 } from "@/lib/backupSafetyChecks";
 
+// POST can call enforceBackupBeforeDelete(), which runs a full synchronous
+// archive (runArchive()) when no recent backup exists. Without this, the
+// route falls back to Vercel's default function timeout, which is far
+// shorter than an archive run can take.
+export const maxDuration = 300;
+
 /**
  * GET /api/archive/safe-delete
  * Checks if it's safe to delete (i.e., recent backup exists)

@@ -724,6 +724,43 @@ const filterDataBySite = <T extends any[]>(
   }) as T;
 };
 
+// Net value effect of internal transfers on a single site's stock value.
+// A transfer INTO the filtered site is a value inflow (like a receipt);
+// a transfer OUT of the filtered site is a value outflow (like a dispatch).
+// Transfers between two bins of the SAME filtered site (or when no specific
+// site is selected) net to zero, since the stock never leaves the scope
+// being valued. Transfers are valued at the stock item's current unitPrice,
+// consistent with how bin-count variances are valued elsewhere in this file.
+const computeNetTransferValue = (
+  transfers: any[],
+  filterSiteId: string | null | undefined,
+): number => {
+  if (!filterSiteId || filterSiteId === "all" || !Array.isArray(transfers)) {
+    return 0;
+  }
+
+  return transfers.reduce((sum: number, t: any) => {
+    const fromSiteId = t.fromBin?.site?._id || t.fromBin?.site;
+    const toSiteId = t.toBin?.site?._id || t.toBin?.site;
+    const isInflow = toSiteId === filterSiteId;
+    const isOutflow = fromSiteId === filterSiteId;
+
+    // Same-site bin-to-bin transfer (or a transfer touching neither side,
+    // which shouldn't occur since the caller already filtered by site) —
+    // no net value change for this site.
+    if (isInflow === isOutflow) return sum;
+
+    const items = t.items || t.transferredItems || [];
+    const transferValue = items.reduce((itemSum: number, item: any) => {
+      const qty = Number(item.transferredQuantity || 0);
+      const unitPrice = Number(item.stockItem?.unitPrice || 0);
+      return itemSum + qty * unitPrice;
+    }, 0);
+
+    return sum + (isInflow ? transferValue : -transferValue);
+  }, 0);
+};
+
 // Chart color schemes
 const CHART_COLORS = {
   primary: ["#3182CE", "#63B3ED", "#90CDF4", "#BEE3F8"],
@@ -1342,6 +1379,8 @@ export default function ComprehensiveReportsPage() {
       allDispatches: any[],
       // Optional: { `${stockItemId}`: countedQuantity } – from a physical inventory count
       inventoryCounts?: Record<string, number>,
+      allTransfers?: any[],
+      filterSiteId?: string | null,
     ): Promise<number> => {
       console.log(
         "💰 CALCULATING OPENING STOCK FOR:",
@@ -1487,8 +1526,31 @@ export default function ComprehensiveReportsPage() {
         }
 
         // ========== 6. STANDARD FORMULA ==========
-        // opening = receipts_before − dispatches_before  ✅ (was inverted previously)
-        const openingStock = receiptsValueBefore - dispatchesValueBefore;
+        // opening = receipts_before − dispatches_before ± net transfers in/out
+        // of the filtered site before the target date (transfers only move
+        // stock between bins/sites — they must be included so a single
+        // site's opening value reflects stock actually transferred in/out,
+        // not just what it purchased/dispatched directly).
+        const transfersBeforeDate = (allTransfers || []).filter((t: any) => {
+          try {
+            return new Date(t.transferDate) <= targetDate;
+          } catch {
+            return false;
+          }
+        });
+        const netTransferValueBefore = computeNetTransferValue(
+          transfersBeforeDate,
+          filterSiteId,
+        );
+        if (netTransferValueBefore !== 0) {
+          console.log(
+            "🔁 Net transfer value before date (site-scoped):",
+            netTransferValueBefore.toFixed(2),
+          );
+        }
+
+        const openingStock =
+          receiptsValueBefore - dispatchesValueBefore + netTransferValueBefore;
 
         console.log("✅ FINAL Opening stock:", {
           receiptsBeforeValue: receiptsValueBefore.toFixed(2),
@@ -1519,6 +1581,7 @@ export default function ComprehensiveReportsPage() {
       // NEW PARAMETERS - pass in pre-filtered transactions
       filteredGoodsReceipts?: any[],
       filteredDispatches?: any[],
+      filterSiteId?: string | null,
     ): Promise<EnhancedAnalyticsData> => {
       try {
         // Validate data
@@ -1611,6 +1674,8 @@ export default function ComprehensiveReportsPage() {
           Object.keys(inventoryCountsMap).length > 0
             ? inventoryCountsMap
             : undefined,
+          transfers,
+          filterSiteId,
         );
 
         setCalculatingOpeningStock(false);
@@ -1718,12 +1783,26 @@ export default function ComprehensiveReportsPage() {
           0,
         );
 
+        // 7b. Net transfer value in/out of the filtered site during the
+        // period itself (opening stock already accounts for transfers
+        // BEFORE the period start — this covers transfers that happened
+        // DURING it, same reasoning as periodPurchases/periodConsumption).
+        const periodTransfers = filterDataByDateRange(
+          transfers,
+          "transferDate",
+        );
+        const netTransferValuePeriod = computeNetTransferValue(
+          periodTransfers,
+          filterSiteId,
+        );
+
         // 8. Calculate closing stock value
         const closingStockValue =
           openingStockValue +
           periodPurchasesExclVAT -
           periodConsumptionExclVAT +
-          netVariancesValue;
+          netVariancesValue +
+          netTransferValuePeriod;
 
         // 9. Calculate net profit (gross profit after VAT)
         const netProfit = grossProfitBeforeVAT - netVATPayable;
@@ -2487,6 +2566,8 @@ export default function ComprehensiveReportsPage() {
           dateRange,
           filteredGoodsReceipts, // PASS FILTERED GOODS RECEIPTS
           filteredDispatches, // PASS FILTERED DISPATCHES
+          filterSiteId, // PASS SITE FILTER so opening/closing stock value can
+          // account for the net effect of internal transfers in/out of it
         );
 
         setAnalyticsData(analytics);

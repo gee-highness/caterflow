@@ -21,17 +21,24 @@ export async function POST(request: Request) {
 
   try {
     const db = await getArchiveDb();
-    const lockId = "archive-lock";
-    // Reset the lock document so future runs can acquire it
+    const progressId = "archive-progress";
+    // Force the progress singleton back to a resolved state so
+    // archiveInProgress flips false and a new run can be started.
+    // (Previously this wrote to an "archive-lock" doc that nothing
+    // else in the system ever read, so it was a no-op.)
     await db.collection(COLLECTIONS.ARCHIVE_RUNS).updateOne(
-      { _id: lockId } as any,
+      { _id: progressId } as any,
       {
         $set: {
-          locked: false,
-          owner: null,
-          releasedAt: new Date().toISOString(),
+          status: "failed",
+          currentStep: null,
+          completedAt: new Date().toISOString(),
+          lastUpdatedAt: new Date().toISOString(),
         },
-      },
+        $push: {
+          progressMessages: "Archive lock manually cleared by admin",
+        },
+      } as any,
       { upsert: true },
     );
 

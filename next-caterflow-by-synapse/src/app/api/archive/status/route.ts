@@ -71,33 +71,44 @@ export async function GET(request: Request) {
     const recentRuns = [...serialized];
     if (progress.currentRun) {
       const currentRunId = progress.currentRun.runId;
-      const hasExistingRun = recentRuns.some(
-        (run) => (run as any).runId === currentRunId,
-      );
+      // Check if this run already exists in the list by comparing runId
+      const hasExistingRun = recentRuns.some((run: any) => {
+        return (
+          run.runId === currentRunId ||
+          (run.owner && run.owner === currentRunId)
+        );
+      });
 
       if (!hasExistingRun) {
-        recentRuns.unshift({
-          _id: `current-${currentRunId}`,
-          runId: currentRunId,
-          runDate: progress.currentRun.startedAt,
-          status: progress.currentRun.status,
-          documentsArchived: 0,
-          documentsDeleted: 0,
-          assetsDeleted: 0,
-          archived: {},
-          totalInserted: 0,
-          totalSkipped: 0,
-          steps: [],
-          errors: progress.currentRun.errors || [],
-          durationMs: progress.currentRun.lastUpdatedAt
-            ? Math.max(
-                0,
-                new Date(progress.currentRun.lastUpdatedAt).getTime() -
-                  new Date(progress.currentRun.startedAt).getTime(),
-              )
-            : undefined,
-          incomplete: progress.currentRun.status === "incomplete",
-        } as any);
+        // Only add synthetic entry if this is an active run (not completed)
+        if (
+          progress.currentRun.status === "queued" ||
+          progress.currentRun.status === "running" ||
+          progress.currentRun.status === "incomplete"
+        ) {
+          recentRuns.unshift({
+            _id: `current-${currentRunId}`,
+            runId: currentRunId,
+            runDate: progress.currentRun.startedAt,
+            status: progress.currentRun.status,
+            documentsArchived: 0,
+            documentsDeleted: 0,
+            assetsDeleted: 0,
+            archived: {},
+            totalInserted: 0,
+            totalSkipped: 0,
+            steps: [],
+            errors: progress.currentRun.errors || [],
+            durationMs: progress.currentRun.lastUpdatedAt
+              ? Math.max(
+                  0,
+                  new Date(progress.currentRun.lastUpdatedAt).getTime() -
+                    new Date(progress.currentRun.startedAt).getTime(),
+                )
+              : undefined,
+            incomplete: progress.currentRun.status === "incomplete",
+          } as any);
+        }
       }
     }
 

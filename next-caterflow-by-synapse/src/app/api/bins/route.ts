@@ -13,6 +13,13 @@ interface BinData {
   site: string;
 }
 
+// The DELETE handler below calls createSafeDeleteHandler(), which can call
+// enforceBackupBeforeDelete() -> a full synchronous archive run when no
+// recent backup exists. Extend the timeout so that doesn't hit Vercel's
+// default function duration limit. (Applies to all methods in this file,
+// which is harmless for GET/PUT.)
+export const maxDuration = 300;
+
 // Roles that are permitted to view bins from all sites in the transfer context.
 const CROSS_SITE_ROLES = ["admin", "auditor", "procurer", "site-manager"];
 

@@ -28,8 +28,10 @@ export interface ArchiveRunResult {
   durationMs: number;
   archived: Record<string, number>;
   errors: string[];
+  warnings: string[];
   skipped: number;
   totalInserted?: number;
+  totalUpdated?: number;
   totalSkipped?: number;
   steps: ArchiveStepResult[];
   assetsDeleted: number;
@@ -104,7 +106,7 @@ function normalizeForComparison(value: any): any {
   return value;
 }
 
-function stableSerialize(value: any): string {
+export function stableSerialize(value: any): string {
   return JSON.stringify(normalizeForComparison(value));
 }
 
@@ -1606,13 +1608,14 @@ export async function runArchive(
 
       const elapsed = Date.now() - startMs;
       if (elapsed >= allowedMs - 2000) {
-        const partialResult: ArchiveRunResult = {
+        const partialResult: ArchiveRunResult & { runId: string } = {
           runId,
           startedAt,
           completedAt: new Date().toISOString(),
           durationMs: Date.now() - startMs,
           archived,
           errors,
+          warnings: steps.flatMap((step) => step.warnings || []),
           skipped: totalSkipped,
           steps,
           assetsDeleted: steps.reduce(
@@ -1621,7 +1624,11 @@ export async function runArchive(
           ),
           incomplete: true,
         };
-        await db.collection(COLLECTIONS.ARCHIVE_RUNS).insertOne(partialResult);
+        // Replace existing partial result for this runId to avoid creating
+        // many duplicate partial documents when resuming.
+        await db
+          .collection(COLLECTIONS.ARCHIVE_RUNS)
+          .replaceOne({ runId }, partialResult as any, { upsert: true });
         await updateArchiveProgress(
           progressCollection,
           progressId,
@@ -1708,15 +1715,17 @@ export async function runArchive(
       0,
     );
 
-    const result: ArchiveRunResult = {
+    const result: ArchiveRunResult & { runId: string } = {
       runId,
       startedAt,
       completedAt,
       durationMs,
       archived,
       errors,
+      warnings: steps.flatMap((step) => step.warnings || []),
       skipped: totalSkipped,
       totalInserted,
+      totalUpdated: 0,
       totalSkipped,
       steps,
       assetsDeleted: steps.reduce(
@@ -1726,7 +1735,10 @@ export async function runArchive(
       incomplete: false,
     };
 
-    await db.collection(COLLECTIONS.ARCHIVE_RUNS).insertOne(result);
+    // Replace any existing partial/failure doc for this run with the final result
+    await db
+      .collection(COLLECTIONS.ARCHIVE_RUNS)
+      .replaceOne({ runId }, result as any, { upsert: true });
     await updateArchiveProgress(
       progressCollection,
       progressId,
@@ -1757,15 +1769,17 @@ export async function runArchive(
 
     const failedAt = new Date().toISOString();
     const durationMs = Date.now() - startMs;
-    const failedResult: ArchiveRunResult = {
+    const failedResult: ArchiveRunResult & { runId: string } = {
       runId,
       startedAt,
       completedAt: failedAt,
       durationMs,
       archived,
       errors,
+      warnings: steps.flatMap((step) => step.warnings || []),
       skipped: totalSkipped,
       totalInserted,
+      totalUpdated: 0,
       totalSkipped,
       steps,
       assetsDeleted: steps.reduce(
@@ -1775,7 +1789,10 @@ export async function runArchive(
       incomplete: false,
     };
 
-    await db.collection(COLLECTIONS.ARCHIVE_RUNS).insertOne(failedResult);
+    // Replace any existing partial doc with the failed final result
+    await db
+      .collection(COLLECTIONS.ARCHIVE_RUNS)
+      .replaceOne({ runId }, failedResult as any, { upsert: true });
     await updateArchiveProgress(
       progressCollection,
       progressId,

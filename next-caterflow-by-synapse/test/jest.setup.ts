@@ -2,33 +2,36 @@ import "@testing-library/jest-dom";
 
 // polyfills
 import "whatwg-fetch";
-if (typeof window !== "undefined" && !window.matchMedia) {
-  const jestMock = (globalThis as any).jest;
-  Object.defineProperty(window, "matchMedia", {
+
+const createMatchMedia = () => {
+  const fn = (query: string) => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addListener: jest.fn(),
+    removeListener: jest.fn(),
+    addEventListener: jest.fn(),
+    removeEventListener: jest.fn(),
+    dispatchEvent: jest.fn(() => false),
+  });
+
+  return Object.assign(fn, {
+    // allow callers to override the default behavior if needed in tests
+    _mockImplementation: fn,
+  });
+};
+
+const matchMediaMock = createMatchMedia();
+
+const target = typeof window !== "undefined" ? window : globalThis;
+if (!("matchMedia" in target)) {
+  Object.defineProperty(target, "matchMedia", {
     writable: true,
-    value: jestMock
-      ? jestMock.fn().mockImplementation((query: string) => ({
-          matches: false,
-          media: query,
-          onchange: null,
-          addListener: jestMock.fn(),
-          removeListener: jestMock.fn(),
-          addEventListener: jestMock.fn(),
-          removeEventListener: jestMock.fn(),
-          dispatchEvent: jestMock.fn(),
-        }))
-      : (() => ({
-          matches: false,
-          media: "",
-          onchange: null,
-          addListener: () => {},
-          removeListener: () => {},
-          addEventListener: () => {},
-          removeEventListener: () => {},
-          dispatchEvent: () => false,
-        }))(),
+    configurable: true,
+    value: matchMediaMock,
   });
 }
+
 // optional: configure MSW here for component tests
 import { server } from "./mocks/server";
 

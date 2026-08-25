@@ -44,19 +44,20 @@ export async function GET() {
             "fromBin": fromBin->{
                 _id,
                 name,
-                "site": site->{name}
+                "site": site->{_id, name}
             },
             "toBin": toBin->{
                 _id,
                 name,
-                "site": site->{name}
+                "site": site->{_id, name}
             },
             "totalItems": count(transferredItems),
             "items": transferredItems[]{
                 "stockItem": stockItem->{
                     _id,
                     name,
-                    sku
+                    sku,
+                    unitPrice
                 },
                 transferredQuantity
             }

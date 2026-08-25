@@ -258,19 +258,50 @@ async function validateArchiveData(): Promise<CheckResult[]> {
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - ARCHIVE_DAYS);
 
-    // Check for documents older than cutoff in each type
+    // Check for documents older than cutoff in each type.
+    // The `exclude` clause for each type MUST mirror the exclusion filter the
+    // corresponding archiveXxx() step in archiveService.ts actually uses —
+    // otherwise this reports an "eligible" count that doesn't match what a
+    // real archive run will process (e.g. counting draft/pending-approval
+    // documents that the real run skips).
     const types = [
-      { name: "DispatchLog", field: "dispatchDate" },
-      { name: "PurchaseOrder", field: "orderDate" },
-      { name: "GoodsReceipt", field: "receiptDate" },
-      { name: "InternalTransfer", field: "transferDate" },
-      { name: "StockAdjustment", field: "adjustmentDate" },
-      { name: "InventoryCount", field: "countDate" },
-      { name: "FileAttachment", field: "uploadedAt" },
+      {
+        name: "DispatchLog",
+        field: "dispatchDate",
+        exclude: '!(evidenceStatus in ["pending", "partial"])',
+      },
+      {
+        name: "PurchaseOrder",
+        field: "orderDate",
+        exclude: '!(status in ["draft", "pending-approval"])',
+      },
+      {
+        name: "GoodsReceipt",
+        field: "receiptDate",
+        exclude: '!(evidenceStatus in ["pending", "partial"])',
+      },
+      {
+        name: "InternalTransfer",
+        field: "transferDate",
+        exclude: '!(status in ["draft", "pending-approval"])',
+      },
+      {
+        name: "StockAdjustment",
+        field: "adjustmentDate",
+        exclude: '!(evidenceStatus in ["pending", "partial"])',
+      },
+      {
+        name: "InventoryCount",
+        field: "countDate",
+        exclude: '!(status in ["draft", "in-progress"])',
+      },
+      { name: "FileAttachment", field: "uploadedAt", exclude: null },
     ];
 
     for (const type of types) {
-      const query = groq`count(*[_type == "${type.name}" && ${type.field} < $cutoff])`;
+      const query = groq`count(*[_type == "${type.name}" && ${type.field} < $cutoff${
+        type.exclude ? ` && ${type.exclude}` : ""
+      }])`;
       const count = await sanityClient.fetch(query, {
         cutoff: cutoffDate.toISOString(),
       });
@@ -311,7 +342,7 @@ async function validateArchiveRuns(): Promise<CheckResult[]> {
     const runsCollection = db.collection(COLLECTIONS.ARCHIVE_RUNS);
 
     const recentRuns = await runsCollection
-      .find({})
+      .find({ kind: { $ne: "progress" } })
       .sort({ startedAt: -1 })
       .limit(5)
       .toArray();

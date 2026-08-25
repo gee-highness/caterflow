@@ -2,7 +2,7 @@
 // Cron trigger endpoint — called daily at midnight by Vercel Cron
 // Also accepts manual POST from admin users
 
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 import { headers } from "next/headers";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
@@ -134,9 +134,15 @@ export async function POST(request: Request) {
         );
 
         // Start the archive run in the background so the HTTP request does not timeout.
-        void runArchive(queuedRunId).catch((backgroundError: any) => {
-          console.error("Background archive run failed:", backgroundError);
-        });
+        // IMPORTANT: a bare `void runArchive(...)` is not safe here — on Vercel the
+        // serverless function can be frozen/terminated as soon as the response below
+        // is sent, which kills this promise before it does any real work. `after()`
+        // tells the platform to keep the function alive until this callback settles.
+        after(() =>
+          runArchive(queuedRunId).catch((backgroundError: any) => {
+            console.error("Background archive run failed:", backgroundError);
+          }),
+        );
 
         return NextResponse.json(
           {
@@ -213,6 +219,10 @@ export async function POST(request: Request) {
       breakdown: result.archived,
       // Steps and assetsDeleted are optional in current implementation
       errors: result.errors,
+      warnings: result.warnings,
+      totalInserted: result.totalInserted,
+      totalUpdated: result.totalUpdated,
+      totalSkipped: result.totalSkipped,
       durationMs: result.durationMs,
       startedAt: result.startedAt,
       completedAt: result.completedAt,

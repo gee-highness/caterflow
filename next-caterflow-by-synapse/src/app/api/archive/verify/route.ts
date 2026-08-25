@@ -168,12 +168,17 @@ export async function POST(request: Request) {
 
     // Check ARCHIVE_RUNS collection integrity
     try {
+      // Exclude the "archive-progress" singleton doc — it isn't a run
+      // record, and its startedAt is refreshed on every run, so leaving it
+      // in would both inflate totalRuns by one and could get picked as
+      // "lastRun" instead of an actual completed/partial run.
+      const runsFilter = { kind: { $ne: "progress" } };
       const runsCount = await db
         .collection(COLLECTIONS.ARCHIVE_RUNS)
-        .countDocuments();
+        .countDocuments(runsFilter);
       const runs = await db
         .collection(COLLECTIONS.ARCHIVE_RUNS)
-        .find({})
+        .find(runsFilter)
         .sort({ startedAt: -1 })
         .limit(1)
         .toArray();
