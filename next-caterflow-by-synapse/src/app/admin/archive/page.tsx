@@ -512,9 +512,20 @@ export default function ArchiveManagementPage() {
         a.click();
         a.remove();
         URL.revokeObjectURL(url);
-        toast({ title: "Download started", status: "success", duration: 4000, isClosable: true });
+        toast({
+          title: "Download started",
+          status: "success",
+          duration: 4000,
+          isClosable: true,
+        });
       } catch (err: any) {
-        toast({ title: "Download failed", description: err?.message || String(err), status: "error", duration: 7000, isClosable: true });
+        toast({
+          title: "Download failed",
+          description: err?.message || String(err),
+          status: "error",
+          duration: 7000,
+          isClosable: true,
+        });
       } finally {
         setDownloadInProgress(false);
       }
