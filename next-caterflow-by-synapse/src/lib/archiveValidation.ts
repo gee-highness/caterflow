@@ -85,11 +85,17 @@ async function validateEnvironment(): Promise<CheckResult[]> {
   }
 
   // Check ARCHIVE_ENCRYPTION_KEY
+  // NOTE: this is NOT optional in practice — /api/archive/export always
+  // calls encryptData() unconditionally, so a missing or malformed key
+  // makes Export/Import fail on every single call. This used to be
+  // reported as "warn" with "(backups will not be encrypted)", which
+  // wrongly implied there's a working unencrypted fallback — there isn't.
   if (!process.env.ARCHIVE_ENCRYPTION_KEY) {
     results.push({
       name: "Encryption Key",
-      status: "warn",
-      message: "ARCHIVE_ENCRYPTION_KEY not set (backups will not be encrypted)",
+      status: "fail",
+      message:
+        "ARCHIVE_ENCRYPTION_KEY not set — /api/archive/export and /api/archive/import will fail on every request until this is set to a 32-byte base64 key.",
     });
   } else {
     const keyLength = Buffer.from(
@@ -99,8 +105,8 @@ async function validateEnvironment(): Promise<CheckResult[]> {
     if (keyLength !== 32) {
       results.push({
         name: "Encryption Key",
-        status: "warn",
-        message: `Encryption key is ${keyLength} bytes (expected 32 for AES-256)`,
+        status: "fail",
+        message: `Encryption key is ${keyLength} bytes (expected 32 for AES-256) — /api/archive/export and /api/archive/import will fail on every request until this is corrected.`,
       });
     } else {
       results.push({

@@ -77,9 +77,13 @@ export async function GET(request: Request) {
       },
     });
   } catch (error: any) {
-    console.error("Archive export failed:", error);
+    console.error("❌ Archive export failed:", error?.stack || error);
     return NextResponse.json(
-      { error: "Failed to generate archive backup", details: error?.message },
+      {
+        error: "Failed to generate archive backup",
+        details: error?.message || String(error),
+        errorName: error?.name,
+      },
       { status: 500 },
     );
   }

@@ -65,6 +65,7 @@ interface ArchiveStepResult {
   count: number;
   deletedCount: number;
   inserted?: number;
+  updated?: number;
   skipped?: number;
   status: "success" | "partial" | "failed";
   errors: string[];
@@ -82,9 +83,11 @@ interface ArchiveLog {
   assetsDeleted: number;
   archived?: Record<string, number>;
   totalInserted?: number;
+  totalUpdated?: number;
   totalSkipped?: number;
   steps?: ArchiveStepResult[];
   errors?: string[];
+  warnings?: string[];
   durationMs?: number;
 }
 
@@ -142,7 +145,6 @@ export default function ArchiveManagementPage() {
     unknownTypes: number;
     message: string;
   } | null>(null);
-  const [downloadInProgress, setDownloadInProgress] = useState(false);
   const rowsPerPage = 10;
   const { isOpen, onOpen, onClose } = useDisclosure();
   const {
@@ -380,7 +382,19 @@ export default function ArchiveManagementPage() {
 
   const handleRunArchive = async (options?: { deleteOld?: boolean }) => {
     if (options?.deleteOld) {
-      const confirmationMessage = `Are you sure you want to delete archive run history and baseline snapshots older than ${ARCHIVE_DAYS} days? This action cannot be undone.`;
+      // IMPORTANT: this triggers TWO destructive operations, not one —
+      // cleanupOldArchiveMetadata() (old run-history/baseline records) AND
+      // cleanupArchivedSanityData() (permanently deletes the ORIGINAL
+      // Sanity documents once they've been archived to Mongo). The previous
+      // wording here only mentioned the first, so admins weren't told the
+      // action also permanently removes source documents from Sanity.
+      // Also: a document only becomes eligible for Sanity deletion once
+      // it's been sitting in the Mongo archive for ${ARCHIVE_DAYS} days
+      // AFTER being synced there — since it also had to be ${ARCHIVE_DAYS}
+      // days old before it was archived in the first place, the real gap
+      // between a document's original date and its Sanity deletion is
+      // roughly double the number below.
+      const confirmationMessage = `Are you sure you want to:\n\n1) Delete archive run history and baseline snapshots older than ${ARCHIVE_DAYS} days, AND\n2) Permanently delete original Sanity documents that were archived to the database more than ${ARCHIVE_DAYS} days ago?\n\nThis action cannot be undone.`;
       if (!confirm(confirmationMessage)) return;
     }
 
@@ -425,13 +439,33 @@ export default function ArchiveManagementPage() {
       }
 
       if (options?.deleteOld) {
-        toast({
-          title: "Archive Cleanup Completed",
-          description: `Deleted ${data.deletedSanityDocuments || 0} old Sanity documents already backed up to Mongo and cleaned up ${data.deletedArchiveRuns || 0} archive run records older than ${ARCHIVE_DAYS} days.`,
-          status: "success",
-          duration: 5000,
-          isClosable: true,
-        });
+        const cleanupErrors: string[] = data.errors || [];
+        if (cleanupErrors.length > 0) {
+          // Previously this branch was unreachable when errors occurred,
+          // because the HTTP status was always 200 regardless of whether
+          // individual document deletions failed — so a partial failure
+          // silently looked identical to full success. Now checks the
+          // response body's own success/errors fields, not just res.ok.
+          console.error(
+            `Archive cleanup completed with ${cleanupErrors.length} error(s):`,
+            cleanupErrors,
+          );
+          toast({
+            title: "Archive Cleanup Completed With Errors",
+            description: `Deleted ${data.deletedSanityDocuments || 0} document(s), but ${cleanupErrors.length} failed — see console for full details. First error: ${cleanupErrors[0]}`,
+            status: "warning",
+            duration: 12000,
+            isClosable: true,
+          });
+        } else {
+          toast({
+            title: "Archive Cleanup Completed",
+            description: `Deleted ${data.deletedSanityDocuments || 0} old Sanity documents already backed up to Mongo and cleaned up ${data.deletedArchiveRuns || 0} archive run records older than ${ARCHIVE_DAYS} days.`,
+            status: "success",
+            duration: 5000,
+            isClosable: true,
+          });
+        }
       }
 
       const statusData = await fetchLogs();
@@ -472,64 +506,14 @@ export default function ArchiveManagementPage() {
   };
 
   const confirmDeleteOld = async () => {
-    try {
-      setIsRunning(true);
-      await handleRunArchive({ deleteOld: true });
-      await fetchLogs();
-    } catch (err) {
-      // handleRunArchive shows toasts on failure
-    } finally {
-      onClose();
-      setDeleteOld(false);
-      setIsRunning(false);
-    }
+    await handleRunArchive({ deleteOld: true });
+    onClose();
+    setDeleteOld(false);
   };
 
   const handleDownloadBackup = () => {
-    void (async () => {
-      try {
-        setDownloadInProgress(true);
-        const res = await fetch("/api/archive/export");
-        if (!res.ok) {
-          const text = await res.text().catch(() => "");
-          throw new Error(text || "Failed to generate export");
-        }
-        const disposition =
-          res.headers.get("Content-Disposition") ||
-          res.headers.get("content-disposition");
-        const filenameMatch = disposition
-          ? /filename="?([^";]+)"?/.exec(disposition)
-          : null;
-        const filename = filenameMatch
-          ? filenameMatch[1]
-          : `caterflow_archive_backup_${new Date().toISOString().split("T")[0]}.json.enc`;
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
-        toast({
-          title: "Download started",
-          status: "success",
-          duration: 4000,
-          isClosable: true,
-        });
-      } catch (err: any) {
-        toast({
-          title: "Download failed",
-          description: err?.message || String(err),
-          status: "error",
-          duration: 7000,
-          isClosable: true,
-        });
-      } finally {
-        setDownloadInProgress(false);
-      }
-    })();
+    // Just navigate to the endpoint to trigger the browser download
+    window.location.href = "/api/archive/export";
   };
 
   const selectedRun = selectedRunId
@@ -1328,6 +1312,14 @@ export default function ArchiveManagementPage() {
                     </Th>
                     <Th color={textColor} isNumeric>
                       <Tooltip
+                        label="Prefers run.totalUpdated; falls back to summing step.updated"
+                        placement="top"
+                      >
+                        <Box as="span">Docs Updated</Box>
+                      </Tooltip>
+                    </Th>
+                    <Th color={textColor} isNumeric>
+                      <Tooltip
                         label="Prefers run.totalSkipped; falls back to summing step.skipped"
                         placement="top"
                       >
@@ -1386,6 +1378,16 @@ export default function ArchiveManagementPage() {
                               ? log.steps.reduce(
                                   (s: number, st: any) =>
                                     s + (st.inserted || 0),
+                                  0,
+                                )
+                              : 0)}
+                        </Td>
+                        <Td color={textColorSecondary} isNumeric>
+                          {log.totalUpdated ??
+                            (log.steps
+                              ? log.steps.reduce(
+                                  (s: number, st: any) =>
+                                    s + (st.updated || 0),
                                   0,
                                 )
                               : 0)}
@@ -1487,6 +1489,7 @@ export default function ArchiveManagementPage() {
                       <Th isNumeric>Count</Th>
                       <Th isNumeric>Deleted</Th>
                       <Th isNumeric>Inserted</Th>
+                      <Th isNumeric>Updated</Th>
                       <Th isNumeric>Skipped</Th>
                       <Th>Status</Th>
                       <Th>Errors</Th>
@@ -1503,6 +1506,7 @@ export default function ArchiveManagementPage() {
                         <Td isNumeric>{step.count}</Td>
                         <Td isNumeric>{step.deletedCount}</Td>
                         <Td isNumeric>{step.inserted ?? 0}</Td>
+                        <Td isNumeric>{step.updated ?? 0}</Td>
                         <Td isNumeric>{step.skipped ?? 0}</Td>
                         <Td>{getStatusBadge(step.status)}</Td>
                         <Td>{step.errors?.length || 0}</Td>
@@ -1570,6 +1574,25 @@ export default function ArchiveManagementPage() {
                 </Box>
               </Alert>
             ) : null}
+
+            {selectedRun.warnings?.length ? (
+              <Alert status="warning" borderRadius="md" mt={selectedRun.errors?.length ? 3 : 0}>
+                <AlertIcon />
+                <Box>
+                  <AlertTitle>Archive run warnings (non-fatal)</AlertTitle>
+                  <AlertDescription display="block">
+                    {selectedRun.warnings.slice(0, 5).map((message, index) => (
+                      <Text key={index}>{message}</Text>
+                    ))}
+                    {selectedRun.warnings.length > 5 && (
+                      <Text mt={2} fontStyle="italic">
+                        And {selectedRun.warnings.length - 5} more warnings.
+                      </Text>
+                    )}
+                  </AlertDescription>
+                </Box>
+              </Alert>
+            ) : null}
           </CardBody>
         </Card>
       )}
@@ -1621,6 +1644,7 @@ export default function ArchiveManagementPage() {
                           <Th isNumeric>Count</Th>
                           <Th isNumeric>Deleted</Th>
                           <Th isNumeric>Inserted</Th>
+                          <Th isNumeric>Updated</Th>
                           <Th isNumeric>Skipped</Th>
                           <Th>Status</Th>
                           <Th>Errors</Th>
@@ -1633,6 +1657,7 @@ export default function ArchiveManagementPage() {
                             <Td isNumeric>{step.count}</Td>
                             <Td isNumeric>{step.deletedCount}</Td>
                             <Td isNumeric>{step.inserted ?? 0}</Td>
+                            <Td isNumeric>{step.updated ?? 0}</Td>
                             <Td isNumeric>{step.skipped ?? 0}</Td>
                             <Td>{getStatusBadge(step.status)}</Td>
                             <Td>{step.errors?.length || 0}</Td>
@@ -1662,6 +1687,31 @@ export default function ArchiveManagementPage() {
                     </Box>
                   </Alert>
                 ) : null}
+                {selectedRun.warnings?.length ? (
+                  <Alert
+                    status="warning"
+                    borderRadius="md"
+                    mt={selectedRun.errors?.length ? 3 : 0}
+                  >
+                    <AlertIcon />
+                    <Box>
+                      <AlertTitle>Archive run warnings (non-fatal)</AlertTitle>
+                      <AlertDescription display="block">
+                        {selectedRun.warnings
+                          .slice(0, 5)
+                          .map((message, index) => (
+                            <Text key={index}>{message}</Text>
+                          ))}
+                        {selectedRun.warnings.length > 5 && (
+                          <Text mt={2} fontStyle="italic">
+                            And {selectedRun.warnings.length - 5} more
+                            warnings.
+                          </Text>
+                        )}
+                      </AlertDescription>
+                    </Box>
+                  </Alert>
+                ) : null}
               </Box>
             ) : (
               <Text>No run selected.</Text>
@@ -1681,9 +1731,13 @@ export default function ArchiveManagementPage() {
           <ModalCloseButton />
           <ModalBody>
             <Text>
-              This will delete Sanity documents that were already backed up to
-              MongoDB and are older than {ARCHIVE_DAYS} days. It will also clean
-              up old archive metadata records. This action cannot be undone.
+              This will permanently delete Sanity documents that were already
+              archived to MongoDB more than {ARCHIVE_DAYS} days ago (this is
+              time since the document was copied to Mongo, not its original
+              date — so in practice a document is usually about{" "}
+              {ARCHIVE_DAYS * 2} days old by the time it becomes eligible for
+              deletion here). It will also clean up old archive metadata
+              records. This action cannot be undone.
             </Text>
           </ModalBody>
           <ModalFooter>

@@ -32,7 +32,10 @@ export async function POST(request: Request) {
     // result contains diff summary and, if applied, an audit record ID
     return NextResponse.json(result);
   } catch (err: any) {
-    console.error('Import failed:', err);
-    return NextResponse.json({ error: 'Import failed', details: err?.message }, { status: 500 });
+    console.error('❌ Archive import failed:', err?.stack || err);
+    return NextResponse.json(
+      { error: 'Import failed', details: err?.message || String(err), errorName: err?.name },
+      { status: 500 },
+    );
   }
 }

@@ -11,6 +11,7 @@ import {
   resumeIncompleteArchives,
   cleanupOldArchiveMetadata,
   cleanupArchivedSanityData,
+  ARCHIVE_PROGRESS_STALE_MS,
 } from "@/lib/archiveService";
 import { getArchiveDb, COLLECTIONS } from "@/lib/mongoClient";
 
@@ -45,14 +46,26 @@ export async function POST(request: Request) {
     if (deleteOld) {
       const metadataCleanup = await cleanupOldArchiveMetadata();
       const sanityCleanup = await cleanupArchivedSanityData();
+      const cleanupErrors = sanityCleanup.errors || [];
+      if (cleanupErrors.length) {
+        console.error(
+          `❌ Sanity cleanup completed with ${cleanupErrors.length} error(s):`,
+          cleanupErrors,
+        );
+      }
       return NextResponse.json({
-        success: true,
+        // Previously always `true`, even when sanityCleanup.errors had
+        // entries — an admin could see "success" while some documents
+        // silently failed to delete. Now reflects whether anything
+        // actually went wrong.
+        success: cleanupErrors.length === 0,
         cleanup: true,
         deletedArchiveRuns: metadataCleanup.deletedRuns,
         deletedBaselineSnapshots: metadataCleanup.deletedBaselines,
         deletedSanityDocuments: sanityCleanup.deletedSanityDocuments,
         collectionsProcessed: sanityCleanup.collectionsProcessed,
         cutoff: sanityCleanup.cutoff,
+        errors: cleanupErrors,
       });
     }
 
@@ -88,7 +101,27 @@ export async function POST(request: Request) {
       let dbRef: any = null;
       try {
         dbRef = await getArchiveDb();
-        await dbRef.admin().ping();
+        // Retry a momentary connection blip instead of failing the whole
+        // request immediately — this is exactly the check that produced
+        // "MongoServerSelectionError: Server selection timed out after
+        // 30000 ms" -> 500 in production even when the cluster recovered
+        // seconds later.
+        let pingErr: any;
+        let pinged = false;
+        for (let attempt = 1; attempt <= 3 && !pinged; attempt++) {
+          try {
+            await dbRef.admin().ping();
+            pinged = true;
+          } catch (err: any) {
+            pingErr = err;
+            if (attempt < 3) {
+              await new Promise((resolve) =>
+                setTimeout(resolve, 500 * Math.pow(2, attempt - 1)),
+              );
+            }
+          }
+        }
+        if (!pinged) throw pingErr;
       } catch (err: any) {
         console.error("Manual archive startup failed:", err);
         return NextResponse.json(
@@ -109,6 +142,55 @@ export async function POST(request: Request) {
       try {
         const queuedRunId = `archive-queued-${Date.now()}`;
         const progressId = "archive-progress";
+
+        // ── Concurrency guard ──────────────────────────────────────────
+        // Nothing previously checked whether a run was already active
+        // before overwriting this same document with a brand-new runId.
+        // A double-click, two admin tabs open at once, or an impatient
+        // retry (very plausible given the original "click and nothing
+        // happens" symptom) could start two concurrent runArchive() calls
+        // racing on the same progress doc — corrupting the displayed
+        // progress and doubling the Sanity/Mongo load for no benefit.
+        // Only block on a run that's genuinely still active: a run whose
+        // progress hasn't been updated in ARCHIVE_PROGRESS_STALE_MS is
+        // presumed dead (matches the staleness logic runArchive() itself
+        // uses) and is safe to supersede.
+        const existingProgress = await dbRef
+          .collection(COLLECTIONS.ARCHIVE_RUNS)
+          .findOne({ _id: progressId } as any);
+        if (
+          existingProgress &&
+          ["queued", "running", "incomplete"].includes(
+            existingProgress.status,
+          )
+        ) {
+          const lastUpdatedTs = existingProgress.lastUpdatedAt
+            ? new Date(existingProgress.lastUpdatedAt).getTime()
+            : null;
+          const isStale =
+            !lastUpdatedTs ||
+            Date.now() - lastUpdatedTs > ARCHIVE_PROGRESS_STALE_MS;
+          if (!isStale) {
+            console.warn(
+              `⚠️ Rejected new archive run — one is already ${existingProgress.status} (runId: ${existingProgress.runId}, last updated ${existingProgress.lastUpdatedAt}).`,
+            );
+            return NextResponse.json(
+              {
+                success: false,
+                status: "failed",
+                archiveInProgress: true,
+                error: `An archive run is already ${existingProgress.status} (started ${existingProgress.startedAt}). Please wait for it to finish.`,
+                errorMessage: `An archive run is already ${existingProgress.status} (started ${existingProgress.startedAt}). Please wait for it to finish.`,
+                currentRunId: existingProgress.runId,
+              },
+              { status: 409 },
+            );
+          }
+          console.warn(
+            `⚠️ Superseding a stale archive run (runId: ${existingProgress.runId}, status: ${existingProgress.status}, last updated ${existingProgress.lastUpdatedAt}) — starting a new one.`,
+          );
+        }
+
         await dbRef.collection(COLLECTIONS.ARCHIVE_RUNS).updateOne(
           { _id: progressId } as any,
           {
