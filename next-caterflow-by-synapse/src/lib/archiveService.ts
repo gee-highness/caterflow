@@ -1771,7 +1771,7 @@ export async function runArchive(
     // exclude the "archive-progress" singleton doc, which carries the same
     // runId (it was just stamped a few lines above) but has no `.steps`.
     const lastRun = await db.collection(COLLECTIONS.ARCHIVE_RUNS).findOne(
-      { runId, _id: { $ne: progressId } },
+      { runId, _id: { $ne: progressId } } as any,
       { sort: { startedAt: -1 } },
     );
     const completedSteps = new Set<string>();
