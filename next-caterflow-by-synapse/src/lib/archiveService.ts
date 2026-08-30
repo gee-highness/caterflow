@@ -2,6 +2,7 @@ import { client as sanityClient, writeClient } from "@/lib/sanity";
 import { groq } from "next-sanity";
 import { getArchiveDb, COLLECTIONS } from "@/lib/mongoClient";
 import type { Db } from "mongodb";
+import { ObjectId } from "mongodb";
 
 const ARCHIVE_DAYS = parseInt(process.env.ARCHIVE_DAYS_THRESHOLD || "90", 10);
 let appendProgress:
@@ -43,6 +44,12 @@ export interface ArchiveRunResult {
   steps: ArchiveStepResult[];
   assetsDeleted: number;
   incomplete?: boolean;
+  // Per-step resume position for a step that was interrupted mid-way
+  // (not just between whole steps). Keyed by step name; value is the
+  // last successfully-archived Sanity _id for that step, so a resumed
+  // run can pick up immediately after it instead of re-fetching and
+  // re-comparing everything from the start of that step's dataset.
+  stepCursors?: Record<string, string | null>;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -580,20 +587,188 @@ async function deleteSanityAsset(assetId: string): Promise<void> {
   }
 }
 
+// ─── Batched Per-type Archive Engine ───────────────────────────────────────────
+//
+// Every archive step (DispatchLogs, PurchaseOrders, ...) used to run a single
+// unbounded `sanityClient.fetch(...)` that pulled in EVERY matching document
+// at once, then wrote them all in one go. On a large backlog (e.g. the first
+// real run, or after archiving was broken for a while) that single fetch+write
+// can itself take longer than the whole function's time budget — and because
+// there's nothing checkpointing progress *inside* a step, if Vercel kills the
+// function mid-step, nothing gets persisted: no history record, no partial
+// progress, nothing. That's exactly what produced the silent-looking
+// "504 after 300s, and the run never showed up" behavior.
+//
+// This engine fixes that by processing each type in small batches (default
+// 200 docs) and checking the remaining time budget BEFORE every batch, not
+// just between whole steps. If time is running low, it stops cleanly and
+// reports exactly how far it got (as a Sanity `_id` cursor) so the next
+// invocation resumes from that exact point instead of re-scanning everything
+// from scratch.
+//
+// Pagination uses a `_id > $lastId` cursor (keyset pagination), not a numeric
+// offset. This matters: an offset shifts if new eligible documents appear
+// between invocations, which can silently skip or double-process rows near
+// the boundary. A cursor on `_id` doesn't have that problem — anything with a
+// smaller `_id` than the cursor is simply never fetched again, and anything
+// newly eligible with a larger `_id` is naturally picked up in a later batch.
+// Even in the rare case a document's ordering shifts oddly, `insertIfNotExists`
+// is idempotent (it upserts by `_sanityId` and skips unchanged documents), so
+// nothing is lost — at worst a document is picked up on the next day's run,
+// which is immaterial for data that's already 90+ days old.
+
+const DEFAULT_ARCHIVE_BATCH_SIZE = parseInt(
+  process.env.ARCHIVE_BATCH_SIZE || "200",
+  10,
+);
+// Before starting a new batch, require at least this much time left. Combined
+// with the adaptive check below (based on how long the last batch actually
+// took), this keeps every batch comfortably inside the remaining budget
+// instead of relying on a single fixed guess.
+const MIN_BATCH_TIME_BUFFER_MS = 8000;
+
+interface BatchedStepResult extends ArchiveStepResult {
+  done: boolean;
+  resumeCursor: string | null;
+}
+
+async function archiveTypeBatched(options: {
+  db: Db;
+  name: string;
+  // Raw GROQ filter body, e.g. `_type == "DispatchLog" && dispatchDate < $cutoff && !(evidenceStatus in ["pending","partial"])`
+  filter: string;
+  // Raw GROQ projection body (without the surrounding `{ }`)
+  projection: string;
+  cutoff: string;
+  collectionName: string;
+  errors: string[];
+  // Optional sequence-counter bookkeeping (dispatchNumber/poNumber/etc.)
+  numberField?: string;
+  sequenceType?: string;
+  sequencePrefix?: string;
+  resumeCursor: string | null;
+  checkTimeBudget: (lastBatchDurationMs: number) => boolean;
+  batchSize?: number;
+}): Promise<BatchedStepResult> {
+  const batchSize = options.batchSize || DEFAULT_ARCHIVE_BATCH_SIZE;
+  let cursor = options.resumeCursor || null;
+  let totalCount = 0;
+  let totalInserted = 0;
+  let totalUpdated = 0;
+  let totalSkipped = 0;
+  // Mirrors what actually landed in options.errors (the run-level shared
+  // array — insertIfNotExists must keep writing into THAT one, same as
+  // before batching, so a document-level failure still flips the whole
+  // run's success/failure status). This local copy is just so the
+  // ArchiveStepResult we return also reports its own errors, instead of
+  // always coming back empty like the pre-batching version did.
+  const stepErrors: string[] = [];
+  let lastBatchDurationMs = 0;
+
+  while (true) {
+    if (options.checkTimeBudget(lastBatchDurationMs)) {
+      return {
+        name: options.name,
+        count: totalCount,
+        deletedCount: 0,
+        status: "partial",
+        errors: stepErrors,
+        warnings: [],
+        assetsDeleted: 0,
+        inserted: totalInserted,
+        updated: totalUpdated,
+        skipped: totalSkipped,
+        message: `Paused mid-step after ${totalCount} document(s) (time budget reached)`,
+        done: false,
+        resumeCursor: cursor,
+      };
+    }
+
+    const batchStartedMs = Date.now();
+    const idFilter = cursor ? ` && _id > $lastId` : "";
+    const query = `*[${options.filter}${idFilter}] | order(_id asc) [0...$batchSize] { ${options.projection} }`;
+
+    const batch = await withRetry(() =>
+      sanityClient.fetch(query, {
+        cutoff: options.cutoff,
+        lastId: cursor || "",
+        batchSize,
+      }),
+    );
+
+    if (!batch.length) break; // no more matching documents — step complete
+
+    if (options.numberField && options.sequenceType && options.sequencePrefix) {
+      const numbers = batch.map((d: any) => d[options.numberField!]);
+      await updateSequenceCounter(
+        options.db,
+        options.sequenceType,
+        options.sequencePrefix,
+        numbers,
+      );
+    }
+
+    const toInsert = batch.map((d: any) => ({
+      ...sanitizeForMongo(d),
+      _sanityId: d._id,
+      _isArchived: true,
+      _archivedAt: new Date().toISOString(),
+    }));
+
+    const errorsBefore = options.errors.length;
+    const { inserted, updated, skipped } = await insertIfNotExists(
+      options.db,
+      options.collectionName,
+      toInsert,
+      options.errors,
+      appendProgress,
+    );
+    // Mirror anything insertIfNotExists just pushed into the shared
+    // run-level errors array so this step's own result reflects it too.
+    stepErrors.push(...options.errors.slice(errorsBefore));
+
+    totalCount += batch.length;
+    totalInserted += inserted;
+    totalUpdated += updated;
+    totalSkipped += skipped;
+    cursor = batch[batch.length - 1]._id;
+    lastBatchDurationMs = Date.now() - batchStartedMs;
+
+    if (batch.length < batchSize) break; // last (partial) page — done
+  }
+
+  console.log(`✅ Synced ${totalCount} ${options.name}`);
+  return {
+    name: options.name,
+    count: totalCount,
+    deletedCount: 0,
+    status: stepErrors.length ? "partial" : "success",
+    errors: stepErrors,
+    warnings: [],
+    assetsDeleted: 0,
+    inserted: totalInserted,
+    updated: totalUpdated,
+    skipped: totalSkipped,
+    message: totalCount ? undefined : `No ${options.name} to archive`,
+    done: true,
+    resumeCursor: cursor,
+  };
+}
+
 // ─── Per-type Archive Functions ────────────────────────────────────────────────
 
 async function archiveDispatchLogs(
   db: Db,
   cutoff: string,
   errors: string[],
-): Promise<ArchiveStepResult> {
-  const name = "DispatchLogs";
-  const docs = await sanityClient.fetch(
-    groq`
-        *[_type == "DispatchLog"
-            && dispatchDate < $cutoff
-            && !(evidenceStatus in ["pending", "partial"])
-        ] {
+  resumeCursor: string | null,
+  checkTimeBudget: (lastBatchDurationMs: number) => boolean,
+): Promise<BatchedStepResult> {
+  return archiveTypeBatched({
+    db,
+    name: "DispatchLogs",
+    filter: `_type == "DispatchLog" && dispatchDate < $cutoff && !(evidenceStatus in ["pending", "partial"])`,
+    projection: `
             _id, _type, _createdAt, dispatchNumber, dispatchDate, evidenceStatus, status,
             peopleFed, totalCost, costPerPerson, sellingPrice, totalSales, notes,
             "dispatchType": dispatchType->{_id, name, description, defaultTime, sellingPrice},
@@ -606,54 +781,15 @@ async function archiveDispatchLogs(
             },
             "attachments": attachments[]->{_id, fileName, fileType, description, uploadedAt,
                 "file": file{"asset": asset->{_id, url, originalFilename, mimeType}}}
-        }
     `,
-    { cutoff },
-  );
-
-  if (!docs.length) {
-    return createArchiveStepResult({
-      name,
-      count: 0,
-      deletedCount: 0,
-      message: "No DispatchLogs to archive",
-    });
-  }
-
-  const numbers = docs.map((d: any) => d.dispatchNumber);
-  await updateSequenceCounter(db, "DispatchLog", "DL", numbers);
-
-  const toInsert = docs.map((d: any) => ({
-    ...sanitizeForMongo(d),
-    _sanityId: d._id,
-    _isArchived: true,
-    _archivedAt: new Date().toISOString(),
-  }));
-
-  const {
-    inserted: inserted_dispatch,
-    updated: updated_dispatch,
-    skipped: skipped_dispatch,
-  } = await insertIfNotExists(
-    db,
-    COLLECTIONS.DISPATCH_LOGS,
-    toInsert,
+    cutoff,
+    collectionName: COLLECTIONS.DISPATCH_LOGS,
     errors,
-    appendProgress,
-  );
-
-  const deletedCount = 0;
-  const stepErrors: string[] = [];
-
-  console.log(`✅ Synced ${docs.length} DispatchLogs`);
-  return createArchiveStepResult({
-    name,
-    count: docs.length,
-    deletedCount,
-    errors: stepErrors,
-    inserted: inserted_dispatch,
-    updated: updated_dispatch,
-    skipped: skipped_dispatch,
+    numberField: "dispatchNumber",
+    sequenceType: "DispatchLog",
+    sequencePrefix: "DL",
+    resumeCursor,
+    checkTimeBudget,
   });
 }
 
@@ -661,14 +797,14 @@ async function archivePurchaseOrders(
   db: Db,
   cutoff: string,
   errors: string[],
-): Promise<ArchiveStepResult> {
-  const name = "PurchaseOrders";
-  const docs = await sanityClient.fetch(
-    groq`
-        *[_type == "PurchaseOrder"
-            && orderDate < $cutoff
-            && !(status in ["draft", "pending-approval"])
-        ] {
+  resumeCursor: string | null,
+  checkTimeBudget: (lastBatchDurationMs: number) => boolean,
+): Promise<BatchedStepResult> {
+  return archiveTypeBatched({
+    db,
+    name: "PurchaseOrders",
+    filter: `_type == "PurchaseOrder" && orderDate < $cutoff && !(status in ["draft", "pending-approval"])`,
+    projection: `
             _id, _type, _createdAt, poNumber, orderDate, status, totalAmount, notes,
             evidenceStatus, approvedAt,
             "site": site->{_id, name, location},
@@ -681,54 +817,15 @@ async function archivePurchaseOrders(
             },
             "attachments": attachments[]->{_id, fileName, fileType, description, uploadedAt,
                 "file": file{"asset": asset->{_id, url, originalFilename, mimeType}}}
-        }
     `,
-    { cutoff },
-  );
-
-  if (!docs.length) {
-    return createArchiveStepResult({
-      name,
-      count: 0,
-      deletedCount: 0,
-      message: "No PurchaseOrders to archive",
-    });
-  }
-
-  const numbers = docs.map((d: any) => d.poNumber);
-  await updateSequenceCounter(db, "PurchaseOrder", "PO", numbers);
-
-  const toInsert = docs.map((d: any) => ({
-    ...sanitizeForMongo(d),
-    _sanityId: d._id,
-    _isArchived: true,
-    _archivedAt: new Date().toISOString(),
-  }));
-
-  const {
-    inserted: _inserted_po,
-    updated: _updated_po,
-    skipped: _skipped_po,
-  } = await insertIfNotExists(
-    db,
-    COLLECTIONS.PURCHASE_ORDERS,
-    toInsert,
+    cutoff,
+    collectionName: COLLECTIONS.PURCHASE_ORDERS,
     errors,
-    appendProgress,
-  );
-
-  const deletedCount = 0;
-  const stepErrors: string[] = [];
-
-  console.log(`✅ Synced ${docs.length} PurchaseOrders`);
-  return createArchiveStepResult({
-    name,
-    count: docs.length,
-    deletedCount,
-    errors: stepErrors,
-    inserted: _inserted_po,
-    updated: _updated_po,
-    skipped: _skipped_po,
+    numberField: "poNumber",
+    sequenceType: "PurchaseOrder",
+    sequencePrefix: "PO",
+    resumeCursor,
+    checkTimeBudget,
   });
 }
 
@@ -736,14 +833,14 @@ async function archiveGoodsReceipts(
   db: Db,
   cutoff: string,
   errors: string[],
-): Promise<ArchiveStepResult> {
-  const name = "GoodsReceipts";
-  const docs = await sanityClient.fetch(
-    groq`
-        *[_type == "GoodsReceipt"
-            && receiptDate < $cutoff
-            && !(evidenceStatus in ["pending", "partial"])
-        ] {
+  resumeCursor: string | null,
+  checkTimeBudget: (lastBatchDurationMs: number) => boolean,
+): Promise<BatchedStepResult> {
+  return archiveTypeBatched({
+    db,
+    name: "GoodsReceipts",
+    filter: `_type == "GoodsReceipt" && receiptDate < $cutoff && !(evidenceStatus in ["pending", "partial"])`,
+    projection: `
             _id, _type, _createdAt, receiptNumber, receiptDate, status, evidenceStatus, notes,
             completedAt,
             "purchaseOrder": purchaseOrder->{
@@ -764,54 +861,15 @@ async function archiveGoodsReceipts(
             },
             "attachments": attachments[]->{_id, fileName, fileType, description, uploadedAt,
                 "file": file{"asset": asset->{_id, url, originalFilename, mimeType}}}
-        }
     `,
-    { cutoff },
-  );
-
-  if (!docs.length) {
-    return createArchiveStepResult({
-      name,
-      count: 0,
-      deletedCount: 0,
-      message: "No GoodsReceipts to archive",
-    });
-  }
-
-  const numbers = docs.map((d: any) => d.receiptNumber);
-  await updateSequenceCounter(db, "GoodsReceipt", "GR", numbers);
-
-  const toInsert = docs.map((d: any) => ({
-    ...sanitizeForMongo(d),
-    _sanityId: d._id,
-    _isArchived: true,
-    _archivedAt: new Date().toISOString(),
-  }));
-
-  const {
-    inserted: _inserted_gr,
-    updated: _updated_gr,
-    skipped: _skipped_gr,
-  } = await insertIfNotExists(
-    db,
-    COLLECTIONS.GOODS_RECEIPTS,
-    toInsert,
+    cutoff,
+    collectionName: COLLECTIONS.GOODS_RECEIPTS,
     errors,
-    appendProgress,
-  );
-
-  const deletedCount = 0;
-  const stepErrors: string[] = [];
-
-  console.log(`✅ Synced ${docs.length} GoodsReceipts`);
-  return createArchiveStepResult({
-    name,
-    count: docs.length,
-    deletedCount,
-    errors: stepErrors,
-    inserted: _inserted_gr,
-    updated: _updated_gr,
-    skipped: _skipped_gr,
+    numberField: "receiptNumber",
+    sequenceType: "GoodsReceipt",
+    sequencePrefix: "GR",
+    resumeCursor,
+    checkTimeBudget,
   });
 }
 
@@ -819,14 +877,14 @@ async function archiveInternalTransfers(
   db: Db,
   cutoff: string,
   errors: string[],
-): Promise<ArchiveStepResult> {
-  const name = "InternalTransfers";
-  const docs = await sanityClient.fetch(
-    groq`
-        *[_type == "InternalTransfer"
-            && transferDate < $cutoff
-            && !(status in ["draft", "pending-approval"])
-        ] {
+  resumeCursor: string | null,
+  checkTimeBudget: (lastBatchDurationMs: number) => boolean,
+): Promise<BatchedStepResult> {
+  return archiveTypeBatched({
+    db,
+    name: "InternalTransfers",
+    filter: `_type == "InternalTransfer" && transferDate < $cutoff && !(status in ["draft", "pending-approval"])`,
+    projection: `
             _id, _type, _createdAt, transferNumber, transferDate, status, notes,
             approvedAt,
             "fromBin": fromBin->{_id, name, "site": site->{_id, name}},
@@ -837,54 +895,15 @@ async function archiveInternalTransfers(
                 _key, transferredQuantity,
                 "stockItem": stockItem->{_id, name, sku, unitOfMeasure}
             }
-        }
     `,
-    { cutoff },
-  );
-
-  if (!docs.length) {
-    return createArchiveStepResult({
-      name,
-      count: 0,
-      deletedCount: 0,
-      message: "No InternalTransfers to archive",
-    });
-  }
-
-  const numbers = docs.map((d: any) => d.transferNumber);
-  await updateSequenceCounter(db, "InternalTransfer", "TRF", numbers);
-
-  const toInsert = docs.map((d: any) => ({
-    ...sanitizeForMongo(d),
-    _sanityId: d._id,
-    _isArchived: true,
-    _archivedAt: new Date().toISOString(),
-  }));
-
-  const {
-    inserted: _inserted_it,
-    updated: _updated_it,
-    skipped: _skipped_it,
-  } = await insertIfNotExists(
-    db,
-    COLLECTIONS.INTERNAL_TRANSFERS,
-    toInsert,
+    cutoff,
+    collectionName: COLLECTIONS.INTERNAL_TRANSFERS,
     errors,
-    appendProgress,
-  );
-
-  const deletedCount = 0;
-  const stepErrors: string[] = [];
-
-  console.log(`✅ Synced ${docs.length} InternalTransfers`);
-  return createArchiveStepResult({
-    name,
-    count: docs.length,
-    deletedCount,
-    errors: stepErrors,
-    inserted: _inserted_it,
-    updated: _updated_it,
-    skipped: _skipped_it,
+    numberField: "transferNumber",
+    sequenceType: "InternalTransfer",
+    sequencePrefix: "TRF",
+    resumeCursor,
+    checkTimeBudget,
   });
 }
 
@@ -892,14 +911,14 @@ async function archiveStockAdjustments(
   db: Db,
   cutoff: string,
   errors: string[],
-): Promise<ArchiveStepResult> {
-  const name = "StockAdjustments";
-  const docs = await sanityClient.fetch(
-    groq`
-        *[_type == "StockAdjustment"
-            && adjustmentDate < $cutoff
-            && !(evidenceStatus in ["pending", "partial"])
-        ] {
+  resumeCursor: string | null,
+  checkTimeBudget: (lastBatchDurationMs: number) => boolean,
+): Promise<BatchedStepResult> {
+  return archiveTypeBatched({
+    db,
+    name: "StockAdjustments",
+    filter: `_type == "StockAdjustment" && adjustmentDate < $cutoff && !(evidenceStatus in ["pending", "partial"])`,
+    projection: `
             _id, _type, _createdAt, adjustmentNumber, adjustmentDate, adjustmentType,
             evidenceStatus, notes,
             "adjustedBy": adjustedBy->{_id, name, email},
@@ -910,51 +929,12 @@ async function archiveStockAdjustments(
             },
             "attachments": attachments[]->{_id, fileName, fileType, description, uploadedAt,
                 "file": file{"asset": asset->{_id, url, originalFilename, mimeType}}}
-        }
     `,
-    { cutoff },
-  );
-
-  if (!docs.length) {
-    return createArchiveStepResult({
-      name,
-      count: 0,
-      deletedCount: 0,
-      message: "No StockAdjustments to archive",
-    });
-  }
-
-  const toInsert = docs.map((d: any) => ({
-    ...sanitizeForMongo(d),
-    _sanityId: d._id,
-    _isArchived: true,
-    _archivedAt: new Date().toISOString(),
-  }));
-
-  const {
-    inserted: _inserted_sa,
-    updated: _updated_sa,
-    skipped: _skipped_sa,
-  } = await insertIfNotExists(
-    db,
-    COLLECTIONS.STOCK_ADJUSTMENTS,
-    toInsert,
+    cutoff,
+    collectionName: COLLECTIONS.STOCK_ADJUSTMENTS,
     errors,
-    appendProgress,
-  );
-
-  const deletedCount = 0;
-  const stepErrors: string[] = [];
-
-  console.log(`✅ Synced ${docs.length} StockAdjustments`);
-  return createArchiveStepResult({
-    name,
-    count: docs.length,
-    deletedCount,
-    errors: stepErrors,
-    inserted: _inserted_sa,
-    updated: _updated_sa,
-    skipped: _skipped_sa,
+    resumeCursor,
+    checkTimeBudget,
   });
 }
 
@@ -962,14 +942,14 @@ async function archiveInventoryCounts(
   db: Db,
   cutoff: string,
   errors: string[],
-): Promise<ArchiveStepResult> {
-  const name = "InventoryCounts";
-  const docs = await sanityClient.fetch(
-    groq`
-        *[_type == "InventoryCount"
-            && countDate < $cutoff
-            && !(status in ["draft", "in-progress"])
-        ] {
+  resumeCursor: string | null,
+  checkTimeBudget: (lastBatchDurationMs: number) => boolean,
+): Promise<BatchedStepResult> {
+  return archiveTypeBatched({
+    db,
+    name: "InventoryCounts",
+    filter: `_type == "InventoryCount" && countDate < $cutoff && !(status in ["draft", "in-progress"])`,
+    projection: `
             _id, _type, _createdAt, countNumber, countDate, status, notes,
             "countedBy": countedBy->{_id, name, email},
             "bin": bin->{_id, name, "site": site->{_id, name}},
@@ -977,51 +957,12 @@ async function archiveInventoryCounts(
                 _key, countedQuantity, systemQuantityAtCountTime, variance,
                 "stockItem": stockItem->{_id, name, sku, unitOfMeasure}
             }
-        }
     `,
-    { cutoff },
-  );
-
-  if (!docs.length) {
-    return createArchiveStepResult({
-      name,
-      count: 0,
-      deletedCount: 0,
-      message: "No InventoryCounts to archive",
-    });
-  }
-
-  const toInsert = docs.map((d: any) => ({
-    ...sanitizeForMongo(d),
-    _sanityId: d._id,
-    _isArchived: true,
-    _archivedAt: new Date().toISOString(),
-  }));
-
-  const {
-    inserted: _inserted_ic,
-    updated: _updated_ic,
-    skipped: _skipped_ic,
-  } = await insertIfNotExists(
-    db,
-    COLLECTIONS.INVENTORY_COUNTS,
-    toInsert,
+    cutoff,
+    collectionName: COLLECTIONS.INVENTORY_COUNTS,
     errors,
-    appendProgress,
-  );
-
-  const deletedCount = 0;
-  const stepErrors: string[] = [];
-
-  console.log(`✅ Synced ${docs.length} InventoryCounts`);
-  return createArchiveStepResult({
-    name,
-    count: docs.length,
-    deletedCount,
-    errors: stepErrors,
-    inserted: _inserted_ic,
-    updated: _updated_ic,
-    skipped: _skipped_ic,
+    resumeCursor,
+    checkTimeBudget,
   });
 }
 
@@ -1029,62 +970,24 @@ async function archiveFileAttachments(
   db: Db,
   cutoff: string,
   errors: string[],
-): Promise<ArchiveStepResult> {
-  const name = "FileAttachments";
-  const docs = await sanityClient.fetch(
-    groq`
-        *[_type == "FileAttachment" && uploadedAt < $cutoff] {
+  resumeCursor: string | null,
+  checkTimeBudget: (lastBatchDurationMs: number) => boolean,
+): Promise<BatchedStepResult> {
+  return archiveTypeBatched({
+    db,
+    name: "FileAttachments",
+    filter: `_type == "FileAttachment" && uploadedAt < $cutoff`,
+    projection: `
             _id, _type, _createdAt, fileName, fileType, uploadedAt, description, isArchived,
             "uploadedBy": uploadedBy->{_id, name, email},
             "relatedTo": relatedTo->{_id, _type},
             "file": file{"asset": asset->{_id, _type, url, originalFilename, mimeType, size}}
-        }
     `,
-    { cutoff },
-  );
-
-  if (!docs.length) {
-    return createArchiveStepResult({
-      name,
-      count: 0,
-      deletedCount: 0,
-      message: "No FileAttachments to archive",
-    });
-  }
-
-  const toInsert = docs.map((d: any) => ({
-    ...sanitizeForMongo(d),
-    _sanityId: d._id,
-    _isArchived: true,
-    _archivedAt: new Date().toISOString(),
-  }));
-
-  const {
-    inserted: _inserted_fa,
-    updated: _updated_fa,
-    skipped: _skipped_fa,
-  } = await insertIfNotExists(
-    db,
-    COLLECTIONS.FILE_ATTACHMENTS,
-    toInsert,
+    cutoff,
+    collectionName: COLLECTIONS.FILE_ATTACHMENTS,
     errors,
-    appendProgress,
-  );
-
-  const deletedCount = 0;
-  let assetsDeleted = 0;
-  const stepErrors: string[] = [];
-
-  console.log(`✅ Synced ${docs.length} FileAttachments`);
-  return createArchiveStepResult({
-    name,
-    count: docs.length,
-    deletedCount,
-    errors: stepErrors,
-    assetsDeleted,
-    inserted: _inserted_fa,
-    updated: _updated_fa,
-    skipped: _skipped_fa,
+    resumeCursor,
+    checkTimeBudget,
   });
 }
 
@@ -1092,59 +995,23 @@ async function archiveStockSnapshots(
   db: Db,
   cutoff: string,
   errors: string[],
-): Promise<ArchiveStepResult> {
-  const name = "StockSnapshots";
-  const docs = await sanityClient.fetch(
-    groq`
-        *[_type == "stockSnapshot" && _createdAt < $cutoff] {
+  resumeCursor: string | null,
+  checkTimeBudget: (lastBatchDurationMs: number) => boolean,
+): Promise<BatchedStepResult> {
+  return archiveTypeBatched({
+    db,
+    name: "StockSnapshots",
+    filter: `_type == "stockSnapshot" && _createdAt < $cutoff`,
+    projection: `
             _id, _type, _createdAt, quantity, lastUpdated,
             "stockItem": stockItem->{_id, name, sku},
             "bin": bin->{_id, name, "site": site->{_id, name}}
-        }
     `,
-    { cutoff },
-  );
-
-  if (!docs.length) {
-    return createArchiveStepResult({
-      name,
-      count: 0,
-      deletedCount: 0,
-      message: "No StockSnapshots to archive",
-    });
-  }
-
-  const toInsert = docs.map((d: any) => ({
-    ...sanitizeForMongo(d),
-    _sanityId: d._id,
-    _isArchived: true,
-    _archivedAt: new Date().toISOString(),
-  }));
-
-  const {
-    inserted: _inserted_ss,
-    updated: _updated_ss,
-    skipped: _skipped_ss,
-  } = await insertIfNotExists(
-    db,
-    COLLECTIONS.STOCK_SNAPSHOTS,
-    toInsert,
+    cutoff,
+    collectionName: COLLECTIONS.STOCK_SNAPSHOTS,
     errors,
-    appendProgress,
-  );
-
-  const deletedCount = 0;
-  const stepErrors: string[] = [];
-
-  console.log(`✅ Synced ${docs.length} StockSnapshots`);
-  return createArchiveStepResult({
-    name,
-    count: docs.length,
-    deletedCount,
-    errors: stepErrors,
-    inserted: _inserted_ss,
-    updated: _updated_ss,
-    skipped: _skipped_ss,
+    resumeCursor,
+    checkTimeBudget,
   });
 }
 
@@ -1304,124 +1171,472 @@ export async function cleanupOldArchiveMetadata(): Promise<{
   };
 }
 
-export async function cleanupArchivedSanityData(): Promise<{
+// ─── Batched Sanity Cleanup Engine ─────────────────────────────────────────────
+//
+// This had the exact same exposure as the archive step functions: it looped
+// over every already-archived, cutoff-eligible document across 8 collections
+// and deleted each one from Sanity, synchronously, in the request handler,
+// with no batching and no checkpoint. A large backlog (very plausible right
+// after the archive itself had been silently failing) could blow past
+// Vercel's function timeout with nothing recorded — no partial count, no
+// history, nothing. It was also never called via `after()`, so even a
+// moderate-length run risked the browser/client just seeing a hung request.
+//
+// It also had a smaller but real bug: the query that finds "documents due
+// for cleanup" never excluded documents that were already cleaned up in a
+// previous pass (no `_sanityDeletedAt` exclusion). That meant every cleanup
+// run re-scanned and re-attempted deletion of every document ever cleaned,
+// not just the new backlog — the candidate set only ever grew, making each
+// run slower over time and more likely to time out as the archive matures.
+// Fixed below.
+
+const DEFAULT_CLEANUP_BATCH_SIZE = parseInt(
+  process.env.ARCHIVE_CLEANUP_BATCH_SIZE || "100",
+  10,
+);
+
+export interface CleanupRunResult {
+  runId: string;
+  startedAt: string;
+  completedAt: string;
+  durationMs: number;
   deletedSanityDocuments: number;
+  scanned: number;
   collectionsProcessed: number;
+  totalCollections: number;
   cutoff: string;
   errors: string[];
+  incomplete: boolean;
+  completedCollections: string[];
+  // Mongo `_id` (as a string) of the last document successfully processed
+  // in each not-yet-finished collection, so a resumed run can pick up
+  // exactly there instead of re-scanning from the start of that collection.
+  collectionCursors: Record<string, string | null>;
+}
+
+const CLEANUP_COLLECTIONS_TO_PROCESS = [
+  { collectionName: COLLECTIONS.DISPATCH_LOGS, sanityType: "DispatchLog" },
+  { collectionName: COLLECTIONS.PURCHASE_ORDERS, sanityType: "PurchaseOrder" },
+  { collectionName: COLLECTIONS.GOODS_RECEIPTS, sanityType: "GoodsReceipt" },
+  {
+    collectionName: COLLECTIONS.INTERNAL_TRANSFERS,
+    sanityType: "InternalTransfer",
+  },
+  {
+    collectionName: COLLECTIONS.STOCK_ADJUSTMENTS,
+    sanityType: "StockAdjustment",
+  },
+  {
+    collectionName: COLLECTIONS.INVENTORY_COUNTS,
+    sanityType: "InventoryCount",
+  },
+  { collectionName: COLLECTIONS.FILE_ATTACHMENTS, sanityType: "FileAttachment" },
+  { collectionName: COLLECTIONS.STOCK_SNAPSHOTS, sanityType: "stockSnapshot" },
+];
+
+async function cleanupCollectionBatched(options: {
+  db: Db;
+  collectionName: string;
+  cutoffDate: string;
+  resumeCursor: string | null;
+  checkTimeBudget: (lastBatchDurationMs: number) => boolean;
+  errors: string[];
+  batchSize?: number;
+}): Promise<{
+  deletedCount: number;
+  scanned: number;
+  done: boolean;
+  resumeCursor: string | null;
 }> {
-  const db = await getArchiveDb();
-  const cutoff = getCutoffDate();
-  const cutoffDate = new Date(cutoff);
+  const batchSize = options.batchSize || DEFAULT_CLEANUP_BATCH_SIZE;
+  let cursor = options.resumeCursor || null;
+  let deletedCount = 0;
+  let scanned = 0;
+  let lastBatchDurationMs = 0;
 
-  let deletedSanityDocuments = 0;
-  const errors: string[] = [];
-  const collectionsToProcess = [
-    { collectionName: COLLECTIONS.DISPATCH_LOGS, sanityType: "DispatchLog" },
-    {
-      collectionName: COLLECTIONS.PURCHASE_ORDERS,
-      sanityType: "PurchaseOrder",
-    },
-    { collectionName: COLLECTIONS.GOODS_RECEIPTS, sanityType: "GoodsReceipt" },
-    {
-      collectionName: COLLECTIONS.INTERNAL_TRANSFERS,
-      sanityType: "InternalTransfer",
-    },
-    {
-      collectionName: COLLECTIONS.STOCK_ADJUSTMENTS,
-      sanityType: "StockAdjustment",
-    },
-    {
-      collectionName: COLLECTIONS.INVENTORY_COUNTS,
-      sanityType: "InventoryCount",
-    },
-    {
-      collectionName: COLLECTIONS.FILE_ATTACHMENTS,
-      sanityType: "FileAttachment",
-    },
-    {
-      collectionName: COLLECTIONS.STOCK_SNAPSHOTS,
-      sanityType: "stockSnapshot",
-    },
-  ];
+  while (true) {
+    if (options.checkTimeBudget(lastBatchDurationMs)) {
+      return { deletedCount, scanned, done: false, resumeCursor: cursor };
+    }
 
-  for (const { collectionName } of collectionsToProcess) {
-    let docs: any[];
+    const batchStartedMs = Date.now();
+    const query: Record<string, any> = {
+      _isArchived: true,
+      _archivedAt: { $lt: options.cutoffDate },
+      // Skip anything already cleaned up in a previous pass — see comment
+      // above the engine header for why this matters.
+      _sanityDeletedAt: { $exists: false },
+    };
+    if (cursor) {
+      query._id = { $gt: new ObjectId(cursor) };
+    }
+
+    let batch: any[];
     try {
-      docs = await db
-        .collection(collectionName)
-        .find({
-          _isArchived: true,
-          _archivedAt: { $lt: cutoffDate.toISOString() },
-        })
+      batch = await options.db
+        .collection(options.collectionName)
+        .find(query)
+        .sort({ _id: 1 })
+        .limit(batchSize)
         .project({ _sanityId: 1 })
         .toArray();
     } catch (err: any) {
-      // Don't let one collection's query failure abort every remaining
-      // collection in this cleanup pass.
-      console.error(
-        `❌ Failed to query ${collectionName} for Sanity cleanup candidates:`,
-        err,
+      options.errors.push(
+        `Failed to query ${options.collectionName} for cleanup candidates: ${err?.message || err}`,
       );
-      errors.push(
-        `Failed to query ${collectionName} for cleanup candidates: ${err?.message || err}`,
-      );
-      continue;
+      // Can't page through this collection at all — stop here rather than
+      // spin, but report it as "done" with whatever cursor we already had
+      // so the overall cleanup run moves on to the next collection instead
+      // of getting stuck retrying a broken query forever.
+      return { deletedCount, scanned, done: true, resumeCursor: cursor };
     }
 
-    for (const doc of docs) {
-      if (!doc._sanityId) continue;
+    if (!batch.length) break; // no more candidates — this collection is done
+
+    for (const doc of batch) {
+      scanned += 1;
+      if (!doc._sanityId) {
+        cursor = String(doc._id);
+        continue;
+      }
       try {
         await withRetry(() => writeClient.delete(doc._sanityId));
-        deletedSanityDocuments += 1;
+        deletedCount += 1;
       } catch (err: any) {
         if (err?.statusCode === 404) {
-          deletedSanityDocuments += 1;
+          deletedCount += 1;
         } else {
-          // Log the full error object (not just .message) and — critically —
-          // record it in the `errors` array that's actually returned to the
-          // caller. Previously this only reached an ephemeral console log;
-          // the admin action would report "N documents deleted" with zero
-          // indication that some documents failed to delete at all.
           console.error(
-            `❌ Failed to delete Sanity document ${doc._sanityId} from ${collectionName}:`,
+            `❌ Failed to delete Sanity document ${doc._sanityId} from ${options.collectionName}:`,
             err,
           );
-          errors.push(
-            `Failed to delete Sanity document ${doc._sanityId} (${collectionName}): ${err?.message || err}`,
+          options.errors.push(
+            `Failed to delete Sanity document ${doc._sanityId} (${options.collectionName}): ${err?.message || err}`,
           );
+          cursor = String(doc._id);
           continue;
         }
       }
 
       try {
-        await db
-          .collection(collectionName)
+        await options.db
+          .collection(options.collectionName)
           .updateOne(
             { _sanityId: doc._sanityId },
             { $set: { _sanityDeletedAt: new Date().toISOString() } },
           );
       } catch (err: any) {
-        // The Sanity document was already deleted above — if THIS write
-        // fails, don't let it abort every remaining document/collection in
-        // this cleanup pass. Log and record it, then keep going.
         console.error(
-          `❌ Deleted Sanity document ${doc._sanityId} but failed to mark it deleted in Mongo (${collectionName}):`,
+          `❌ Deleted Sanity document ${doc._sanityId} but failed to mark it deleted in Mongo (${options.collectionName}):`,
           err,
         );
-        errors.push(
-          `Deleted Sanity document ${doc._sanityId} (${collectionName}) but failed to record it in Mongo: ${err?.message || err}`,
+        options.errors.push(
+          `Deleted Sanity document ${doc._sanityId} (${options.collectionName}) but failed to record it in Mongo: ${err?.message || err}`,
         );
       }
+
+      cursor = String(doc._id);
+    }
+
+    lastBatchDurationMs = Date.now() - batchStartedMs;
+    if (batch.length < batchSize) break; // last (partial) page — done
+  }
+
+  return { deletedCount, scanned, done: true, resumeCursor: cursor };
+}
+
+export async function cleanupArchivedSanityData(
+  providedRunId?: string,
+): Promise<CleanupRunResult> {
+  const db = await getArchiveDb();
+  const cutoff = getCutoffDate();
+  const runId = providedRunId || `cleanup-${Date.now()}`;
+  const startedAt = new Date().toISOString();
+  const startMs = Date.now();
+  const maxSeconds = parseInt(process.env.ARCHIVE_MAX_SECONDS || "270", 10);
+  const allowedMs = maxSeconds * 1000;
+  const progressId = "cleanup-progress";
+  const progressCollection = db.collection(COLLECTIONS.ARCHIVE_RUNS);
+
+  // Resuming a specific run: pick up completed-collection list and per-
+  // collection cursors from the most recent partial record for this runId.
+  const lastRun = providedRunId
+    ? await progressCollection.findOne(
+        { runId: providedRunId, kind: "cleanup" } as any,
+        { sort: { startedAt: -1 } },
+      )
+    : null;
+  const completedCollections = new Set<string>(
+    lastRun?.completedCollections || [],
+  );
+  const collectionCursors: Record<string, string | null> = {
+    ...(lastRun?.collectionCursors || {}),
+  };
+
+  const errors: string[] = [];
+  let deletedSanityDocuments = 0;
+  let scanned = 0;
+
+  await progressCollection.updateOne(
+    { _id: progressId } as any,
+    {
+      $set: {
+        _id: progressId,
+        kind: "cleanup-progress",
+        runId,
+        status: "running",
+        startedAt,
+        cutoff,
+        completedCollections: Array.from(completedCollections),
+        lastUpdatedAt: new Date().toISOString(),
+      },
+    } as any,
+    { upsert: true },
+  );
+
+  for (const { collectionName } of CLEANUP_COLLECTIONS_TO_PROCESS) {
+    if (completedCollections.has(collectionName)) continue;
+
+    const elapsedBeforeCollection = Date.now() - startMs;
+    if (elapsedBeforeCollection >= allowedMs - MIN_BATCH_TIME_BUFFER_MS) {
+      return await writeIncompleteCleanupPartial({
+        progressCollection,
+        progressId,
+        runId,
+        startedAt,
+        startMs,
+        cutoff,
+        deletedSanityDocuments,
+        scanned,
+        errors,
+        completedCollections,
+        collectionCursors,
+        reason: `Paused before starting cleanup of ${collectionName} — time limit reached`,
+      });
+    }
+
+    const checkTimeBudget = (lastBatchDurationMs: number): boolean => {
+      const remainingMs = allowedMs - (Date.now() - startMs);
+      const requiredMs = Math.max(
+        MIN_BATCH_TIME_BUFFER_MS,
+        lastBatchDurationMs * 1.5,
+      );
+      return remainingMs <= requiredMs;
+    };
+
+    const result = await cleanupCollectionBatched({
+      db,
+      collectionName,
+      cutoffDate: cutoff,
+      resumeCursor: collectionCursors[collectionName] ?? null,
+      checkTimeBudget,
+      errors,
+    });
+
+    deletedSanityDocuments += result.deletedCount;
+    scanned += result.scanned;
+
+    if (!result.done) {
+      collectionCursors[collectionName] = result.resumeCursor;
+      return await writeIncompleteCleanupPartial({
+        progressCollection,
+        progressId,
+        runId,
+        startedAt,
+        startMs,
+        cutoff,
+        deletedSanityDocuments,
+        scanned,
+        errors,
+        completedCollections,
+        collectionCursors,
+        reason: `Paused mid-collection during ${collectionName} cleanup — will resume from where it left off`,
+      });
+    }
+
+    delete collectionCursors[collectionName];
+    completedCollections.add(collectionName);
+
+    await progressCollection.updateOne(
+      { _id: progressId } as any,
+      {
+        $set: {
+          completedCollections: Array.from(completedCollections),
+          lastUpdatedAt: new Date().toISOString(),
+        },
+      } as any,
+    );
+  }
+
+  const completedAt = new Date().toISOString();
+  const result: CleanupRunResult = {
+    runId,
+    startedAt,
+    completedAt,
+    durationMs: Date.now() - startMs,
+    deletedSanityDocuments,
+    scanned,
+    collectionsProcessed: completedCollections.size,
+    totalCollections: CLEANUP_COLLECTIONS_TO_PROCESS.length,
+    cutoff,
+    errors,
+    incomplete: false,
+    completedCollections: Array.from(completedCollections),
+    collectionCursors: {},
+  };
+
+  await progressCollection.insertOne({ ...result, kind: "cleanup" } as any);
+  await progressCollection.updateOne(
+    { _id: progressId } as any,
+    {
+      $set: {
+        status: errors.length ? "failed" : "success",
+        completedAt,
+        errors,
+        lastUpdatedAt: new Date().toISOString(),
+      },
+    } as any,
+  );
+
+  return result;
+}
+
+async function writeIncompleteCleanupPartial(options: {
+  progressCollection: any;
+  progressId: string;
+  runId: string;
+  startedAt: string;
+  startMs: number;
+  cutoff: string;
+  deletedSanityDocuments: number;
+  scanned: number;
+  errors: string[];
+  completedCollections: Set<string>;
+  collectionCursors: Record<string, string | null>;
+  reason: string;
+}): Promise<CleanupRunResult> {
+  const partial: CleanupRunResult = {
+    runId: options.runId,
+    startedAt: options.startedAt,
+    completedAt: new Date().toISOString(),
+    durationMs: Date.now() - options.startMs,
+    deletedSanityDocuments: options.deletedSanityDocuments,
+    scanned: options.scanned,
+    collectionsProcessed: options.completedCollections.size,
+    totalCollections: CLEANUP_COLLECTIONS_TO_PROCESS.length,
+    cutoff: options.cutoff,
+    errors: options.errors,
+    incomplete: true,
+    completedCollections: Array.from(options.completedCollections),
+    collectionCursors: options.collectionCursors,
+  };
+
+  await options.progressCollection.insertOne({ ...partial, kind: "cleanup" } as any);
+  await options.progressCollection.updateOne(
+    { _id: options.progressId } as any,
+    {
+      $set: {
+        status: "incomplete",
+        completedCollections: partial.completedCollections,
+        errors: partial.errors,
+        lastUpdatedAt: new Date().toISOString(),
+      },
+    } as any,
+  );
+  console.log(`⚠️ Cleanup run paused — ${options.reason}`);
+  return partial;
+}
+
+export async function getCleanupProgress(): Promise<{
+  inProgress: boolean;
+  currentRun: any | null;
+  staleDetected?: boolean;
+}> {
+  const db = await getArchiveDb();
+  const progressId = "cleanup-progress";
+  const progressCollection = db.collection(COLLECTIONS.ARCHIVE_RUNS);
+  const progressDoc = await progressCollection.findOne({
+    _id: progressId,
+    kind: "cleanup-progress",
+  } as any);
+
+  if (!progressDoc) return { inProgress: false, currentRun: null };
+
+  const lastUpdatedAt = progressDoc.lastUpdatedAt || progressDoc.startedAt || null;
+  const lastUpdatedTs = lastUpdatedAt ? new Date(lastUpdatedAt).getTime() : null;
+  const isStale =
+    lastUpdatedTs && Date.now() - lastUpdatedTs > ARCHIVE_PROGRESS_STALE_MS;
+  const inProgress = ["running", "incomplete"].includes(progressDoc.status);
+
+  if (inProgress && isStale) {
+    await progressCollection.updateOne(
+      { _id: progressId } as any,
+      {
+        $set: {
+          status: "failed",
+          errors: [
+            ...(progressDoc.errors || []),
+            "Cleanup progress has been stale for more than 5 minutes and has been marked failed.",
+          ],
+          lastUpdatedAt: new Date().toISOString(),
+        },
+      } as any,
+    );
+    return { inProgress: false, staleDetected: true, currentRun: progressDoc };
+  }
+
+  return { inProgress, currentRun: progressDoc };
+}
+
+// Mirrors resumeIncompleteArchives() — called from the cron path so an
+// interrupted cleanup doesn't just sit forgotten until an admin happens to
+// re-trigger it manually.
+export async function resumeIncompleteCleanup(
+  maxAttempts = 5,
+): Promise<{ attempts: number; finished: boolean }> {
+  const db = await getArchiveDb();
+  let attempts = 0;
+  // Same outer time-budget guard as resumeIncompleteArchives(), and for the
+  // same reason: cleanupArchivedSanityData() can itself run for close to
+  // the full per-invocation budget, so looping unconditionally here could
+  // exceed Vercel's hard timeout.
+  const outerStartMs = Date.now();
+  const outerBudgetMs =
+    parseInt(process.env.ARCHIVE_MAX_SECONDS || "270", 10) * 1000;
+
+  while (attempts < maxAttempts) {
+    if (
+      attempts > 0 &&
+      Date.now() - outerStartMs >= outerBudgetMs - MIN_BATCH_TIME_BUFFER_MS
+    ) {
+      return { attempts, finished: false };
+    }
+
+    const incompleteRun = await db
+      .collection(COLLECTIONS.ARCHIVE_RUNS)
+      .findOne({ incomplete: true, kind: "cleanup" } as any, {
+        sort: { startedAt: -1 },
+      });
+
+    if (!incompleteRun) return { attempts, finished: true };
+
+    console.log(`🔁 Resuming incomplete cleanup run (found: ${incompleteRun.runId})`);
+    attempts += 1;
+    const res = await cleanupArchivedSanityData(incompleteRun.runId);
+
+    if (!res.incomplete) {
+      await db.collection(COLLECTIONS.ARCHIVE_RUNS).updateMany(
+        { incomplete: true, kind: "cleanup", runId: { $ne: res.runId } } as any,
+        { $set: { incomplete: false } } as any,
+      );
+      const stillIncomplete = await db
+        .collection(COLLECTIONS.ARCHIVE_RUNS)
+        .findOne({ incomplete: true, kind: "cleanup" } as any);
+      if (!stillIncomplete) return { attempts, finished: true };
     }
   }
 
-  return {
-    deletedSanityDocuments,
-    collectionsProcessed: collectionsToProcess.length,
-    cutoff,
-    errors,
-  };
+  return { attempts, finished: false };
 }
 
 const DEFAULT_RETRY_ATTEMPTS = 3;
@@ -1527,6 +1742,102 @@ async function updateArchiveProgress(
   } catch (err: any) {
     console.error("Failed to update archive progress:", err?.message || err);
   }
+}
+
+// Builds the ArchiveRunResult shape shared by the between-step and mid-step
+// checkpoint paths, so both write a consistent, complete partial record.
+function buildRunResult(options: {
+  runId: string;
+  startedAt: string;
+  startMs: number;
+  archived: Record<string, number>;
+  errors: string[];
+  warnings: string[];
+  totalSkipped: number;
+  steps: ArchiveStepResult[];
+  incomplete: boolean;
+  stepCursors: Record<string, string | null>;
+}): ArchiveRunResult {
+  return {
+    runId: options.runId,
+    startedAt: options.startedAt,
+    completedAt: new Date().toISOString(),
+    durationMs: Date.now() - options.startMs,
+    archived: options.archived,
+    errors: options.errors,
+    warnings: options.warnings,
+    skipped: options.totalSkipped,
+    steps: options.steps,
+    assetsDeleted: options.steps.reduce(
+      (sum, st) => sum + (st.assetsDeleted || 0),
+      0,
+    ),
+    incomplete: options.incomplete,
+    stepCursors: options.stepCursors,
+  };
+}
+
+// Persists a partial/"incomplete" checkpoint — used both when we're pausing
+// between whole steps and when a single step itself ran out of time
+// mid-way. Writing this (rather than letting the process just get killed)
+// is the whole point: it guarantees every run either finishes or leaves a
+// clear, resumable trail, and is never silently lost.
+async function writeIncompletePartial(options: {
+  db: Db;
+  runId: string;
+  startedAt: string;
+  startMs: number;
+  archived: Record<string, number>;
+  errors: string[];
+  warnings: string[];
+  totalSkipped: number;
+  steps: ArchiveStepResult[];
+  stepFns: { name: string }[];
+  stepCursors: Record<string, string | null>;
+  progressCollection: any;
+  progressId: string;
+  pausedStepName: string;
+  pausedStepIndex: number;
+  reason: string;
+}): Promise<void> {
+  const partialResult = buildRunResult({
+    runId: options.runId,
+    startedAt: options.startedAt,
+    startMs: options.startMs,
+    archived: options.archived,
+    errors: options.errors,
+    warnings: options.warnings,
+    totalSkipped: options.totalSkipped,
+    steps: options.steps,
+    incomplete: true,
+    stepCursors: options.stepCursors,
+  });
+
+  await options.db.collection(COLLECTIONS.ARCHIVE_RUNS).insertOne(partialResult);
+
+  const completedStepNames = options.steps
+    .filter((s) => s.status === "success")
+    .map((s) => s.name);
+  await updateArchiveProgress(
+    options.progressCollection,
+    options.progressId,
+    {
+      status: "incomplete",
+      currentStep: options.pausedStepName,
+      currentStepIndex: options.pausedStepIndex,
+      completedSteps: completedStepNames,
+      pendingSteps: options.stepFns
+        .map((s) => s.name)
+        .filter((name) => !completedStepNames.includes(name)),
+      errors: options.errors,
+      progressPercent: Math.min(
+        100,
+        Math.round((completedStepNames.length / options.stepFns.length) * 100),
+      ),
+    },
+    options.reason,
+  );
+  console.log(`⚠️ Archive run paused — ${options.reason}`);
 }
 
 export interface ArchiveCurrentRunStatus {
@@ -1731,6 +2042,10 @@ export async function runArchive(
   let totalUpdated = 0;
   let totalSkipped = 0;
   let startMs = Date.now();
+  // Declared here (not inside `try`) so it's still reachable from the
+  // `catch` block below — a genuine exception should still preserve
+  // whatever per-step resume positions were known at that point.
+  let stepCursors: Record<string, string | null> = {};
   let stepFns: {
     key: string;
     name: string;
@@ -1738,7 +2053,9 @@ export async function runArchive(
       db: Db,
       cutoff: string,
       errors: string[],
-    ) => Promise<ArchiveStepResult>;
+      resumeCursor: string | null,
+      checkTimeBudget: (lastBatchDurationMs: number) => boolean,
+    ) => Promise<BatchedStepResult>;
   }[] = [];
 
   appendProgress = (message: string | { skippedItem?: any }) => {
@@ -1780,6 +2097,13 @@ export async function runArchive(
         if (s?.status === "success") completedSteps.add(s.name);
       }
     }
+    // Per-step resume cursors carried over from a previous partial attempt at
+    // THIS SAME runId (e.g. a step that itself got interrupted mid-way, not
+    // just a whole step boundary). Mutated as we go so every partial write
+    // below (both the between-step and mid-step checkpoints) always persists
+    // the latest known position for every step, not just the one currently
+    // in flight.
+    stepCursors = { ...(lastRun?.stepCursors || {}) };
 
     stepFns = [
       { key: "dispatchLogs", name: "DispatchLogs", fn: archiveDispatchLogs },
@@ -1847,48 +2171,42 @@ export async function runArchive(
         continue;
       }
 
-      const elapsed = Date.now() - startMs;
-      if (elapsed >= allowedMs - 2000) {
-        const partialResult: ArchiveRunResult = {
+      // Coarse between-step guard (defense in depth) — the fine-grained,
+      // mid-step guard inside archiveTypeBatched() is what actually protects
+      // against a single oversized step, but this still catches the case
+      // where a step is about to start with almost no time left at all.
+      const elapsedBeforeStep = Date.now() - startMs;
+      if (elapsedBeforeStep >= allowedMs - MIN_BATCH_TIME_BUFFER_MS) {
+        await writeIncompletePartial({
+          db,
           runId,
           startedAt,
-          completedAt: new Date().toISOString(),
-          durationMs: Date.now() - startMs,
+          startMs,
           archived,
           errors,
           warnings,
-          skipped: totalSkipped,
+          totalSkipped,
           steps,
-          assetsDeleted: steps.reduce(
-            (sum, st) => sum + (st.assetsDeleted || 0),
-            0,
-          ),
-          incomplete: true,
-        };
-        await db.collection(COLLECTIONS.ARCHIVE_RUNS).insertOne(partialResult);
-        await updateArchiveProgress(
+          stepFns,
+          stepCursors,
           progressCollection,
           progressId,
-          {
-            status: "incomplete",
-            currentStep: step.name,
-            currentStepIndex: index + 1,
-            completedSteps: steps.map((s) => s.name),
-            pendingSteps: stepFns
-              .map((s) => s.name)
-              .filter((name) => !steps.map((s) => s.name).includes(name)),
-            errors,
-            progressPercent: Math.min(
-              100,
-              Math.round((steps.length / stepFns.length) * 100),
-            ),
-          },
-          `Paused due to time limit after ${steps.length} completed steps`,
-        );
-        console.log(
-          "⚠️ Archive run paused due to time limit; will resume on next trigger",
-        );
-        return partialResult;
+          pausedStepName: step.name,
+          pausedStepIndex: index + 1,
+          reason: `Paused before starting ${step.name} — time limit reached after ${steps.length} completed step(s)`,
+        });
+        return buildRunResult({
+          runId,
+          startedAt,
+          startMs,
+          archived,
+          errors,
+          warnings,
+          totalSkipped,
+          steps,
+          incomplete: true,
+          stepCursors,
+        });
       }
 
       await updateArchiveProgress(
@@ -1901,17 +2219,87 @@ export async function runArchive(
         `Starting step: ${step.name}`,
       );
 
-      const stepRes = await step.fn(db, cutoff, errors).catch((err: any) => {
-        const message = err?.message || String(err);
-        errors.push(`${step.name} batch failed: ${message}`);
-        return createArchiveStepResult({
-          name: step.name,
-          count: 0,
-          deletedCount: 0,
-          errors: [message],
-          message: "Step failed",
+      // Adaptive per-batch time budget, passed down into the step so it can
+      // checkpoint DURING its own work, not just between whole steps. Stops
+      // a batch from starting unless there's comfortably enough time left
+      // for one more (using the previous batch's real duration once we have
+      // one, or a conservative fixed floor before that).
+      const checkTimeBudget = (lastBatchDurationMs: number): boolean => {
+        const remainingMs = allowedMs - (Date.now() - startMs);
+        const requiredMs = Math.max(
+          MIN_BATCH_TIME_BUFFER_MS,
+          lastBatchDurationMs * 1.5,
+        );
+        return remainingMs <= requiredMs;
+      };
+
+      const resumeCursorForStep = stepCursors[step.name] ?? null;
+
+      const stepRes = await step
+        .fn(db, cutoff, errors, resumeCursorForStep, checkTimeBudget)
+        .catch((err: any) => {
+          const message = err?.message || String(err);
+          errors.push(`${step.name} batch failed: ${message}`);
+          return {
+            ...createArchiveStepResult({
+              name: step.name,
+              count: 0,
+              deletedCount: 0,
+              errors: [message],
+              message: "Step failed",
+            }),
+            done: true,
+            resumeCursor: resumeCursorForStep,
+          } as BatchedStepResult;
         });
-      });
+
+      if (!stepRes.done) {
+        // This step itself ran out of time mid-way (not just a step
+        // boundary). Persist exactly how far it got — as a Sanity `_id`
+        // cursor — so the very next invocation resumes this step from
+        // there instead of re-scanning it from the beginning.
+        stepCursors[step.name] = stepRes.resumeCursor;
+        steps.push(stepRes);
+        totalInserted += stepRes.inserted || 0;
+        totalUpdated += stepRes.updated || 0;
+        totalSkipped += stepRes.skipped || 0;
+        archived[step.key] = (archived[step.key] || 0) + (stepRes.count || 0);
+
+        await writeIncompletePartial({
+          db,
+          runId,
+          startedAt,
+          startMs,
+          archived,
+          errors,
+          warnings,
+          totalSkipped,
+          steps,
+          stepFns,
+          stepCursors,
+          progressCollection,
+          progressId,
+          pausedStepName: step.name,
+          pausedStepIndex: index + 1,
+          reason: `Paused mid-step during ${step.name} after ${stepRes.count} document(s) — will resume from where it left off`,
+        });
+        return buildRunResult({
+          runId,
+          startedAt,
+          startMs,
+          archived,
+          errors,
+          warnings,
+          totalSkipped,
+          steps,
+          incomplete: true,
+          stepCursors,
+        });
+      }
+
+      // Step finished fully — clear its cursor so a future re-run of this
+      // step (a genuinely new day's archive, not a resume) starts fresh.
+      delete stepCursors[step.name];
 
       steps.push(stepRes);
       totalInserted += stepRes.inserted || 0;
@@ -1971,6 +2359,10 @@ export async function runArchive(
         0,
       ),
       incomplete: false,
+      // Every step finished fully in this run, so there's nothing left to
+      // resume — an empty map here (rather than omitting the field) makes
+      // that explicit for anything reading run history.
+      stepCursors: {},
     };
 
     await db.collection(COLLECTIONS.ARCHIVE_RUNS).insertOne(result);
@@ -2027,6 +2419,10 @@ export async function runArchive(
         0,
       ),
       incomplete: false,
+      // Preserve whatever per-step resume positions were known when the
+      // exception hit — not auto-resumed by cron (only `incomplete: true`
+      // runs are), but still available if this runId is retried manually.
+      stepCursors,
     };
 
     await db.collection(COLLECTIONS.ARCHIVE_RUNS).insertOne(failedResult);
@@ -2062,8 +2458,28 @@ export async function resumeIncompleteArchives(
 ): Promise<{ attempts: number; finished: boolean }> {
   const db = await getArchiveDb();
   let attempts = 0;
+  // Each runArchive() call is itself allowed to run for close to the full
+  // per-invocation time budget (that's the whole point of its internal
+  // checkpointing). Looping up to maxAttempts times here WITHOUT a matching
+  // outer time check would just reproduce the exact same "silently killed
+  // by Vercel's hard timeout" failure one level up, the moment a backlog
+  // needs more than one resume cycle to finish — up to 5 x ~270s is nearly
+  // 23 minutes against a 300-second hard limit. Only attempt another
+  // iteration if there's still comfortable headroom left in THIS
+  // invocation; otherwise stop cleanly (nothing lost — runArchive() has
+  // already checkpointed) and let the next cron tick continue.
+  const outerStartMs = Date.now();
+  const outerBudgetMs =
+    parseInt(process.env.ARCHIVE_MAX_SECONDS || "270", 10) * 1000;
 
   for (; attempts < maxAttempts; attempts += 1) {
+    if (
+      attempts > 0 &&
+      Date.now() - outerStartMs >= outerBudgetMs - MIN_BATCH_TIME_BUFFER_MS
+    ) {
+      return { attempts, finished: false };
+    }
+
     const incompleteRun = await db
       .collection(COLLECTIONS.ARCHIVE_RUNS)
       .findOne({ incomplete: true }, { sort: { startedAt: -1 } });

@@ -11,6 +11,7 @@ import {
   resumeIncompleteArchives,
   cleanupOldArchiveMetadata,
   cleanupArchivedSanityData,
+  resumeIncompleteCleanup,
   ARCHIVE_PROGRESS_STALE_MS,
 } from "@/lib/archiveService";
 import { getArchiveDb, COLLECTIONS } from "@/lib/mongoClient";
@@ -45,38 +46,102 @@ export async function POST(request: Request) {
   try {
     if (deleteOld) {
       const metadataCleanup = await cleanupOldArchiveMetadata();
-      const sanityCleanup = await cleanupArchivedSanityData();
-      const cleanupErrors = sanityCleanup.errors || [];
-      if (cleanupErrors.length) {
-        console.error(
-          `❌ Sanity cleanup completed with ${cleanupErrors.length} error(s):`,
-          cleanupErrors,
-        );
+
+      // Cleanup used to run entirely synchronously in this handler — same
+      // exposure the main archive run had: a large backlog could exceed
+      // Vercel's function timeout with nothing recorded. It's now batched
+      // and checkpointed internally (see cleanupArchivedSanityData), but a
+      // sufficiently large backlog can still take more than one invocation
+      // to finish, so this is queued and run in the background exactly
+      // like a manual archive trigger, with its own progress doc.
+
+      // Mirrors the manual archive-trigger flow below: try to resume a
+      // previously-interrupted (`incomplete`) run first, rather than
+      // treating "incomplete" as a reason to block a new attempt — it's
+      // paused and resumable, not actively in flight elsewhere.
+      const resumeCleanupResult = await resumeIncompleteCleanup(5);
+      if (resumeCleanupResult.attempts > 0) {
+        return NextResponse.json({
+          success: true,
+          resumed: true,
+          cleanup: true,
+          attempts: resumeCleanupResult.attempts,
+          finished: resumeCleanupResult.finished,
+          deletedArchiveRuns: metadataCleanup.deletedRuns,
+          deletedBaselineSnapshots: metadataCleanup.deletedBaselines,
+          message: resumeCleanupResult.finished
+            ? "Resumed incomplete cleanup run and it has completed."
+            : "Resumed incomplete cleanup run; it will continue on the next available cycle.",
+        });
       }
+
+      const dbRef = await getArchiveDb();
+      const progressId = "cleanup-progress";
+
+      // Only an actively `running` cleanup blocks a new one — an
+      // `incomplete` one would have already been resumed above.
+      const existingCleanupProgress = await dbRef
+        .collection(COLLECTIONS.ARCHIVE_RUNS)
+        .findOne({ _id: progressId } as any);
+      if (existingCleanupProgress?.status === "running") {
+        const lastUpdatedTs = existingCleanupProgress.lastUpdatedAt
+          ? new Date(existingCleanupProgress.lastUpdatedAt).getTime()
+          : null;
+        const isStale =
+          !lastUpdatedTs ||
+          Date.now() - lastUpdatedTs > ARCHIVE_PROGRESS_STALE_MS;
+        if (!isStale) {
+          return NextResponse.json(
+            {
+              success: false,
+              status: "failed",
+              cleanupInProgress: true,
+              error: `A cleanup run is already running (started ${existingCleanupProgress.startedAt}). Please wait for it to finish.`,
+              errorMessage: `A cleanup run is already running (started ${existingCleanupProgress.startedAt}). Please wait for it to finish.`,
+              currentRunId: existingCleanupProgress.runId,
+              deletedArchiveRuns: metadataCleanup.deletedRuns,
+              deletedBaselineSnapshots: metadataCleanup.deletedBaselines,
+            },
+            { status: 409 },
+          );
+        }
+      }
+
+      const runId = `cleanup-${Date.now()}`;
+
+      after(() =>
+        cleanupArchivedSanityData(runId).catch((backgroundError: any) => {
+          console.error("Background cleanup run failed:", backgroundError);
+        }),
+      );
+
       return NextResponse.json({
-        // Previously always `true`, even when sanityCleanup.errors had
-        // entries — an admin could see "success" while some documents
-        // silently failed to delete. Now reflects whether anything
-        // actually went wrong.
-        success: cleanupErrors.length === 0,
+        success: true,
+        started: true,
+        status: "started",
         cleanup: true,
+        runId,
         deletedArchiveRuns: metadataCleanup.deletedRuns,
         deletedBaselineSnapshots: metadataCleanup.deletedBaselines,
-        deletedSanityDocuments: sanityCleanup.deletedSanityDocuments,
-        collectionsProcessed: sanityCleanup.collectionsProcessed,
-        cutoff: sanityCleanup.cutoff,
-        errors: cleanupErrors,
+        message:
+          "Cleanup run queued successfully and will continue in the background.",
       });
     }
 
     if (isCronCall) {
       const resumeResult = await resumeIncompleteArchives(5);
-      if (resumeResult.attempts > 0) {
+      // A previously-interrupted cleanup run is just as worth resuming
+      // automatically as an interrupted archive run — otherwise it sits
+      // stuck until an admin happens to manually re-trigger deleteOld.
+      const resumeCleanupResult = await resumeIncompleteCleanup(5);
+      if (resumeResult.attempts > 0 || resumeCleanupResult.attempts > 0) {
         return NextResponse.json({
           success: true,
           resumed: true,
           attempts: resumeResult.attempts,
           finished: resumeResult.finished,
+          cleanupAttempts: resumeCleanupResult.attempts,
+          cleanupFinished: resumeCleanupResult.finished,
           message: resumeResult.finished
             ? "Resumed incomplete archive run and it has completed."
             : "Resumed incomplete archive run; it will continue on the next available cycle.",

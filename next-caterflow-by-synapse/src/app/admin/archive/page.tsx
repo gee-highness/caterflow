@@ -421,7 +421,9 @@ export default function ArchiveManagementPage() {
           data.status === "failed"
             ? data.errorMessage || data.error || "Archive failed"
             : data.archiveInProgress || res.status === 409
-              ? "Archive already in progress. Please wait for the current run to finish."
+              ? data.cleanupInProgress
+                ? "Cleanup already in progress. Please wait for the current run to finish."
+                : "Archive already in progress. Please wait for the current run to finish."
               : data.errorMessage || data.error || "Failed to complete action";
         throw new Error(customMessage);
       }
@@ -439,33 +441,22 @@ export default function ArchiveManagementPage() {
       }
 
       if (options?.deleteOld) {
-        const cleanupErrors: string[] = data.errors || [];
-        if (cleanupErrors.length > 0) {
-          // Previously this branch was unreachable when errors occurred,
-          // because the HTTP status was always 200 regardless of whether
-          // individual document deletions failed — so a partial failure
-          // silently looked identical to full success. Now checks the
-          // response body's own success/errors fields, not just res.ok.
-          console.error(
-            `Archive cleanup completed with ${cleanupErrors.length} error(s):`,
-            cleanupErrors,
-          );
-          toast({
-            title: "Archive Cleanup Completed With Errors",
-            description: `Deleted ${data.deletedSanityDocuments || 0} document(s), but ${cleanupErrors.length} failed — see console for full details. First error: ${cleanupErrors[0]}`,
-            status: "warning",
-            duration: 12000,
-            isClosable: true,
-          });
-        } else {
-          toast({
-            title: "Archive Cleanup Completed",
-            description: `Deleted ${data.deletedSanityDocuments || 0} old Sanity documents already backed up to Mongo and cleaned up ${data.deletedArchiveRuns || 0} archive run records older than ${ARCHIVE_DAYS} days.`,
-            status: "success",
-            duration: 5000,
-            isClosable: true,
-          });
-        }
+        // Cleanup now runs in the background (see archiveService.ts —
+        // cleanupArchivedSanityData is batched/checkpointed and can span
+        // more than one invocation on a large backlog), the same way an
+        // archive run does. It no longer returns deletedSanityDocuments/
+        // errors synchronously in this response, since that work hasn't
+        // happened yet by the time this request returns — only the
+        // metadata cleanup (old run-history/baseline records) has.
+        toast({
+          title: "Cleanup Started",
+          description:
+            data.message ||
+            `Cleanup run has been queued and will continue in the background. Cleaned up ${data.deletedArchiveRuns || 0} old archive run record(s) and ${data.deletedBaselineSnapshots || 0} baseline snapshot(s) so far; Sanity document cleanup will proceed in batches.`,
+          status: "success",
+          duration: 7000,
+          isClosable: true,
+        });
       }
 
       const statusData = await fetchLogs();
