@@ -54,6 +54,7 @@ import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import {
   FiDownload,
+  FiUpload,
   FiPlay,
   FiRefreshCw,
   FiTrash2,
@@ -159,6 +160,31 @@ export default function ArchiveManagementPage() {
   } = useDisclosure();
   const [deleteOld, setDeleteOld] = useState(false);
   const [insertMissing, setInsertMissing] = useState(false);
+
+  // --- Restore from backup (computeDiffAndApply) ---
+  const [restoreFile, setRestoreFile] = useState<File | null>(null);
+  const [restorePreviewInProgress, setRestorePreviewInProgress] =
+    useState(false);
+  const [restoreApplyInProgress, setRestoreApplyInProgress] = useState(false);
+  const [restorePreview, setRestorePreview] = useState<{
+    diff: Record<
+      string,
+      {
+        added: number;
+        removed: number;
+        updated: number;
+        skippedNotInBackup?: boolean;
+      }
+    >;
+  } | null>(null);
+  const [restoreError, setRestoreError] = useState<string | null>(null);
+  const [restoreConfirmText, setRestoreConfirmText] = useState("");
+  const RESTORE_CONFIRM_PHRASE = "RESTORE";
+  const {
+    isOpen: isRestoreModalOpen,
+    onOpen: onRestoreModalOpen,
+    onClose: onRestoreModalCloseRaw,
+  } = useDisclosure();
 
   const ARCHIVE_DAYS = Number(process.env.NEXT_PUBLIC_ARCHIVE_DAYS || "90");
 
@@ -381,22 +407,9 @@ export default function ArchiveManagementPage() {
   }, [isAuthenticated, isAdmin, router, toast, fetchLogs, sessionStatus]);
 
   const handleRunArchive = async (options?: { deleteOld?: boolean }) => {
-    if (options?.deleteOld) {
-      // IMPORTANT: this triggers TWO destructive operations, not one —
-      // cleanupOldArchiveMetadata() (old run-history/baseline records) AND
-      // cleanupArchivedSanityData() (permanently deletes the ORIGINAL
-      // Sanity documents once they've been archived to Mongo). The previous
-      // wording here only mentioned the first, so admins weren't told the
-      // action also permanently removes source documents from Sanity.
-      // Also: a document only becomes eligible for Sanity deletion once
-      // it's been sitting in the Mongo archive for ${ARCHIVE_DAYS} days
-      // AFTER being synced there — since it also had to be ${ARCHIVE_DAYS}
-      // days old before it was archived in the first place, the real gap
-      // between a document's original date and its Sanity deletion is
-      // roughly double the number below.
-      const confirmationMessage = `Are you sure you want to:\n\n1) Delete archive run history and baseline snapshots older than ${ARCHIVE_DAYS} days, AND\n2) Permanently delete original Sanity documents that were archived to the database more than ${ARCHIVE_DAYS} days ago?\n\nThis action cannot be undone.`;
-      if (!confirm(confirmationMessage)) return;
-    }
+    // Confirmation for the deleteOld path already happens in the "Delete Old
+    // Archived Sanity Data" Modal (see confirmDeleteOld) before this is ever
+    // called — no second confirmation needed here.
 
     if (!options?.deleteOld) {
       setCurrentRun(null);
@@ -505,6 +518,89 @@ export default function ArchiveManagementPage() {
   const handleDownloadBackup = () => {
     // Just navigate to the endpoint to trigger the browser download
     window.location.href = "/api/archive/export";
+  };
+
+  const resetRestoreState = () => {
+    setRestoreFile(null);
+    setRestorePreview(null);
+    setRestoreError(null);
+    setRestoreConfirmText("");
+  };
+
+  const onRestoreModalClose = () => {
+    if (restorePreviewInProgress || restoreApplyInProgress) return;
+    resetRestoreState();
+    onRestoreModalCloseRaw();
+  };
+
+  const handleRestoreFileChange = (
+    event: React.ChangeEvent<HTMLInputElement>,
+  ) => {
+    setRestorePreview(null);
+    setRestoreError(null);
+    setRestoreConfirmText("");
+    setRestoreFile(event.target.files?.[0] || null);
+  };
+
+  // Reads the selected backup file and POSTs it to /api/archive/import for a
+  // DRY RUN (no apply param -> applyIfTrue=false server-side) — nothing is
+  // written yet. The admin has to review this diff and type the confirm
+  // phrase before handleApplyRestore is reachable at all.
+  const handlePreviewRestore = async () => {
+    if (!restoreFile) return;
+    setRestorePreviewInProgress(true);
+    setRestoreError(null);
+    setRestorePreview(null);
+    try {
+      const text = await restoreFile.text();
+      const payload = JSON.parse(text); // the encrypted {iv, data, tag} envelope from the export file
+      const res = await fetch("/api/archive/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || data.details || "Preview failed");
+      }
+      setRestorePreview(data);
+    } catch (err: any) {
+      setRestoreError(err?.message || "Failed to preview backup file");
+    } finally {
+      setRestorePreviewInProgress(false);
+    }
+  };
+
+  const handleApplyRestore = async () => {
+    if (!restoreFile || restoreConfirmText !== RESTORE_CONFIRM_PHRASE) return;
+    setRestoreApplyInProgress(true);
+    setRestoreError(null);
+    try {
+      const text = await restoreFile.text();
+      const payload = JSON.parse(text);
+      const res = await fetch("/api/archive/import?apply=true", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || data.details || "Restore failed");
+      }
+      toast({
+        title: "Restore applied",
+        description: `Backup restored (audit ID: ${data.auditId || "n/a"}).`,
+        status: "success",
+        duration: 7000,
+        isClosable: true,
+      });
+      resetRestoreState();
+      onRestoreModalCloseRaw();
+    } catch (err: any) {
+      setRestoreError(err?.message || "Failed to apply restore");
+    } finally {
+      setRestoreApplyInProgress(false);
+    }
   };
 
   const selectedRun = selectedRunId
@@ -829,6 +925,18 @@ export default function ArchiveManagementPage() {
             Download Backup
           </Button>
           <Button
+            leftIcon={<FiUpload />}
+            colorScheme="orange"
+            variant="outline"
+            onClick={() => {
+              resetRestoreState();
+              onRestoreModalOpen();
+            }}
+            isDisabled={archiveInProgress || isRunning}
+          >
+            Restore from Backup
+          </Button>
+          <Button
             leftIcon={<FiRefreshCw />}
             colorScheme="gray"
             variant="ghost"
@@ -852,6 +960,7 @@ export default function ArchiveManagementPage() {
             colorScheme="red"
             onClick={openDeleteModal}
             isLoading={isRunning && deleteOld}
+            isDisabled={archiveInProgress || isRunning}
             loadingText="Deleting..."
           >
             Delete Old Archived Sanity Data
@@ -1742,6 +1851,135 @@ export default function ArchiveManagementPage() {
             >
               Delete
             </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
+
+      {/* Restore from Backup Modal */}
+      <Modal
+        isOpen={isRestoreModalOpen}
+        onClose={onRestoreModalClose}
+        isCentered
+        size="xl"
+      >
+        <ModalOverlay />
+        <ModalContent>
+          <ModalHeader>Restore from Backup</ModalHeader>
+          <ModalCloseButton />
+          <ModalBody>
+            <VStack align="stretch" spacing={4}>
+              <Alert status="warning" borderRadius="md">
+                <AlertIcon />
+                <AlertDescription>
+                  Restoring replaces the current contents of every archive
+                  collection mentioned in the backup file with the file's
+                  contents. This cannot be undone. Preview the diff below
+                  before applying anything.
+                </AlertDescription>
+              </Alert>
+
+              <FormControl>
+                <FormLabel>Backup file (.json.enc)</FormLabel>
+                <Input
+                  type="file"
+                  accept=".enc,.json,application/json"
+                  onChange={handleRestoreFileChange}
+                  isDisabled={restorePreviewInProgress || restoreApplyInProgress}
+                />
+              </FormControl>
+
+              {restoreError ? (
+                <Alert status="error" borderRadius="md">
+                  <AlertIcon />
+                  <AlertDescription>{restoreError}</AlertDescription>
+                </Alert>
+              ) : null}
+
+              {restorePreview ? (
+                <Box>
+                  <Text fontWeight="medium" mb={2}>
+                    Diff preview (nothing has been written yet):
+                  </Text>
+                  <Box overflowX="auto">
+                    <Table size="sm">
+                      <Thead>
+                        <Tr>
+                          <Th>Collection</Th>
+                          <Th isNumeric>Added</Th>
+                          <Th isNumeric>Removed</Th>
+                          <Th isNumeric>Updated</Th>
+                          <Th>Note</Th>
+                        </Tr>
+                      </Thead>
+                      <Tbody>
+                        {Object.entries(restorePreview.diff).map(
+                          ([collName, d]) => (
+                            <Tr key={collName}>
+                              <Td>{collName}</Td>
+                              <Td isNumeric>{d.added}</Td>
+                              <Td isNumeric>{d.removed}</Td>
+                              <Td isNumeric>{d.updated}</Td>
+                              <Td>
+                                {d.skippedNotInBackup ? (
+                                  <Badge colorScheme="gray">
+                                    not in backup — will be left untouched
+                                  </Badge>
+                                ) : d.removed > 0 ? (
+                                  <Badge colorScheme="red">
+                                    {d.removed} would be deleted
+                                  </Badge>
+                                ) : null}
+                              </Td>
+                            </Tr>
+                          ),
+                        )}
+                      </Tbody>
+                    </Table>
+                  </Box>
+
+                  <FormControl mt={4}>
+                    <FormLabel>
+                      Type {RESTORE_CONFIRM_PHRASE} to enable Apply Restore
+                    </FormLabel>
+                    <Input
+                      value={restoreConfirmText}
+                      onChange={(e) => setRestoreConfirmText(e.target.value)}
+                      placeholder={RESTORE_CONFIRM_PHRASE}
+                      isDisabled={restoreApplyInProgress}
+                    />
+                  </FormControl>
+                </Box>
+              ) : null}
+            </VStack>
+          </ModalBody>
+          <ModalFooter>
+            <Button
+              variant="ghost"
+              mr={3}
+              onClick={onRestoreModalClose}
+              isDisabled={restorePreviewInProgress || restoreApplyInProgress}
+            >
+              Cancel
+            </Button>
+            {restorePreview ? (
+              <Button
+                colorScheme="red"
+                onClick={handleApplyRestore}
+                isLoading={restoreApplyInProgress}
+                isDisabled={restoreConfirmText !== RESTORE_CONFIRM_PHRASE}
+              >
+                Apply Restore
+              </Button>
+            ) : (
+              <Button
+                colorScheme="orange"
+                onClick={handlePreviewRestore}
+                isLoading={restorePreviewInProgress}
+                isDisabled={!restoreFile || restorePreviewInProgress}
+              >
+                Preview Restore
+              </Button>
+            )}
           </ModalFooter>
         </ModalContent>
       </Modal>

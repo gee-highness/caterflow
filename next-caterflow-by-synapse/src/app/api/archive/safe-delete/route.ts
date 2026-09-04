@@ -37,7 +37,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    console.log("\n🔍 User checking backup status before delete...");
+    // console.log("\n🔍 User checking backup status before delete...");
 
     // Check current backup status
     const backupStatus = await isBackupRecent(5);
@@ -103,11 +103,11 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    console.log(
-      `\n⚠️  User requested deletion of ${documentIds.length} ${documentType} documents`,
-    );
-    console.log(`   Reason: ${reason}`);
-    console.log(`   Enforcing backup safety checks...`);
+    // console.log(
+    //   `\n⚠️  User requested deletion of ${documentIds.length} ${documentType} documents`,
+    // );
+    // console.log(`   Reason: ${reason}`);
+    // console.log(`   Enforcing backup safety checks...`);
 
     // Enforce backup requirement (will auto-trigger archive if needed)
     const safetyCheck = await enforceBackupBeforeDelete();
@@ -128,7 +128,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    console.log(`✅ ${safetyCheck.message}`);
+    // console.log(`✅ ${safetyCheck.message}`);
 
     // At this point, a recent backup exists (either was already there or just created)
     // Return success with details, but don't actually delete yet

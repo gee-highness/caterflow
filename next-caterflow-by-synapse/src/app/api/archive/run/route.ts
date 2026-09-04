@@ -39,9 +39,9 @@ export async function POST(request: Request) {
   const { searchParams } = new URL(request.url);
   const deleteOld = searchParams.get("deleteOld") === "true";
 
-  console.log(
-    `\n🚀 Archive run triggered by: ${isCronCall ? "Vercel Cron" : "Admin user"}${deleteOld ? " (cleanup mode)" : ""}`,
-  );
+  // console.log(
+  //   `\n🚀 Archive run triggered by: ${isCronCall ? "Vercel Cron" : "Admin user"}${deleteOld ? " (cleanup mode)" : ""}`,
+  // );
 
   try {
     if (deleteOld) {

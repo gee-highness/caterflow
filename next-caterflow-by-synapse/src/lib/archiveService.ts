@@ -246,9 +246,9 @@ export async function insertIfNotExists(
     .filter((p) => p._sanityId);
   const skippedNoId = docs.length - payloads.length;
   if (skippedNoId > 0) {
-    console.warn(
-      `⚠️  Skipping ${skippedNoId} documents without valid Sanity IDs in ${collectionName}`,
-    );
+    // console.warn(
+    //   `⚠️  Skipping ${skippedNoId} documents without valid Sanity IDs in ${collectionName}`,
+    // );
     try {
       progress?.({
         skippedItem: {
@@ -443,10 +443,10 @@ export async function insertIfNotExists(
                 },
               });
             } catch (progressErr) {
-              console.warn(
-                "Progress callback threw while reporting a skipped item (non-fatal):",
-                progressErr,
-              );
+              // console.warn(
+              //   "Progress callback threw while reporting a skipped item (non-fatal):",
+              //   progressErr,
+              // );
             }
             skipped += 1;
             continue;
@@ -552,7 +552,7 @@ async function captureStockBaseline(db: Db): Promise<void> {
       groq`*[_type == "stockRegistry"][0]{ stockData, lastUpdated }`,
     );
     if (!registry?.stockData) {
-      console.log("⚠️  No stockRegistry found — skipping baseline capture");
+      // console.log("⚠️  No stockRegistry found — skipping baseline capture");
       return;
     }
 
@@ -563,7 +563,7 @@ async function captureStockBaseline(db: Db): Promise<void> {
       lastRegistryUpdate: registry.lastUpdated,
     });
 
-    console.log("📸 Stock baseline captured before archival");
+    // console.log("📸 Stock baseline captured before archival");
   } catch (err) {
     console.error("❌ Failed to capture stock baseline:", err);
     // Non-fatal — archival continues
@@ -575,7 +575,7 @@ async function captureStockBaseline(db: Db): Promise<void> {
 async function deleteSanityAsset(assetId: string): Promise<void> {
   try {
     await writeClient.delete(assetId);
-    console.log(`🗑️  Deleted Sanity asset: ${assetId}`);
+    // console.log(`🗑️  Deleted Sanity asset: ${assetId}`);
   } catch (err: any) {
     // 404 is fine — asset already gone
     if (err?.statusCode !== 404) {
@@ -737,7 +737,7 @@ async function archiveTypeBatched(options: {
     if (batch.length < batchSize) break; // last (partial) page — done
   }
 
-  console.log(`✅ Synced ${totalCount} ${options.name}`);
+  // console.log(`✅ Synced ${totalCount} ${options.name}`);
   return {
     name: options.name,
     count: totalCount,
@@ -1142,7 +1142,7 @@ async function ensureIndexes(
       `❌ ${failed.length}/${indexSpecs.length} archive indexes failed to create — see errors above.`,
     );
   } else {
-    console.log(`📋 MongoDB indexes ensured (${created}/${indexSpecs.length})`);
+    // console.log(`📋 MongoDB indexes ensured (${created}/${indexSpecs.length})`);
   }
 
   return { created, failed };
@@ -1543,7 +1543,7 @@ async function writeIncompleteCleanupPartial(options: {
       },
     } as any,
   );
-  console.log(`⚠️ Cleanup run paused — ${options.reason}`);
+  // console.log(`⚠️ Cleanup run paused — ${options.reason}`);
   return partial;
 }
 
@@ -1620,7 +1620,7 @@ export async function resumeIncompleteCleanup(
 
     if (!incompleteRun) return { attempts, finished: true };
 
-    console.log(`🔁 Resuming incomplete cleanup run (found: ${incompleteRun.runId})`);
+    // console.log(`🔁 Resuming incomplete cleanup run (found: ${incompleteRun.runId})`);
     attempts += 1;
     const res = await cleanupArchivedSanityData(incompleteRun.runId);
 
@@ -1837,7 +1837,7 @@ async function writeIncompletePartial(options: {
     },
     options.reason,
   );
-  console.log(`⚠️ Archive run paused — ${options.reason}`);
+  // console.log(`⚠️ Archive run paused — ${options.reason}`);
 }
 
 export interface ArchiveCurrentRunStatus {
@@ -2486,9 +2486,9 @@ export async function resumeIncompleteArchives(
 
     if (!incompleteRun) return { attempts, finished: true };
 
-    console.log(
-      `🔁 Resuming incomplete archive run (found: ${incompleteRun.runId})`,
-    );
+    // console.log(
+    //   `🔁 Resuming incomplete archive run (found: ${incompleteRun.runId})`,
+    // );
 
     // Pass the original runId so resumed run updates the same progress record
     const res = await runArchive(incompleteRun.runId);

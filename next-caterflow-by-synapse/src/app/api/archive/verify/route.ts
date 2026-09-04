@@ -17,7 +17,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    console.log("\n🔍 Starting archive integrity verification...");
+    // console.log("\n🔍 Starting archive integrity verification...");
 
     const db = await getArchiveDb();
     const verification: Record<string, any> = {
@@ -141,19 +141,19 @@ export async function POST(request: Request) {
         if (hasDuplicates || hasMissingCoverage) {
           allMatched = false;
           if (hasDuplicates) {
-            console.warn(
-              `⚠️  ${type.name}: Found ${mongoResult.length} duplicated _sanityId values`,
-            );
+            // console.warn(
+            //   `⚠️  ${type.name}: Found ${mongoResult.length} duplicated _sanityId values`,
+            // );
           }
           if (hasMissingCoverage) {
-            console.warn(
-              `⚠️  ${type.name}: ${missingIds.length} eligible Sanity documents are not present in the archive collection`,
-            );
+            // console.warn(
+            //   `⚠️  ${type.name}: ${missingIds.length} eligible Sanity documents are not present in the archive collection`,
+            // );
           }
         } else {
-          console.log(
-            `✅ ${type.name}: ${eligibleIds.length} eligible Sanity docs, ${mongoCount} archived`,
-          );
+          // console.log(
+          //   `✅ ${type.name}: ${eligibleIds.length} eligible Sanity docs, ${mongoCount} archived`,
+          // );
         }
       } catch (err: any) {
         verification.checks.push({
@@ -200,7 +200,7 @@ export async function POST(request: Request) {
           : null,
         status: "ok",
       });
-      console.log(`✅ ArchiveRuns: ${runsCount} total runs`);
+      // console.log(`✅ ArchiveRuns: ${runsCount} total runs`);
     } catch (err: any) {
       verification.checks.push({
         type: "ArchiveRuns",

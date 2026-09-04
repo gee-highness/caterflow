@@ -29,7 +29,10 @@ function isEqual(a: any, b: any): boolean {
  */
 export async function computeDiffAndApply(backup: any, applyIfTrue: boolean) {
   const db = await getArchiveDb();
-  const diffSummary: Record<string, { added: number; removed: number; updated: number }> = {};
+  const diffSummary: Record<
+    string,
+    { added: number; removed: number; updated: number; skippedNotInBackup?: boolean }
+  > = {};
   const auditRecord: any = {
     importedAt: new Date().toISOString(),
     applied: applyIfTrue,
@@ -39,7 +42,16 @@ export async function computeDiffAndApply(backup: any, applyIfTrue: boolean) {
   // Iterate over each defined collection
   for (const key of Object.keys(COLLECTIONS) as Array<keyof typeof COLLECTIONS>) {
     const collName = COLLECTIONS[key] as CollectionName;
-    const backupDocs = backup.data[collName] ?? [];
+    // Distinguish "backup explicitly has this collection, and it's empty"
+    // (a real, intentional empty state — safe to restore to empty) from
+    // "the backup file doesn't mention this collection at all" (an older/
+    // partial export format — must NOT be treated as "restore to empty",
+    // or a restore would silently wipe live data with nothing to put back).
+    const backupHasCollection = Object.prototype.hasOwnProperty.call(
+      backup.data ?? {},
+      collName,
+    );
+    const backupDocs = backup.data?.[collName] ?? [];
     const currentDocs = await db.collection(collName).find({}).toArray();
 
     const backupMap = new Map<string, any>();
@@ -69,10 +81,21 @@ export async function computeDiffAndApply(backup: any, applyIfTrue: boolean) {
       if (!backupMap.has(id)) removed++;
     }
 
-    diffSummary[collName] = { added, removed, updated };
-    auditRecord.diff[collName] = { added, removed, updated };
+    diffSummary[collName] = {
+      added,
+      removed,
+      updated,
+      ...(backupHasCollection ? {} : { skippedNotInBackup: true }),
+    };
+    auditRecord.diff[collName] = diffSummary[collName];
 
     if (applyIfTrue) {
+      if (!backupHasCollection) {
+        // Backup file has no entry for this collection at all — leave it
+        // untouched rather than deleting current data with nothing to
+        // restore in its place.
+        continue;
+      }
       // Replace the collection with the backup data (full restore)
       await db.collection(collName).deleteMany({});
       if (backupDocs.length) {

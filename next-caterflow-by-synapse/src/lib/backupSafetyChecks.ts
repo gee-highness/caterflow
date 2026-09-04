@@ -21,6 +21,11 @@ export async function getLastBackupTime(): Promise<string | null> {
     const db = await getArchiveDb();
     const lastRun = await db.collection(COLLECTIONS.ARCHIVE_RUNS).findOne(
       {
+        // Real archive/backup runs have no `kind` field. "cleanup" runs only
+        // delete already-archived Sanity docs (they copy nothing new to
+        // Mongo) and "progress"/"cleanup-progress" are status singletons —
+        // neither should count as a "backup" for safety-gate purposes.
+        kind: { $exists: false },
         $or: [
           { "steps.status": { $in: ["success", "partial"] } },
           { errors: { $size: 0 } },
@@ -105,13 +110,13 @@ export async function enforceBackupBeforeDelete(): Promise<{
   message: string;
 }> {
   try {
-    console.log("\n🔐 Enforcing backup safety check before delete...");
+    // console.log("\n🔐 Enforcing backup safety check before delete...");
 
     // Check if backup is recent
     const backupStatus = await isBackupRecent(5);
 
     if (backupStatus.hasRecentBackup) {
-      console.log(`✅ Recent backup exists. Delete can proceed safely.`);
+      // console.log(`✅ Recent backup exists. Delete can proceed safely.`);
       return {
         canProceedWithDelete: true,
         backupStatus,
@@ -120,9 +125,9 @@ export async function enforceBackupBeforeDelete(): Promise<{
     }
 
     // Backup is missing/stale - trigger automatic archive
-    console.log(
-      "⚠️  No recent backup found. Automatically triggering archive before delete...",
-    );
+    // console.log(
+    //   "⚠️  No recent backup found. Automatically triggering archive before delete...",
+    // );
 
     const archiveResult = await runArchive();
 
@@ -135,9 +140,9 @@ export async function enforceBackupBeforeDelete(): Promise<{
     const archiveSucceeded = (archiveResult.errors || []).length === 0;
 
     if (archiveSucceeded && archivedCount >= 0) {
-      console.log(
-        `✅ Archive completed (runId: ${archiveResult.runId}). Delete can now proceed.`,
-      );
+      // console.log(
+      //   `✅ Archive completed (runId: ${archiveResult.runId}). Delete can now proceed.`,
+      // );
       return {
         canProceedWithDelete: true,
         backupStatus: {
@@ -209,7 +214,7 @@ export async function recordBackupCompletion(
       _isExternal: true,
       _backupMetadata: metadata,
     });
-    console.log(`✅ Backup completion recorded: ${backupId}`);
+    // console.log(`✅ Backup completion recorded: ${backupId}`);
   } catch (err) {
     console.error("❌ Failed to record backup completion:", err);
     throw err;

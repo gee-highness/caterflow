@@ -218,9 +218,12 @@ export async function getArchivedTransactionsForItem(
   const transactions: ArchivedTransaction[] = [];
 
   // Goods Receipts: item received into this bin
+  // Status filter matches the live-data equivalents in stockCalculations.ts —
+  // draft/pending-approval documents must not count toward stock once archived.
   const receipts = await db
     .collection(COLLECTIONS.GOODS_RECEIPTS)
     .find({
+      status: { $in: ["completed", "processed"] },
       receivedItems: {
         $elemMatch: {
           "stockItem._id": stockItemId,
@@ -251,6 +254,7 @@ export async function getArchivedTransactionsForItem(
   const dispatches = await db
     .collection(COLLECTIONS.DISPATCH_LOGS)
     .find({
+      status: { $in: ["completed", "processed"] },
       dispatchedItems: {
         $elemMatch: {
           "stockItem._id": stockItemId,
@@ -282,6 +286,7 @@ export async function getArchivedTransactionsForItem(
   const transfersOut = await db
     .collection(COLLECTIONS.INTERNAL_TRANSFERS)
     .find({
+      status: "completed",
       "fromBin._id": binId,
       transferredItems: {
         $elemMatch: { "stockItem._id": stockItemId },
@@ -308,6 +313,7 @@ export async function getArchivedTransactionsForItem(
   const transfersIn = await db
     .collection(COLLECTIONS.INTERNAL_TRANSFERS)
     .find({
+      status: "completed",
       "toBin._id": binId,
       transferredItems: {
         $elemMatch: { "stockItem._id": stockItemId },
@@ -333,6 +339,7 @@ export async function getArchivedTransactionsForItem(
   const counts = await db
     .collection(COLLECTIONS.INVENTORY_COUNTS)
     .find({
+      status: "completed",
       "bin._id": binId,
       countedItems: {
         $elemMatch: { "stockItem._id": stockItemId },

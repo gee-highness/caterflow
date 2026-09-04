@@ -46,17 +46,17 @@ export async function checkDeleteBackupSafety(
     throwOnBackupFail = false,
   } = options;
 
-  console.log(
-    `\n🔐 Checking backup safety for ${documentIds.length} ${documentType} deletion(s)`,
-  );
-  console.log(`   Reason: ${reason}`);
+  // console.log(
+  //   `\n🔐 Checking backup safety for ${documentIds.length} ${documentType} deletion(s)`,
+  // );
+  // console.log(`   Reason: ${reason}`);
 
   try {
     // Enforce backup requirement
     const safetyCheck = await enforceBackupBeforeDelete();
 
     if (safetyCheck.canProceedWithDelete) {
-      console.log(`✅ Backup safety check passed. Deletion allowed.`);
+      // console.log(`✅ Backup safety check passed. Deletion allowed.`);
 
       return {
         allowed: true,
@@ -144,9 +144,9 @@ export function withBackupSafety<T>(
     // Proceed with the actual delete operation
     try {
       const result = await deleteOperation(documentIds);
-      console.log(
-        `✅ Successfully deleted ${documentIds.length} ${documentType}(s)`,
-      );
+      // console.log(
+      //   `✅ Successfully deleted ${documentIds.length} ${documentType}(s)`,
+      // );
       return {
         success: true,
         result,

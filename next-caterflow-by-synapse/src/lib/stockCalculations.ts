@@ -1226,7 +1226,7 @@ const createStockSnapshot = async (
 // In the calculateStockFromTransactions function, update the dispatch processing:
 // In the calculateStockFromTransactions function, update the dispatch processing:
 
-const calculateStockFromTransactions = async (
+export const calculateStockFromTransactions = async (
   stockItemId: string,
   binId: string,
   verbose: boolean = true,
@@ -1376,18 +1376,17 @@ const calculateStockFromTransactions = async (
       // Process dispatches - ONLY if status is "completed" or "processed"
       event.dispatchedItems?.forEach((item: any) => {
         if (item.itemId === stockItemId) {
-          // Make sure we don't go negative
           const dispatchQty = new Decimal(item.quantity || 0);
-          if (stock.greaterThanOrEqualTo(dispatchQty)) {
-            stock = stock.minus(dispatchQty);
-          } else {
-            // If dispatch quantity is more than available stock, set to 0
-            // This should be logged as an issue
+          // NOTE: negative stock is allowed here to stay consistent with
+          // calculateStockForBin/calculateStockExactLogic, which both let
+          // stock go negative rather than clamping to 0 — clamping would
+          // silently hide over-dispatch instead of surfacing it.
+          if (dispatchQty.greaterThan(stock)) {
             console.warn(
-              `⚠️ Dispatch would cause negative stock for ${stockItemId} in ${binId}. Available: ${stock.toNumber()}, Dispatch: ${dispatchQty.toNumber()}`,
+              `⚠️ Dispatch exceeds available stock for ${stockItemId} in ${binId}. Available: ${stock.toNumber()}, Dispatch: ${dispatchQty.toNumber()}`,
             );
-            stock = new Decimal(0);
           }
+          stock = stock.minus(dispatchQty);
         }
       });
 
@@ -1397,14 +1396,12 @@ const calculateStockFromTransactions = async (
           // Transfer OUT from this bin
           if (event.fromBinId === binId) {
             const transferQty = new Decimal(item.quantity || 0);
-            if (stock.greaterThanOrEqualTo(transferQty)) {
-              stock = stock.minus(transferQty);
-            } else {
+            if (transferQty.greaterThan(stock)) {
               console.warn(
-                `⚠️ Transfer out would cause negative stock for ${stockItemId} in ${binId}. Available: ${stock.toNumber()}, Transfer: ${transferQty.toNumber()}`,
+                `⚠️ Transfer out exceeds available stock for ${stockItemId} in ${binId}. Available: ${stock.toNumber()}, Transfer: ${transferQty.toNumber()}`,
               );
-              stock = new Decimal(0);
             }
+            stock = stock.minus(transferQty);
           }
           // Transfer IN to this bin
           if (event.toBinId === binId) {
@@ -1469,7 +1466,7 @@ const updateStockSnapshot = async (
 
 // Helper function to calculate stock for multiple items in one bin
 // Helper function to calculate stock for multiple items in one bin
-const calculateStockForBin = async (
+export const calculateStockForBin = async (
   binId: string,
   itemIds: string[],
   onProgress?: (progress: number) => void,
@@ -4684,6 +4681,15 @@ export const calculateStockExactLogic = async (
     allTransactions.forEach((tx, index) => {
       const stockBefore = currentStock.toNumber();
       currentStock = currentStock.plus(tx.quantity);
+
+      // Negative stock is allowed (consistent with calculateStockForBin /
+      // calculateStockFromTransactions), but still surfaced as a warning
+      // rather than silently going unnoticed.
+      if (tx.quantity < 0 && currentStock.isNegative()) {
+        console.warn(
+          `⚠️ ${tx.type} exceeds available stock for ${stockItemId} in ${binId}. Available: ${stockBefore}, Change: ${tx.quantity}`,
+        );
+      }
 
       if (verbose) {
         console.log(

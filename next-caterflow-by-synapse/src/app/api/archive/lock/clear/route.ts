@@ -11,10 +11,17 @@ export async function POST(request: Request) {
     const headersList = await headers();
     const adminSecret =
       headersList.get("x-admin-secret") || headersList.get("authorization");
-    const expectedCron = `Bearer ${process.env.CRON_SECRET}`;
-    const expectedAdmin = `Bearer ${process.env.ADMIN_SECRET}`;
+    const cronSecret = process.env.CRON_SECRET;
+    const adminSecretEnv = process.env.ADMIN_SECRET;
+    // Require the env var to actually be configured — otherwise
+    // `Bearer ${undefined}` becomes the literal string "Bearer undefined",
+    // which anyone could send as a header value to bypass this check.
+    const matchesCron =
+      !!cronSecret && adminSecret === `Bearer ${cronSecret}`;
+    const matchesAdmin =
+      !!adminSecretEnv && adminSecret === `Bearer ${adminSecretEnv}`;
 
-    if (adminSecret !== expectedCron && adminSecret !== expectedAdmin) {
+    if (!matchesCron && !matchesAdmin) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
   }

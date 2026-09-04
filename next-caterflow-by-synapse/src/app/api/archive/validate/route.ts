@@ -15,7 +15,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    console.log("\n🔍 Admin triggered archive validation");
+    // console.log("\n🔍 Admin triggered archive validation");
 
     // Run comprehensive validation
     const validationResult = await validateArchiveSetup();

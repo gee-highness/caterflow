@@ -115,6 +115,11 @@ import {
 import { calculateBulkStock } from "@/lib/stockCalculations";
 import { getUserSiteInfo } from "@/lib/siteFiltering"; // Add this import
 import { resolveUnitPrice } from "@/lib/unitPriceResolver";
+import {
+  parseDateRangeBoundary,
+  isDateWithinRange,
+} from "@/lib/dateRangeUtils";
+import { VAT_CONFIG } from "@/lib/vatConfig";
 
 // Removed: unused filterTransitionStyle, filterLoadingStyle, useChartReady hook
 
@@ -436,26 +441,6 @@ interface ReportConfig {
   };
 }
 
-// VAT Configuration – rate driven by env variable so no code change is needed
-// when legislation changes. Set NEXT_PUBLIC_VAT_RATE in .env (default 0.15 = 15%)
-const _VAT_RATE = Number(process.env.NEXT_PUBLIC_VAT_RATE) || 0.15;
-const VAT_CONFIG = {
-  rate: _VAT_RATE,
-  ratePercentage: Math.round(_VAT_RATE * 100),
-  calculateVAT: (
-    amount: number,
-    isVATApplicable: boolean = true,
-  ): { vatAmount: number; totalWithVAT: number } => {
-    const cleanAmount = Number(amount) || 0;
-    if (!isVATApplicable) {
-      return { vatAmount: 0, totalWithVAT: cleanAmount };
-    }
-    const vatAmount = Math.round(cleanAmount * _VAT_RATE * 100) / 100;
-    const totalWithVAT = Math.round((cleanAmount + vatAmount) * 100) / 100;
-    return { vatAmount, totalWithVAT };
-  },
-  formatVAT: (amount: number): string => `SZL ${amount.toFixed(2)}`,
-};
 
 // Add these helper functions after VAT_CONFIG
 
@@ -1074,8 +1059,8 @@ export default function ComprehensiveReportsPage() {
   // Memoized date range for performance
   const dateRangeMemo = useMemo(
     () => ({
-      start: new Date(primaryDateRange.start),
-      end: new Date(primaryDateRange.end),
+      start: parseDateRangeBoundary(primaryDateRange.start, "start"),
+      end: parseDateRangeBoundary(primaryDateRange.end, "end"),
     }),
     [primaryDateRange.start, primaryDateRange.end],
   );
@@ -1390,11 +1375,20 @@ export default function ComprehensiveReportsPage() {
       console.log("🚚 Raw dispatches count:", allDispatches.length);
 
       try {
-        // ========== 1. FILTER TRANSACTIONS BEFORE OR ON TARGET DATE ==========
+        // ========== 1. FILTER TRANSACTIONS STRICTLY BEFORE TARGET DATE ==========
+        // targetDate is the reporting period's start (see the call site:
+        // calculateOpeningStockForDate(dateRange.start, ...)), and
+        // periodGoodsReceipts/periodDispatches (computed separately by the
+        // caller via filterDataByDateRange) already INCLUDE anything dated
+        // exactly at dateRange.start. Using `<=` here would double-count
+        // same-instant records in both "opening stock" and "period
+        // purchases/consumption" — must be strictly `<` so opening stock
+        // reflects the balance BEFORE the period, not including its first
+        // instant.
         const receiptsBeforeDate = allGoodsReceipts.filter((gr) => {
           try {
             const receiptDate = new Date(gr.receiptDate);
-            return receiptDate <= targetDate;
+            return receiptDate < targetDate;
           } catch {
             return false;
           }
@@ -1403,7 +1397,7 @@ export default function ComprehensiveReportsPage() {
         const dispatchesBeforeDate = allDispatches.filter((d) => {
           try {
             const dispatchDate = new Date(d.dispatchDate);
-            return dispatchDate <= targetDate;
+            return dispatchDate < targetDate;
           } catch {
             return false;
           }
@@ -1804,8 +1798,13 @@ export default function ComprehensiveReportsPage() {
           netVariancesValue +
           netTransferValuePeriod;
 
-        // 9. Calculate net profit (gross profit after VAT)
-        const netProfit = grossProfitBeforeVAT - netVATPayable;
+        // 9. Net profit. periodSalesExclVAT and COGS are both already
+        // VAT-exclusive, so grossProfitBeforeVAT never contained VAT in the
+        // first place — netVATPayable (output VAT owed minus input VAT
+        // credit) is a tax liability/asset on the balance sheet, not a P&L
+        // expense, so it must not be subtracted here. It's tracked and
+        // displayed separately as its own "VAT Payable" figure.
+        const netProfit = grossProfitBeforeVAT;
         const profitPercentage =
           periodSalesExclVAT > 0 ? (netProfit / periodSalesExclVAT) * 100 : 0;
 
@@ -3066,12 +3065,12 @@ export default function ComprehensiveReportsPage() {
       ["Closing Stock Value", analyticsData?.financial.closingStockValue || 0],
       ["Total Sales", analyticsData?.financial.periodSales || 0],
       [
-        "Gross Profit Before VAT",
+        "Gross Profit",
         analyticsData?.financial.grossProfitBeforeVAT || 0,
       ],
       ["VAT Payable", analyticsData?.financial.netVATPayable || 0],
       [
-        "Gross Profit After VAT",
+        "Net Profit (VAT tracked separately, see VAT Payable)",
         analyticsData?.financial.grossProfitAfterVAT || 0,
       ],
       ["Profit Percentage", analyticsData?.financial.profitPercentage || 0],
@@ -3172,11 +3171,11 @@ export default function ComprehensiveReportsPage() {
       ["VAT on Sales", analyticsData?.financial.vatOnSales || 0],
       ["Net VAT Payable", analyticsData?.financial.netVATPayable || 0],
       [
-        "Gross Profit Before VAT",
+        "Gross Profit",
         analyticsData?.financial.grossProfitBeforeVAT || 0,
       ],
       [
-        "Gross Profit After VAT",
+        "Net Profit (VAT tracked separately, see VAT Payable)",
         analyticsData?.financial.grossProfitAfterVAT || 0,
       ],
       ["Profit Margin", analyticsData?.financial.profitPercentage || 0],
@@ -3670,12 +3669,12 @@ export default function ComprehensiveReportsPage() {
         ["", ""],
         ["FINANCIAL IMPACT", ""],
         [
-          "Gross Profit Before VAT",
+          "Gross Profit",
           analyticsData?.financial.grossProfitBeforeVAT || 0,
         ],
         ["VAT Payable", analyticsData?.financial.netVATPayable || 0],
         [
-          "Gross Profit After VAT",
+          "Net Profit (VAT tracked separately, see VAT Payable)",
           analyticsData?.financial.grossProfitAfterVAT || 0,
         ],
       ];
@@ -3961,11 +3960,20 @@ export default function ComprehensiveReportsPage() {
       // Apply date range filter
       if (config.filters?.dateRange) {
         filtered = filtered.filter((item: any) => {
-          const itemDate = getItemDate(item, reportTitle);
+          const itemDateStr = getItemDate(item, reportTitle);
           const dateRange = dateRanges[reportTitle];
-          return (
-            (!dateRange?.start || itemDate >= dateRange.start) &&
-            (!dateRange?.end || itemDate <= dateRange.end)
+          // NOTE: this used to be a plain string comparison
+          // (itemDate >= dateRange.start), which broke as soon as itemDate
+          // carried a time component: e.g. "2026-09-04T14:30:00.000Z" sorts
+          // *after* the bare "2026-09-04" end-date string lexicographically,
+          // so every record on the end date itself was silently excluded.
+          // isDateWithinRange parses both sides into real Date objects and
+          // extends the end bound to the end of that day — see
+          // src/lib/dateRangeUtils.ts (unit tested there).
+          return isDateWithinRange(
+            itemDateStr,
+            dateRange?.start,
+            dateRange?.end,
           );
         });
       }
@@ -5429,11 +5437,12 @@ export default function ComprehensiveReportsPage() {
                                   cost)
                                 </Text>
                                 <Text fontSize="sm">
-                                  • Gross Profit Before VAT: Sales - COGS
+                                  • Gross Profit: Sales (excl. VAT) - COGS
+                                  (excl. VAT)
                                 </Text>
                                 <Text fontSize="sm">
-                                  • Gross Profit After VAT: Gross Profit Before
-                                  VAT - Net VAT Payable
+                                  • VAT Payable: tracked separately as a tax
+                                  liability — it is not deducted from profit
                                 </Text>
                                 <Text fontSize="sm">
                                   • VAT Rate: {VAT_CONFIG.ratePercentage}%
